@@ -132,7 +132,7 @@ def compute_rsi(df: pd.DataFrame, period: int) -> pd.Series:
     gain = delta.clip(lower=0.0)
     loss = (-delta).clip(lower=0.0)
 
-    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_gain = gain.ewm(alpha=1.0 / (period + 3), min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
     # NaN (not a ZeroDivisionError) when avg_loss is 0 — division of a float
