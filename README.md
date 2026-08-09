@@ -21,11 +21,19 @@ Bands, ATR) and an interactive charting dashboard — all from one search box.
   stop-loss suggestions.
 - **Interactive charting** — candlestick chart with volume overlay,
   togglable indicator panels, zoom/pan, built on Plotly.
+- **Risk analytics** — historical volatility, Historical/Parametric VaR,
+  Expected Shortfall (CVaR), Maximum Drawdown, Sharpe/Sortino/Calmar
+  ratios, and a composite 0-100 Risk Score dashboard.
+- **Portfolio correlation & diversification** — a correlation heatmap and
+  diversification-benefit analysis across a user-defined ticker basket.
 - **Data quality scoring** — every ticker gets a 0-100 quality score based
   on field completeness, data freshness, and fetch reliability, shown
   before any derived metric.
 - **Peer comparison & watchlist scanning**, plus a benchmark/VIX/10-year
   Treasury macro overlay.
+- **Export & reporting** — CSV export of price/indicator data, risk
+  time-series, and the fundamentals scorecard, plus a one-click PDF
+  download of the CIO Tear Sheet.
 
 No API keys required — everything is sourced from Yahoo Finance via
 [`yfinance`](https://github.com/ranaroussi/yfinance).
@@ -39,6 +47,18 @@ streamlit run finance.py
 
 The app opens at `http://localhost:8501`. Enter a ticker in the sidebar to
 get started.
+
+**PDF export** (the Tear Sheet's "Generate PDF" button) uses
+[WeasyPrint](https://weasyprint.org/), which needs the native Pango
+library — not just the Python package `pip install` already covers. If
+it's missing, the button reports itself unavailable rather than crashing
+the app, and the browser's own Print-to-PDF (Cmd/Ctrl+P) keeps working
+either way. To enable it:
+
+```bash
+brew install pango          # macOS
+apt-get install libpango-1.0-0   # Debian/Ubuntu
+```
 
 ## Testing
 

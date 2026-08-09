@@ -13,6 +13,7 @@ from price_processing import process_price_data
 from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification
+from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL
 from fundamental_analysis import FundamentalAnalysisEngine
@@ -570,7 +571,15 @@ else:
         "Blueprint Benchmark": [c.benchmark for c in matrix_rows],
         "Status": [c.status_icon for c in matrix_rows],
     }
-    st.table(pd.DataFrame(matrix_data))
+    matrix_df = pd.DataFrame(matrix_data)
+    st.table(matrix_df)
+    st.download_button(
+        "⬇️ Download Scorecard (CSV)",
+        data=matrix_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{ticker_symbol}_scorecard_{datetime.date.today().isoformat()}.csv",
+        mime="text/csv",
+        help="The Comprehensive Pass/Fail Master Matrix exactly as shown above.",
+    )
 
     # ==========================================
     # PROFITABILITY VALIDATION REPORT
@@ -938,6 +947,14 @@ else:
             if len(bb_breakouts) > 10:
                 st.caption(f"Showing the 10 most recent of {len(bb_breakouts)} breakouts in the selected date range.")
 
+    st.download_button(
+        "⬇️ Download Price & Indicator Data (CSV)",
+        data=df.to_csv().encode("utf-8"),
+        file_name=f"{ticker_symbol}_price_indicators_{start_date}_{end_date}.csv",
+        mime="text/csv",
+        help="OHLCV plus every technical indicator column computed above (SMA/RSI/MACD/Bollinger/ATR) — exactly what's plotted, one row per trading day.",
+    )
+
     # ==========================================
     # NEW: ALPHA BENCHMARKING
     # ==========================================
@@ -1207,6 +1224,18 @@ else:
         )
         if calmar_interpretation:
             calmar2.caption(calmar_interpretation.explanation)
+
+        risk_series_df = pd.DataFrame({
+            f"Rolling_Volatility_{vol_window}d": rolling_vol,
+            "Drawdown_Pct": drawdown_series,
+        })
+        st.download_button(
+            "⬇️ Download Risk Time-Series Data (CSV)",
+            data=risk_series_df.to_csv().encode("utf-8"),
+            file_name=f"{ticker_symbol}_risk_series_{start_date}_{end_date}.csv",
+            mime="text/csv",
+            help="Rolling annualized volatility and drawdown %, one row per trading day — the two per-row risk series above. Scalar metrics (VaR, Sharpe, Sortino, Calmar, Risk Score) are single values for the whole selected window, not per-row data, so they aren't in this file.",
+        )
     else:
         st.info("No drawdown in the selected date range — price has been at or above every prior high throughout.")
 
@@ -1879,7 +1908,7 @@ else:
     # ==========================================
     st.markdown("---")
     st.header("Quantitative Tear Sheet")
-    st.markdown("Press **Command + P** (Mac) or **Ctrl + P** (Windows) to save this final report as a PDF.")
+    st.markdown("Press **Command + P** (Mac) or **Ctrl + P** (Windows) to save this final report as a PDF, or use the **Generate PDF** button below for a direct download.")
 
     # 1. Safely extract variables
     _intrinsic = intrinsic_price if 'intrinsic_price' in locals() else 0.0
@@ -2068,6 +2097,24 @@ else:
     </style>
     """
     st.html(tear_sheet_html)
+
+    if st.button("🖨️ Generate PDF Report"):
+        with st.spinner("Rendering PDF..."):
+            pdf_bytes, pdf_error = generate_tear_sheet_pdf(tear_sheet_html)
+        if pdf_bytes is not None:
+            st.session_state["_tear_sheet_pdf"] = {"ticker": ticker_symbol, "bytes": pdf_bytes}
+        else:
+            st.session_state.pop("_tear_sheet_pdf", None)
+            st.warning(pdf_error)
+
+    cached_pdf = st.session_state.get("_tear_sheet_pdf")
+    if cached_pdf and cached_pdf["ticker"] == ticker_symbol:
+        st.download_button(
+            "⬇️ Download PDF",
+            data=cached_pdf["bytes"],
+            file_name=f"{ticker_symbol}_tear_sheet_{datetime.date.today().isoformat()}.pdf",
+            mime="application/pdf",
+        )
 
 
 # ==========================================
