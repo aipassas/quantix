@@ -1,5 +1,7 @@
 # Quantix
 
+[![Tests](https://github.com/aipassas/quantix/actions/workflows/tests.yml/badge.svg)](https://github.com/aipassas/quantix/actions/workflows/tests.yml)
+
 Institutional-grade stock analysis and simulation engine, built as a
 Streamlit app on top of free Yahoo Finance data.
 
@@ -38,6 +40,26 @@ streamlit run finance.py
 The app opens at `http://localhost:8501`. Enter a ticker in the sidebar to
 get started.
 
+## Testing
+
+Every technical indicator and risk metric is covered by a `pytest` suite —
+cross-validated against `pandas_ta` (technical indicators) and hand-worked
+reference computations (risk metrics), plus edge cases (insufficient data,
+zero-variance series, missing financial statement fields).
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The default run makes zero network calls and finishes in a few seconds. A
+small set of opt-in sanity checks against real Yahoo Finance data (marked
+`@pytest.mark.live`) are skipped by default — run them explicitly with:
+
+```bash
+pytest -m live
+```
+
 ## Architecture
 
 Quantix is split into small, single-purpose modules rather than one large
@@ -52,6 +74,9 @@ strategy, and design principles.
 - [`TECHNICAL_ANALYSIS.md`](TECHNICAL_ANALYSIS.md) — every technical
   indicator's formula, smoothing convention, and how it was cross-validated
   against `pandas_ta`.
+- [`RISK_ANALYTICS.md`](RISK_ANALYTICS.md) — every risk metric's formula
+  (volatility, VaR/CVaR, Maximum Drawdown, Sharpe/Sortino/Calmar), the
+  composite Risk Score's methodology, and how each was validated.
 
 ## Disclaimer
 

@@ -624,10 +624,20 @@ class FundamentalAnalysisEngine:
         }
         missing = [name for name, value in inputs.items() if value is None]
 
-        if missing or s.total_assets == 0 or s.total_liabilities == 0:
+        # Total Assets/Liabilities are denominators in every X-ratio — zero or
+        # negative values are accounting nonsense (never legitimately absent
+        # like a bank's missing classified balance sheet), so they're surfaced
+        # as their own descriptive reason rather than silently producing an
+        # empty `missing` list the UI would have nothing to explain with.
+        if s.total_assets is not None and s.total_assets <= 0:
+            missing.append(f"Total Assets (reported as {s.total_assets:,.0f} — must be positive)")
+        if s.total_liabilities is not None and s.total_liabilities <= 0:
+            missing.append(f"Total Liabilities (reported as {s.total_liabilities:,.0f} — must be positive)")
+
+        if missing:
             log_event(
                 logger, logging.WARNING, "calc.skipped", section="altman_z_score",
-                ticker=s.ticker, missing=", ".join(missing) or "zero denominator",
+                ticker=s.ticker, missing=", ".join(missing),
             )
             return None, "Insufficient Financial Data", missing
 

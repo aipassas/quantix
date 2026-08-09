@@ -258,6 +258,18 @@ def load_ticker_bundle(ticker: str, start=None, end=None, deep: bool = True) -> 
     return bundle
 
 
+def load_price_history_only(ticker: str, start=None, end=None) -> Tuple[pd.DataFrame, List[str]]:
+    """Fetch just price history for `ticker`, without the rest of a deep
+    bundle (statements, ownership) — for basket-style use cases like
+    portfolio correlation that only need OHLCV for several tickers at
+    once and would otherwise pay for financial-statement fetches they
+    never use. Reuses the same independently-cached _load_price_history()
+    load_ticker_bundle(deep=True) already calls, so this never duplicates
+    a fetch already in flight for the main analyzed ticker.
+    """
+    return _load_price_history(ticker, start, end)
+
+
 @st.cache_data(ttl=MACRO_TTL)
 def _load_symbol_history(symbol: str, start, end) -> Tuple[pd.DataFrame, List[str]]:
     """Fetch history for one symbol. Cached per-symbol so VIX and TNX (always

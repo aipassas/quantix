@@ -21,14 +21,19 @@ DataFrame, and performs no ratio arithmetic of its own. Two supporting modules c
 assumptions), and [`logging_setup.py`](logging_setup.py) configures the one
 `quantix` logger tree that each module logs through (see §5).
 
-A parallel, price-history-only pipeline feeds the Technical Analysis
-section: [`price_processing.py`](price_processing.py) validates/cleans the
-raw OHLCV fetch from `data_loader.py` (duplicate timestamps, invalid bars,
-adjusted-close normalization, gap detection), and
+A parallel, price-history-only pipeline feeds the Technical Analysis and
+Risk Analytics sections: [`price_processing.py`](price_processing.py)
+validates/cleans the raw OHLCV fetch from `data_loader.py` (duplicate
+timestamps, invalid bars, adjusted-close normalization, gap detection),
 [`technical_indicators.py`](technical_indicators.py) calculates SMA, RSI,
 MACD, Bollinger Bands, and ATR on the result — see
-[`TECHNICAL_ANALYSIS.md`](TECHNICAL_ANALYSIS.md) for every formula,
-smoothing convention, and how each was validated.
+[`TECHNICAL_ANALYSIS.md`](TECHNICAL_ANALYSIS.md) — and
+[`risk_analytics.py`](risk_analytics.py) calculates historical volatility,
+VaR/CVaR, Maximum Drawdown, and Sharpe/Sortino/Calmar on the same cleaned
+DataFrame, synthesizing all of them (plus `fundamental_analysis.py`'s
+Altman Z-Score) into one composite Risk Score — see
+[`RISK_ANALYTICS.md`](RISK_ANALYTICS.md) for every formula, return
+convention, and how each was validated.
 
 ## 1. Data sources
 

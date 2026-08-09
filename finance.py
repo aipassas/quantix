@@ -7,10 +7,12 @@ import pandas as pd
 import numpy as np
 import zlib
 
-from data_loader import load_ticker_bundle, load_macro_bundle, load_seasonality_history, clear_all_caches
+from data_loader import load_ticker_bundle, load_macro_bundle, load_seasonality_history, load_price_history_only, clear_all_caches
 from financial_standardization import standardize_financials
 from price_processing import process_price_data
 from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss
+from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score
+from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL
 from fundamental_analysis import FundamentalAnalysisEngine
@@ -244,7 +246,17 @@ show_rsi_panel = st.sidebar.checkbox("Show RSI Panel", value=True)
 atr_length = st.sidebar.slider("ATR Length", min_value=CHART_DEFAULTS.atr_range[0], max_value=CHART_DEFAULTS.atr_range[1], value=CHART_DEFAULTS.atr_default)
 show_macd_panel = st.sidebar.checkbox("Show MACD Panel", value=True)
 
-st.sidebar.header("4. Diagnostics")
+st.sidebar.header("4. Risk Analytics")
+vol_window = st.sidebar.slider("Volatility Window (days)", min_value=CHART_DEFAULTS.vol_window_range[0], max_value=CHART_DEFAULTS.vol_window_range[1], value=CHART_DEFAULTS.vol_window_default)
+var_confidence = st.sidebar.selectbox("VaR Confidence Level", options=RISK.var_confidence_levels, index=list(RISK.var_confidence_levels).index(RISK.var_confidence_default), format_func=lambda c: f"{c:.0%}")
+var_lookback = st.sidebar.slider("VaR Lookback (days)", min_value=CHART_DEFAULTS.var_lookback_range[0], max_value=CHART_DEFAULTS.var_lookback_range[1], value=CHART_DEFAULTS.var_lookback_default)
+risk_free_rate = st.sidebar.slider("Risk-Free Rate (%)", min_value=CHART_DEFAULTS.risk_free_rate_range_pct[0], max_value=CHART_DEFAULTS.risk_free_rate_range_pct[1], value=RISK.risk_free_rate * 100, step=0.25, help="Feeds the Sharpe/Sortino ratios below. The DCF's CAPM cost of equity uses its own fixed risk-free-rate assumption (RISK.risk_free_rate), unaffected by this slider.") / 100
+
+st.sidebar.header("5. Portfolio Basket")
+portfolio_basket_input = st.sidebar.text_input("Correlation Basket (comma-separated)", value=CHART_DEFAULTS.portfolio_default_basket, help="Tickers to include in the Portfolio Correlation & Diversification section further down the page. The main Stock Ticker above is always included automatically.")
+portfolio_lookback = st.sidebar.slider("Portfolio Lookback (days)", min_value=CHART_DEFAULTS.portfolio_lookback_range[0], max_value=CHART_DEFAULTS.portfolio_lookback_range[1], value=CHART_DEFAULTS.portfolio_lookback_default)
+
+st.sidebar.header("6. Diagnostics")
 # Rendered BEFORE the Force Refresh button below on purpose. Streamlit
 # discards the session_state entry for any keyed widget that isn't rendered
 # during a run — and Force Refresh calls st.rerun(), which aborts the script
@@ -265,7 +277,7 @@ setup_logging(logging.DEBUG if debug_mode else logging.INFO)
 log_event(logger, logging.DEBUG, "logging.level",
           level=logging.getLevelName(get_logger("data_loader").getEffectiveLevel()))
 
-st.sidebar.header("5. Data Cache")
+st.sidebar.header("7. Data Cache")
 st.sidebar.caption("Quotes: 30 min · Prices: 1 hr · Statements: 24 hr · Ownership: 12 hr")
 if st.sidebar.button("🔄 Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
     log_event(logger, logging.INFO, "user.force_refresh", ticker=ticker_symbol)
@@ -953,17 +965,34 @@ else:
     # --- QUANTITATIVE CALCULATIONS ---
     df['Returns'] = df['Close'].pct_change()
 
-    var_95 = df['Returns'].quantile(0.05)
-    cvar_95 = df[df['Returns'] <= var_95]['Returns'].mean()
+    # Centralized VaR/CVaR engine (log returns, user-selected confidence/lookback)
+    # — see risk_analytics.py. None when the selected date range + lookback
+    # don't provide enough observations for a stable tail estimate.
+    historical_var = compute_historical_var(df, var_confidence, lookback=var_lookback)
+    parametric_var = compute_parametric_var(df, var_confidence, lookback=var_lookback)
+    expected_shortfall = compute_expected_shortfall(df, var_confidence, lookback=var_lookback)
 
-    risk_free_rate = RISK.risk_free_rate
-    annual_return = df['Returns'].mean() * 252
-    annual_vol = df['Returns'].std() * (252**0.5)
-    sharpe_ratio = (annual_return - risk_free_rate) / annual_vol if annual_vol != 0 else 0
-
-    downside_returns = df['Returns'][df['Returns'] < 0]
-    downside_deviation = downside_returns.std() * (252**0.5)
-    sortino_ratio = (annual_return - risk_free_rate) / downside_deviation if downside_deviation > 0 else 0
+    # Centralized annualized return/volatility/Sharpe engine (log returns,
+    # not the simple pct_change() above, on both legs of the ratio) — see
+    # risk_analytics.py. None when the selected date range is too short or
+    # volatility is exactly zero.
+    annual_return = compute_annualized_return(df)
+    annual_vol = compute_annualized_volatility(df)
+    sharpe_ratio = compute_sharpe_ratio(df, risk_free_rate)
+    sharpe_interpretation = interpret_sharpe_ratio(sharpe_ratio)
+    # Textbook Sortino: downside deviation is the semi-deviation below a 0
+    # target over ALL observations (not std() of only the negative days —
+    # a different, non-standard formula the old ad-hoc code used).
+    downside_deviation = compute_downside_deviation(df)
+    sortino_ratio = compute_sortino_ratio(df, risk_free_rate)
+    rolling_vol = compute_rolling_volatility(df, vol_window)
+    current_rolling_vol = rolling_vol.dropna().iloc[-1] if rolling_vol.notna().any() else None
+    # Buy-and-hold Maximum Drawdown over the selected date range — see
+    # risk_analytics.py. Reused below by the Backtest section too, so the
+    # strategy's own drawdown and this one share one formula.
+    max_dd_result = compute_max_drawdown(df['Close'])
+    calmar_ratio = compute_calmar_ratio(df)
+    calmar_interpretation = interpret_calmar_ratio(calmar_ratio)
 
     df['Mean'] = df['Close'].rolling(window=sma_length).mean()
     df['Std'] = df['Close'].rolling(window=sma_length).std()
@@ -995,15 +1024,135 @@ else:
     if fundamentals.altman_missing_inputs:
         st.warning(f"Could not calculate Altman Z-Score — missing: {', '.join(fundamentals.altman_missing_inputs)}.")
 
+    # ==========================================
+    # RISK DASHBOARD (composite summary of every metric below)
+    # ==========================================
+    risk_score_result = compute_risk_score(
+        rolling_volatility=current_rolling_vol,
+        historical_var=historical_var,
+        expected_shortfall=expected_shortfall,
+        max_drawdown=max_dd_result.max_drawdown if max_dd_result is not None else None,
+        sharpe_ratio=sharpe_ratio,
+        sortino_ratio=sortino_ratio,
+        calmar_ratio=calmar_ratio,
+        altman_z=altman_z,
+    )
+
+    st.markdown("---")
+    st.header("Risk Dashboard")
+    st.caption("At-a-glance summary of every risk metric below — click through to the detailed panels further down this page for the full picture on any one of them.")
+
+    gauge_color = {"🟢": "#22c55e", "🟡": "#eab308", "🟠": "#f97316", "🔴": "#ef4444"}[risk_score_result.grade_icon]
+    fig_risk_gauge = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=risk_score_result.score,
+        number={'suffix': " / 100"},
+        title={'text': f"{risk_score_result.grade_icon} Composite Risk Score — {risk_score_result.grade}"},
+        gauge={
+            'axis': {'range': [0, 100]},
+            'bar': {'color': gauge_color},
+            'steps': [
+                {'range': [0, 30], 'color': 'rgba(239,68,68,0.25)'},
+                {'range': [30, 50], 'color': 'rgba(249,115,22,0.25)'},
+                {'range': [50, 75], 'color': 'rgba(234,179,8,0.25)'},
+                {'range': [75, 100], 'color': 'rgba(34,197,94,0.25)'},
+            ],
+        },
+    ))
+    fig_risk_gauge.update_layout(height=280, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=60, b=20))
+    st.plotly_chart(fig_risk_gauge, width="stretch")
+    if risk_score_result.excluded_factors:
+        st.caption(f"Not computable for {ticker_symbol} and excluded from the composite score (rather than counted as a failure): {', '.join(risk_score_result.excluded_factors)}.")
+
+    factor_cols = st.columns(4)
+    for i, factor in enumerate(risk_score_result.factors):
+        factor_cols[i % 4].metric(
+            factor.label,
+            factor.value_display,
+            delta=f"{factor.icon} weight {factor.weight:.0%}",
+            delta_color="off",
+            help=f"Sub-score: {factor.sub_score:.0f}/100" if factor.sub_score is not None else "Not computable for this ticker — excluded from the composite score.",
+        )
+
     # --- UI DISPLAY FOR QUANT ---
     st.markdown("---")
     st.header("Advanced Quantitative Risk & Time-Series Engine")
 
-    r1_c1, r1_c2, r1_c3, r1_c4 = st.columns(4)
-    r1_c1.metric("1-Day VaR (95%)", f"{var_95 * 100:.2f}%", help="Maximum expected loss on a normal day.")
-    r1_c2.metric("Expected Shortfall (CVaR)", f"{cvar_95 * 100:.2f}%", help="Average loss in the worst 5% of outcomes.")
-    r1_c3.metric("Sharpe Ratio TTM", f"{sharpe_ratio:.2f}", help="Risk-adjusted return penalizing total volatility.")
-    r1_c4.metric("Sortino Ratio TTM", f"{sortino_ratio:.2f}", help="Risk-adjusted return penalizing ONLY downside risk.")
+    v1, v2 = st.columns(2)
+    v1.metric(
+        f"Annualized Volatility ({vol_window}d)",
+        f"{current_rolling_vol * 100:.2f}%" if current_rolling_vol is not None else "N/A",
+        help="Rolling annualized standard deviation of daily log returns — the same figure feeding the Sharpe/Sortino ratios below.",
+    )
+    v2.metric(
+        f"Full-Range Annualized Volatility",
+        f"{annual_vol * 100:.2f}%" if annual_vol is not None else "N/A",
+        help="Annualized volatility over the entire selected date range, not just the rolling window.",
+    )
+    if current_rolling_vol is not None:
+        st.caption(f"Rolling {vol_window}-day annualized volatility")
+        st.line_chart(rolling_vol * 100)
+    else:
+        st.info(f"Rolling volatility needs at least {vol_window} trading days in the selected date range — widen the date range or shorten the window to see it.")
+
+    st.markdown("##")
+    st.subheader("Value at Risk")
+    if historical_var is not None and parametric_var is not None:
+        var1, var2, var3 = st.columns(3)
+        var1.metric(
+            f"1-Day Historical VaR ({var_confidence:.0%})",
+            f"{historical_var * 100:.2f}%",
+            help=f"Empirical {1 - var_confidence:.0%} percentile of daily log returns over the last {var_lookback} trading days — no distributional assumption.",
+        )
+        var2.metric(
+            f"1-Day Parametric VaR ({var_confidence:.0%})",
+            f"{parametric_var * 100:.2f}%",
+            help=f"Same {var_confidence:.0%} confidence level, but assuming daily log returns are normally distributed (variance-covariance method) over the same {var_lookback}-day window.",
+        )
+        var3.metric(
+            f"Expected Shortfall / CVaR ({var_confidence:.0%})",
+            f"{expected_shortfall * 100:.2f}%" if expected_shortfall is not None else "N/A",
+            help=f"Average loss across every day worse than the Historical VaR cutoff — the tail average, not just the cutoff itself. Increasingly preferred by regulators (Basel III) over VaR alone.",
+        )
+        var_gap = (historical_var - parametric_var) * 100
+        if abs(var_gap) >= 0.1:
+            fatter_tail = "fatter" if historical_var < parametric_var else "thinner"
+            st.caption(f"Historical and Parametric VaR diverge by {abs(var_gap):.2f}pp — the empirical return distribution has a {fatter_tail} tail than a normal distribution would predict at this confidence level.")
+        tail_risk_text = interpret_tail_risk(historical_var, expected_shortfall, var_confidence)
+        if tail_risk_text:
+            st.caption(tail_risk_text)
+
+        lookback_returns = compute_log_returns(df).dropna().tail(var_lookback) * 100
+        fig_var = go.Figure()
+        fig_var.add_trace(go.Histogram(x=lookback_returns, nbinsx=40, marker_color="#3b82f6", opacity=0.75, name="Daily log returns"))
+        fig_var.add_vline(x=historical_var * 100, line_width=2, line_dash="dash", line_color="#f59e0b", annotation_text="VaR", annotation_position="top")
+        if expected_shortfall is not None:
+            fig_var.add_vline(x=expected_shortfall * 100, line_width=2, line_dash="dash", line_color="#ef4444", annotation_text="CVaR", annotation_position="top")
+        fig_var.update_layout(
+            height=300, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            xaxis_title="Daily log return (%)", yaxis_title="Frequency", showlegend=False, margin=dict(t=30, b=30),
+        )
+        st.caption(f"Return distribution over the last {var_lookback} trading days, with VaR and CVaR marked")
+        st.plotly_chart(fig_var, width="stretch")
+    else:
+        st.info(f"VaR needs at least {RISK.var_min_observations} trading days of returns in the selected lookback window — widen the date range or shorten the lookback to see it.")
+
+    st.markdown("##")
+    r1_c1, r1_c2 = st.columns(2)
+    r1_c1.metric(
+        "Sharpe Ratio TTM",
+        f"{sharpe_ratio:.2f}" if sharpe_ratio is not None else "N/A",
+        delta=sharpe_interpretation.label if sharpe_interpretation else None,
+        delta_color="off",
+        help=f"(Annualized return − {risk_free_rate:.2%} risk-free rate) / annualized volatility, both legs from daily log returns.",
+    )
+    r1_c2.metric(
+        "Sortino Ratio TTM",
+        f"{sortino_ratio:.2f}" if sortino_ratio is not None else "N/A",
+        help="(Annualized return − risk-free rate) / downside deviation — penalizes ONLY returns below the target, unlike Sharpe which penalizes all volatility equally.",
+    )
+    if sharpe_interpretation:
+        st.caption(f"{sharpe_interpretation.explanation} {sharpe_interpretation.limitation}")
 
     st.markdown("##")
     r2_c1, r2_c2, r2_c3 = st.columns(3)
@@ -1019,6 +1168,47 @@ else:
 
     st.subheader("Statistical Distance from Mean (Z-Score)")
     st.line_chart((df['Close'] - df['Mean']) / df['Std'])
+
+    st.markdown("##")
+    st.subheader("Maximum Drawdown")
+    if max_dd_result is not None and max_dd_result.max_drawdown < 0:
+        dd1, dd2, dd3 = st.columns(3)
+        dd1.metric(
+            "Max Drawdown",
+            f"{max_dd_result.max_drawdown * 100:.2f}%",
+            help=f"Peak: ${max_dd_result.peak_price:.2f} on {max_dd_result.peak_date.date()} → Trough: ${max_dd_result.trough_price:.2f} on {max_dd_result.trough_date.date()}.",
+            delta_color="off",
+        )
+        dd2.metric("Peak → Trough", f"{max_dd_result.peak_date.date()} → {max_dd_result.trough_date.date()}")
+        if max_dd_result.recovered:
+            dd3.metric("Recovery Period", f"{max_dd_result.recovery_days} trading days", help=f"Recovered by {max_dd_result.recovery_date.date()}.")
+        else:
+            dd3.metric("Recovery Period", "Ongoing", help="Price has not yet closed back above the prior peak within the selected date range.", delta_color="off")
+
+        drawdown_series = compute_drawdown_series(df['Close']) * 100
+        fig_dd = go.Figure()
+        fig_dd.add_trace(go.Scatter(x=drawdown_series.index, y=drawdown_series, fill='tozeroy', line=dict(color='#ef4444'), name='Drawdown'))
+        fig_dd.add_trace(go.Scatter(x=[max_dd_result.trough_date], y=[max_dd_result.max_drawdown * 100], mode='markers', marker=dict(color='#f59e0b', size=10, symbol='diamond'), name='Trough'))
+        fig_dd.update_layout(
+            height=300, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            yaxis_title="Drawdown (%)", showlegend=False, margin=dict(t=20, b=20),
+        )
+        st.caption("Underwater chart: % decline from the running peak over time, worst point marked")
+        st.plotly_chart(fig_dd, width="stretch")
+
+        st.markdown("##")
+        calmar1, calmar2 = st.columns(2)
+        calmar1.metric(
+            "Calmar Ratio",
+            f"{calmar_ratio:.2f}" if calmar_ratio is not None else "N/A",
+            delta=calmar_interpretation.label if calmar_interpretation else None,
+            delta_color="off",
+            help="Annualized return ÷ |Maximum Drawdown| — return earned per unit of the single worst realized loss, rather than per unit of volatility.",
+        )
+        if calmar_interpretation:
+            calmar2.caption(calmar_interpretation.explanation)
+    else:
+        st.info("No drawdown in the selected date range — price has been at or above every prior high throughout.")
 
     # ==========================================
     # EXECUTION & POSITION SIZING (KELLY CRITERION)
@@ -1149,10 +1339,11 @@ else:
     total_strat_return = (df['Cum_Strategy'].iloc[-1] - 1) * 100
     total_bh_return = (df['Cum_Buy_Hold'].iloc[-1] - 1) * 100
 
-    # Calculate Maximum Drawdown
-    df['Peak'] = df['Cum_Strategy'].cummax()
-    df['Drawdown'] = (df['Cum_Strategy'] - df['Peak']) / df['Peak']
-    max_drawdown = df['Drawdown'].min() * 100
+    # Maximum Drawdown of the strategy's own equity curve — same engine as
+    # the buy-and-hold drawdown above (risk_analytics.py), just applied to
+    # Cum_Strategy instead of raw Close.
+    strategy_dd_result = compute_max_drawdown(df['Cum_Strategy'])
+    max_drawdown = strategy_dd_result.max_drawdown * 100 if strategy_dd_result is not None else 0.0
 
     bt1, bt2, bt3 = st.columns(3)
     bt1.metric("Strategy Return", f"{total_strat_return:.2f}%", delta=f"{total_strat_return - total_bh_return:.2f}% vs Buy & Hold")
@@ -1620,6 +1811,70 @@ else:
             st.error(f"Unexpected error constructing the text briefing: {type(e).__name__}: {e}")
 
     # ==========================================
+    # PATH 7: PORTFOLIO CORRELATION & DIVERSIFICATION
+    # ==========================================
+    st.markdown("---")
+    st.header("Path 7: Portfolio Correlation & Diversification")
+    st.caption("How the current ticker and a user-defined basket move together — a real portfolio risk view, not just a single-ticker one.")
+
+    basket_tickers = [t.strip().upper() for t in portfolio_basket_input.split(",") if t.strip()]
+    if ticker_symbol not in basket_tickers:
+        basket_tickers = [ticker_symbol] + basket_tickers
+
+    if len(basket_tickers) < 2:
+        st.info("Add at least one more ticker to the sidebar's \"Correlation Basket\" to see correlation and diversification metrics.")
+    else:
+        portfolio_price_histories = {}
+        portfolio_fetch_errors = {}
+        for basket_ticker in basket_tickers:
+            if basket_ticker == ticker_symbol:
+                # Already fetched and cleaned for the main analysis — reuse it
+                # rather than fetching the same ticker's price history twice.
+                portfolio_price_histories[basket_ticker] = df
+                continue
+            history, errors = load_price_history_only(basket_ticker, start_date, end_date)
+            if errors:
+                portfolio_fetch_errors[basket_ticker] = "; ".join(errors)
+            elif not history.empty:
+                # Run through the same cleaning pipeline as the main ticker
+                # (price_processing.py) — not just for consistency, but
+                # because it's what normalizes the tz-aware index yfinance
+                # returns into the tz-naive one `df` (the main ticker) is
+                # already on; without this, aligning returns across tickers
+                # raises on the mismatched index types.
+                history = process_price_data(history, ticker=basket_ticker).df
+            portfolio_price_histories[basket_ticker] = history
+
+        alignment = build_aligned_returns(portfolio_price_histories, lookback=portfolio_lookback)
+
+        if alignment.excluded_tickers:
+            reasons_text = "; ".join(f"{t}: {alignment.exclusion_reasons.get(t, 'unknown reason')}" for t in alignment.excluded_tickers)
+            st.warning(f"Excluded from the basket (no usable data): {reasons_text}")
+
+        if not alignment.sufficient_data or len(alignment.included_tickers) < 2:
+            st.info(f"Not enough overlapping trading days across the basket to compute correlation/diversification reliably (need at least {RISK.correlation_min_observations}, have {alignment.observation_count}). Try a shorter lookback or a different basket.")
+        else:
+            corr_matrix = compute_correlation_matrix(alignment.returns)
+            fig_corr = go.Figure(data=go.Heatmap(
+                z=corr_matrix.values, x=corr_matrix.columns, y=corr_matrix.index,
+                colorscale='RdBu', zmid=0, zmin=-1, zmax=1,
+                text=corr_matrix.round(2).values, texttemplate="%{text}",
+                colorbar=dict(title="Correlation"),
+            ))
+            fig_corr.update_layout(height=350 + 20 * len(alignment.included_tickers), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=30, b=30))
+            st.caption(f"Pairwise correlation over the last {portfolio_lookback} trading days")
+            st.plotly_chart(fig_corr, width="stretch")
+
+            diversification = compute_portfolio_diversification(alignment.returns)
+            if diversification is not None:
+                d1, d2, d3 = st.columns(3)
+                d1.metric("Portfolio Volatility", f"{diversification.portfolio_volatility * 100:.2f}%", help="Equal-weighted portfolio's annualized volatility, accounting for how the holdings move together.")
+                d2.metric("Weighted-Average Volatility", f"{diversification.weighted_average_volatility * 100:.2f}%", help="What the portfolio's volatility would be if every holding moved completely independently — no diversification credit.")
+                d3.metric("Diversification Benefit", f"{diversification.diversification_benefit * 100:.2f}pp", help="Weighted-Average minus Portfolio Volatility — the risk reduction this basket actually gets from not being perfectly correlated.")
+                if diversification.diversification_ratio is not None:
+                    st.caption(f"Diversification ratio: {diversification.diversification_ratio:.2f}× — a basket with zero correlation benefit would read 1.00×; this basket's correlation structure lowers portfolio risk to {1 / diversification.diversification_ratio:.0%} of what the un-diversified weighted average would be.")
+
+    # ==========================================
     # PRINTABLE TEAR SHEET (HTML/CSS)
     # ==========================================
     st.markdown("---")
@@ -1703,7 +1958,7 @@ else:
                 <h4>Execution & Risk</h4>
                 <div class="ts-metric"><span class="ts-label">Kelly Allocation</span> <span class="ts-value">{_kelly:.2f}%</span></div>
                 <div class="ts-metric"><span class="ts-label">Z-Score (Trend)</span> <span class="ts-value">{current_z_score:.2f}</span></div>
-                <div class="ts-metric"><span class="ts-label">1-Day VaR</span> <span class="ts-value">{var_95 * 100:.2f}%</span></div>
+                <div class="ts-metric"><span class="ts-label">1-Day VaR ({var_confidence:.0%})</span> <span class="ts-value">{f"{historical_var * 100:.2f}%" if historical_var is not None else "N/A"}</span></div>
             </div>
         </div>
 

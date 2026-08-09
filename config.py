@@ -108,6 +108,7 @@ class DCFAssumptions:
 @dataclass(frozen=True)
 class RiskConfig:
     risk_free_rate: float = 0.04  # shared by Sharpe/Sortino and the DCF's CAPM cost of equity
+    trading_days_per_year: int = 252  # annualization factor shared by every risk metric
     vix_high_risk_threshold: float = 25.0
     altman_safe_zone: float = 2.99
     altman_grey_zone: float = 1.81
@@ -117,6 +118,36 @@ class RiskConfig:
     backtest_sell_z_score: float = 0.0
     kelly_half_factor: float = 2.0             # half-Kelly for risk management
     kelly_macro_risk_extra_factor: float = 2.0  # additional halving when the VIX risk flag is active
+    var_confidence_levels: Tuple[float, ...] = (0.90, 0.95, 0.99)
+    var_confidence_default: float = 0.95
+    var_min_observations: int = 20  # below this, a percentile/normal-fit estimate is too unstable to show
+    correlation_min_observations: int = 20  # below this, a correlation/covariance estimate is too unstable to show
+
+    # Composite Risk Score: normalization anchors (value at 0-score <-> 100-score)
+    # and weights for the Risk Dashboard's single 0-100 summary figure. Weights
+    # sum to 1.0 over whichever factors are actually computable for the ticker;
+    # unavailable factors (e.g. Altman Z for banks) are excluded and the rest
+    # renormalized, same "don't penalize what can't be checked" principle as
+    # data_quality.py's field-completeness scoring.
+    # Each anchor tuple is (best, worst): the value that scores 100, then the
+    # value that scores 0, linearly interpolated (and clamped) between.
+    risk_score_vol_anchors: Tuple[float, float] = (0.15, 0.60)        # 15% ann. vol -> 100, 60% -> 0
+    risk_score_var_anchors: Tuple[float, float] = (0.0, -0.08)        # 0% 1-day VaR -> 100, -8% -> 0
+    risk_score_cvar_anchors: Tuple[float, float] = (0.0, -0.12)       # 0% CVaR -> 100, -12% -> 0
+    risk_score_drawdown_anchors: Tuple[float, float] = (0.0, -0.60)   # 0% drawdown -> 100, -60% -> 0
+    risk_score_sharpe_anchors: Tuple[float, float] = (2.5, 0.0)       # Sharpe 2.5 -> 100, 0 -> 0
+    risk_score_sortino_anchors: Tuple[float, float] = (2.5, 0.0)      # same scale as Sharpe
+    risk_score_calmar_anchors: Tuple[float, float] = (5.0, 0.0)       # Calmar 5 -> 100, 0 -> 0
+    # Altman Z uses its own safe-zone threshold as the 100-score anchor (see below)
+
+    risk_score_weight_volatility: float = 0.15
+    risk_score_weight_var: float = 0.15
+    risk_score_weight_cvar: float = 0.15
+    risk_score_weight_max_drawdown: float = 0.20
+    risk_score_weight_sharpe: float = 0.10
+    risk_score_weight_sortino: float = 0.10
+    risk_score_weight_calmar: float = 0.10
+    risk_score_weight_altman_z: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -139,6 +170,14 @@ class ChartDefaults:
     rsi_range: Tuple[int, int] = (5, 50)
     atr_default: int = 14
     atr_range: Tuple[int, int] = (5, 50)
+    vol_window_default: int = 21
+    vol_window_range: Tuple[int, int] = (5, 120)
+    var_lookback_default: int = 252
+    var_lookback_range: Tuple[int, int] = (30, 500)
+    risk_free_rate_range_pct: Tuple[float, float] = (0.0, 10.0)
+    portfolio_lookback_default: int = 252
+    portfolio_lookback_range: Tuple[int, int] = (60, 500)
+    portfolio_default_basket: str = "AAPL, MSFT, GOOGL, JPM"
     dcf_growth_default_pct: int = 15
     dcf_growth_range_pct: Tuple[int, int] = (1, 35)
     dcf_wacc_default_pct: int = 9
