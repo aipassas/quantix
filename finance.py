@@ -1,0 +1,1832 @@
+import logging
+import streamlit as st
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import datetime
+import pandas as pd
+import numpy as np
+import zlib
+
+from data_loader import load_ticker_bundle, load_macro_bundle, load_seasonality_history, clear_all_caches
+from financial_standardization import standardize_financials
+from price_processing import process_price_data
+from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss
+from data_quality import assess_data_quality
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL
+from fundamental_analysis import FundamentalAnalysisEngine
+from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
+
+
+def fmt_num(value, suffix="", decimals=2, prefix=""):
+    """Format a number for display, or 'N/A' when the underlying field was missing."""
+    return "N/A" if value is None else f"{prefix}{value:.{decimals}f}{suffix}"
+
+
+# --- Logging ---
+# The debug toggle lives in the sidebar (rendered further down), but the log
+# level has to be set before any module logs anything. Streamlit persists
+# widget values in session_state across reruns, so the previous run's toggle
+# state is already available here on this run.
+setup_logging(logging.DEBUG if st.session_state.get("debug_mode") else logging.INFO)
+logger = get_logger("finance")
+
+if not st.session_state.get("_session_logged"):
+    log_event(logger, logging.INFO, "session.start", log_file=log_file_path())
+    st.session_state["_session_logged"] = True
+
+
+def log_input_changes(**current):
+    """Log only genuine changes to the meaningful inputs.
+
+    Streamlit re-runs this entire script on every widget interaction, so
+    logging unconditionally would emit an entry per slider increment. Diffing
+    against the previous run's values keeps the log to real user intent
+    (ticker switch, date change, benchmark change, peer edit).
+    """
+    previous = st.session_state.get("_last_inputs")
+    if previous is not None:
+        changed = {key: value for key, value in current.items() if previous.get(key) != value}
+        if changed:
+            log_event(logger, logging.INFO, "user.input_changed", **changed)
+    st.session_state["_last_inputs"] = current
+
+
+# --- Page Configuration ---
+st.set_page_config(page_title="Quantix", layout="wide", page_icon="🔬")
+st.title("Quantix: Institutional-Grade Stock Analysis & Simulation Engine")
+
+# --- Professional UI Injection (OLED Edition) ---
+st.markdown("""
+    <style>
+    /* Hide Streamlit default UI elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* ...but keep the sidebar re-open button visible. It lives inside the
+       header, so hiding the header above would otherwise make collapsing the
+       sidebar irreversible without reloading the page. stExpandSidebarButton
+       is the Streamlit 1.58 test ID; the other two are older/newer aliases,
+       matched so this keeps working across version upgrades. */
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
+        visibility: visible !important;
+        z-index: 999999;
+    }
+    [data-testid="stExpandSidebarButton"] *,
+    [data-testid="stSidebarCollapsedControl"] *,
+    [data-testid="collapsedControl"] * {
+        visibility: visible !important;
+        color: #ffffff !important;
+        fill: #ffffff !important;
+    }
+
+    /* Absolute OLED Black Background */
+    .stApp {
+        background-color: #000000 !important;
+        color: #e2e8f0;
+    }
+
+    /* Headers in crisp white */
+    h1, h2, h3, h4, h5, h6 {
+        color: #ffffff !important;
+        font-weight: 600 !important;
+    }
+
+    /* OLED Metric Cards - High Contrast */
+    div[data-testid="metric-container"] {
+        background-color: #0a0a0a;
+        border: 1px solid #1a1a1a;
+        border-left: 4px solid #00ea77; /* Neon Green Action Border */
+        border-radius: 6px;
+        padding: 15px 20px;
+        transition: border-left-color 0.3s ease, transform 0.2s ease;
+    }
+
+    /* Hover state for absolute black theme */
+    div[data-testid="metric-container"]:hover {
+        border-left: 4px solid #ffffff;
+        transform: scale(1.02);
+    }
+
+    /* Pop-out values for readability */
+    [data-testid="stMetricValue"] {
+        font-size: 1.85rem;
+        font-weight: 700;
+        color: #ffffff;
+    }
+
+    /* Adjust table styles for high contrast */
+    thead tr th {
+        background-color: #0a0a0a !important;
+        color: #ffffff !important;
+        border-bottom: 2px solid #333333 !important;
+    }
+
+    tbody tr td {
+        background-color: #000000 !important;
+        color: #cccccc !important;
+        border-bottom: 1px solid #1a1a1a !important;
+    }
+
+    /* Ensure expanders remain legible */
+    .streamlit-expanderHeader {
+        background-color: #0a0a0a !important;
+        border: 1px solid #1a1a1a !important;
+        color: #ffffff !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ==========================================
+# INSTITUTIONAL WATCHLIST SUGGESTIONS (CHRONOLOGICAL PORTFOLIOS)
+# ==========================================
+st.markdown("---")
+st.header("Institutional Watchlist Suggestions")
+
+@st.cache_data(ttl=3600)
+def process_ticker_data(ticker):
+    """Helper function to fetch and score a single ticker safely"""
+    try:
+        bundle = load_ticker_bundle(ticker, deep=False)
+        if not bundle.is_valid:
+            st.warning(f"Could not process ticker '{ticker}': {'; '.join(bundle.errors)}")
+            return None
+        std = standardize_financials(bundle)
+
+        screened = FundamentalAnalysisEngine(std).screen_watchlist()
+        if screened is None:
+            return None
+
+        return {
+            "ticker": screened.ticker,
+            "score": screened.score,
+            "status": screened.status,
+            "pe": screened.pe_ratio,
+            "margin": screened.net_margin_pct,
+        }
+    except Exception as e:
+        # load_ticker_bundle/standardize_financials already handle routine
+        # data issues internally (returning bundle.errors / None fields)
+        # without raising, so anything caught here is a genuinely unexpected
+        # bug rather than ordinary bad data — log it fully and skip this ticker.
+        log_exception(logger, "calc.error", section="watchlist_scan", ticker=ticker)
+        st.warning(f"Unexpected error processing ticker '{ticker}': {type(e).__name__}: {e}")
+        return None
+
+@st.cache_data(ttl=3600)
+def scan_split_watchlists():
+    tech_results = []
+    other_results = []
+
+    for t in WATCHLIST.tech_basket:
+        res = process_ticker_data(t)
+        if res: tech_results.append(res)
+
+    for t in WATCHLIST.diversified_basket:
+        res = process_ticker_data(t)
+        if res: other_results.append(res)
+
+    # Sort both lists by best blueprint score first
+    tech_results = sorted(tech_results, key=lambda x: x['score'], reverse=True)
+    other_results = sorted(other_results, key=lambda x: x['score'], reverse=True)
+
+    return tech_results, other_results
+
+with st.spinner("Analyzing macro sectors and grouping asset classes..."):
+    tech_picks, other_picks = scan_split_watchlists()
+
+    # --- SECTION 1: TECH & GROWTH PORTFOLIO ---
+    st.subheader("Top Tech & Growth Alignments")
+    if tech_picks:
+        t_cols = st.columns(WATCHLIST.cards_shown)
+        for i, data in enumerate(tech_picks[:WATCHLIST.cards_shown]):
+            with t_cols[i]:
+                st.info(f"**{data['ticker']}**  \n  \nAlignment: {data['status']} ({data['score']:.0f}%)  \nP/E: {data['pe']:.1f}  \nMargin: {data['margin']:.1f}%")
+    else:
+        st.write("No tech leaders currently pass basic filters.")
+
+    st.markdown("##") # Space out the sections cleanly
+
+    # --- SECTION 2: DIVERSIFIED SECTOR PORTFOLIO ---
+    st.subheader("Top Diversified Market Alignments")
+    if other_picks:
+        o_cols = st.columns(WATCHLIST.cards_shown)
+        for i, data in enumerate(other_picks[:WATCHLIST.cards_shown]):
+            with o_cols[i]:
+                st.info(f"**{data['ticker']}**  \n  \nAlignment: {data['status']} ({data['score']:.0f}%)  \nP/E: {data['pe']:.1f}  \nMargin: {data['margin']:.1f}%")
+    else:
+        st.write("No diversified sector leaders currently pass basic filters.")
+
+
+# --- Sidebar Controls ---
+st.sidebar.header("Target Configuration")
+ticker_symbol = st.sidebar.text_input("Stock Ticker", CHART_DEFAULTS.default_ticker).upper()
+
+today = datetime.date.today()
+one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_days)
+start_date = st.sidebar.date_input("Start Date", one_year_ago)
+end_date = st.sidebar.date_input("End Date", today)
+
+# NEW: DCF and Benchmark inputs
+st.sidebar.header("2. Valuation & Benchmark")
+benchmark_symbol = st.sidebar.text_input("Market Benchmark", CHART_DEFAULTS.default_benchmark).upper()
+dcf_growth = st.sidebar.slider("Expected FCF Growth (%)", min_value=CHART_DEFAULTS.dcf_growth_range_pct[0], max_value=CHART_DEFAULTS.dcf_growth_range_pct[1], value=CHART_DEFAULTS.dcf_growth_default_pct) / 100
+dcf_wacc = st.sidebar.slider("Discount Rate / WACC (%)", min_value=CHART_DEFAULTS.dcf_wacc_range_pct[0], max_value=CHART_DEFAULTS.dcf_wacc_range_pct[1], value=CHART_DEFAULTS.dcf_wacc_default_pct) / 100
+
+st.sidebar.header("3. Chart Indicators")
+sma_length = st.sidebar.slider("SMA Length", min_value=CHART_DEFAULTS.sma_range[0], max_value=CHART_DEFAULTS.sma_range[1], value=CHART_DEFAULTS.sma_default)
+show_sma_trio = st.sidebar.checkbox(f"Show {'/'.join(str(p) for p in TECHNICAL.sma_trio_periods)}-day SMA Trio", value=True)
+show_bollinger_bands = st.sidebar.checkbox(f"Show Bollinger Bands ({TECHNICAL.bollinger_num_std:.0f}σ, {sma_length}-period)", value=True)
+rsi_length = st.sidebar.slider("RSI Length", min_value=CHART_DEFAULTS.rsi_range[0], max_value=CHART_DEFAULTS.rsi_range[1], value=CHART_DEFAULTS.rsi_default)
+show_rsi_panel = st.sidebar.checkbox("Show RSI Panel", value=True)
+atr_length = st.sidebar.slider("ATR Length", min_value=CHART_DEFAULTS.atr_range[0], max_value=CHART_DEFAULTS.atr_range[1], value=CHART_DEFAULTS.atr_default)
+show_macd_panel = st.sidebar.checkbox("Show MACD Panel", value=True)
+
+st.sidebar.header("4. Diagnostics")
+# Rendered BEFORE the Force Refresh button below on purpose. Streamlit
+# discards the session_state entry for any keyed widget that isn't rendered
+# during a run — and Force Refresh calls st.rerun(), which aborts the script
+# immediately. If this checkbox came after it, ticking Debug then hitting
+# Force Refresh would silently reset the toggle back to off.
+debug_mode = st.sidebar.checkbox(
+    "Debug logging", key="debug_mode",
+    help="Raise the log level to DEBUG and show recent log entries in-page.",
+)
+st.sidebar.caption(f"Log file: {log_file_path().name}")
+
+# Re-apply the level now that the checkbox's value for THIS run is known. The
+# call at the top of the script runs before this widget exists, so on the run
+# where the box is first ticked it would otherwise still be at INFO. Handler
+# setup is idempotent, so this only adjusts the level — and everything that
+# actually loads data happens below this point.
+setup_logging(logging.DEBUG if debug_mode else logging.INFO)
+log_event(logger, logging.DEBUG, "logging.level",
+          level=logging.getLevelName(get_logger("data_loader").getEffectiveLevel()))
+
+st.sidebar.header("5. Data Cache")
+st.sidebar.caption("Quotes: 30 min · Prices: 1 hr · Statements: 24 hr · Ownership: 12 hr")
+if st.sidebar.button("🔄 Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
+    log_event(logger, logging.INFO, "user.force_refresh", ticker=ticker_symbol)
+    clear_all_caches()
+    st.rerun()
+
+# Record meaningful input changes only (see log_input_changes docstring).
+log_input_changes(
+    ticker=ticker_symbol, start=str(start_date), end=str(end_date),
+    benchmark=benchmark_symbol,
+)
+
+# --- Data Fetching ---
+# All Yahoo Finance access for the selected ticker + macro context happens
+# once here via data_loader, and the results are reused by every section
+# below instead of each section re-fetching independently.
+with st.spinner(f"Running deep audit on {ticker_symbol} & loading Macro Data..."):
+    ticker_bundle = load_ticker_bundle(ticker_symbol, start_date, end_date, deep=True)
+    # Every technical indicator below (SMA, RSI, and future MACD/Bollinger/
+    # ATR) is computed on this processed frame, never the raw fetch directly
+    # — see price_processing.py for exactly what's validated/cleaned.
+    price_processing_result = process_price_data(ticker_bundle.price_history, ticker=ticker_symbol)
+    df = price_processing_result.df
+    if price_processing_result.issue_count:
+        log_event(
+            logger, logging.WARNING, "price_data.issues", ticker=ticker_symbol,
+            duplicates_removed=price_processing_result.duplicate_rows_removed,
+            invalid_rows_removed=price_processing_result.invalid_rows_removed,
+            possible_gaps=len(price_processing_result.possible_gaps),
+        )
+
+    macro_bundle = load_macro_bundle(benchmark_symbol, start_date, end_date)
+    bench_df = macro_bundle.benchmark_history
+    vix_df = macro_bundle.vix_history
+    tnx_df = macro_bundle.tnx_history
+
+    # Canonical, unit-consistent view of this ticker's data (statements +
+    # info-dict ratios). Every section below reads from this instead of
+    # touching raw info/statement fields directly, so units, field names,
+    # and missing-value handling are consistent across the whole app.
+    standardized = standardize_financials(ticker_bundle)
+
+if df.empty:
+    detail = " ".join(ticker_bundle.errors) if ticker_bundle.errors else "No data returned by Yahoo Finance."
+    log_event(logger, logging.ERROR, "analysis.aborted", ticker=ticker_symbol, reason=detail)
+    st.error(f"No reliable data found for '{ticker_symbol}'. {detail} Try again shortly or check the ticker symbol.")
+else:
+
+    # ==========================================
+    # DATA QUALITY REPORT
+    # ==========================================
+    # Combines field-level statement completeness (financial_validation.py),
+    # data freshness (most recent reported quarter), and fetch reliability
+    # (data_loader.py retries/warnings) into one score, run before any ratio
+    # below is calculated — so it's clear up front how much to trust the
+    # analysis instead of piecing it together from separate panels.
+    quality = assess_data_quality(standardized, ticker_bundle, macro_bundle)
+
+    st.subheader(f"{quality.grade_icon} Data Quality Report — {quality.score}/100 ({quality.grade})")
+    dq1, dq2, dq3, dq4 = st.columns(4)
+    dq1.metric("Required Fields", f"{quality.required_completeness_pct:.0f}%", help="% of required balance sheet / income statement / cash flow fields present.")
+    dq2.metric("Optional Fields", f"{quality.optional_completeness_pct:.0f}%", help="% of optional statement fields present (e.g. Retained Earnings, Interest Expense).")
+    freshness_label = "N/A" if quality.staleness_days is None else f"{quality.staleness_days}d old"
+    dq3.metric("Data Freshness", freshness_label, delta="Stale" if quality.is_stale else "Fresh", delta_color="inverse" if quality.is_stale else "normal", help="Age of the most recently reported quarter. Flagged stale beyond 120 days.")
+    dq4.metric("Fetch Reliability", f"{quality.fetch_reliability_score:.0f}%", help="Penalized for retried/failed downloads and empty optional datasets.")
+
+    if quality.grade in ("Poor", "Fair"):
+        st.warning(f"Data quality is {quality.grade.lower()} for {ticker_symbol} — treat derived metrics with extra caution and check the detail below.")
+
+    detail_issue_count = len(quality.missing_required_fields) + len(quality.missing_optional_fields) + len(quality.fetch_warnings) + len(quality.fetch_errors)
+    with st.expander(f"Data Quality Detail ({detail_issue_count} issue(s))", expanded=quality.grade in ("Poor", "Fair")):
+        for stmt in standardized.validation.statements:
+            status = "✅ Complete" if stmt.is_valid else f"❌ {len(stmt.missing_required)} required field(s) missing"
+            st.markdown(f"**{stmt.statement_name}** — {status}")
+            for check in stmt.checks:
+                icon = "✅" if check.present else ("❌" if check.required else "⚪")
+                label = check.name + (" (required)" if check.required else " (optional)")
+                st.markdown(f"&nbsp;&nbsp;{icon} {label}")
+
+        if quality.most_recent_quarter is not None:
+            st.markdown(f"**Freshness** — most recent reported quarter: {quality.most_recent_quarter.strftime('%B %d, %Y')} ({quality.staleness_days} days ago)")
+        else:
+            st.markdown("**Freshness** — most recent quarter date not reported by Yahoo Finance; freshness could not be verified.")
+
+        if quality.fetch_errors or quality.fetch_warnings:
+            st.markdown("**Fetch Reliability**")
+            for w in quality.fetch_errors:
+                st.error(w)
+            for w in quality.fetch_warnings:
+                st.warning(w)
+
+    # ==========================================
+    # NEW: MACRO REGIME FILTER
+    # ==========================================
+    st.header("Macro Regime & Systemic Risk")
+    vix_current = vix_df['Close'].iloc[-1] if not vix_df.empty else 20.0
+    tnx_current = tnx_df['Close'].iloc[-1] if not tnx_df.empty else 4.0
+    macro_risk_flag = vix_current > RISK.vix_high_risk_threshold
+
+    m1, m2 = st.columns(2)
+    m1.metric("VIX (Fear Index)", f"{vix_current:.2f}", delta=f"High Risk (>{RISK.vix_high_risk_threshold:.0f})" if macro_risk_flag else "Stable Market", delta_color="inverse" if macro_risk_flag else "normal")
+    m2.metric("10-Year Treasury Yield", f"{tnx_current:.2f}%")
+
+    if macro_risk_flag:
+        st.error("SYSTEMIC RISK WARNING: High VIX detected. The broader market is experiencing fear. Position sizing will be automatically penalized to protect capital.")
+    st.markdown("---")
+
+    # ==========================================
+    # DATA EXTRACTION & CALCULATIONS
+    # ==========================================
+    # Every statement-derived ratio is calculated by the Fundamental Analysis
+    # Engine — this file renders the results and performs no ratio arithmetic
+    # of its own. Metrics that can't be computed come back as None and render
+    # as "N/A" rather than a fabricated default.
+    fundamentals_engine = FundamentalAnalysisEngine(standardized, raw_info=ticker_bundle.info)
+    fundamentals = fundamentals_engine.analyze()
+
+    net_margin = fundamentals.net_margin
+    de_ratio = fundamentals.debt_to_equity
+    pe_ratio = fundamentals.pe_ratio
+    peg_ratio = fundamentals.peg_ratio
+    beta = fundamentals.beta
+    roic_val = fundamentals.roic_pct
+    int_cov_val = fundamentals.interest_coverage
+    fcf_yield_val = fundamentals.fcf_yield_pct
+    fcf_raw = standardized.free_cash_flow  # Extracted for DCF later
+
+    # ==========================================
+    # FINANCIAL METRICS VALIDATION REPORT
+    # ==========================================
+    # One consolidated overview across every metric the engine validates —
+    # Profitability, Liquidity, Leverage, Valuation — plus two checks that
+    # don't belong to any single category: outliers (a value whose magnitude
+    # exceeds a configured sanity bound, config.OUTLIER_BOUNDS, independent of
+    # whether it agrees with Yahoo) and incomplete calculations (a fallback
+    # data source or assumption was used). This does not replace the four
+    # detailed category reports further down — it's the "check here first"
+    # summary; scroll down to any category for the full breakdown.
+    mv = fundamentals.metrics_validation
+    st.markdown("---")
+    st.header("Financial Metrics Validation Report")
+
+    if mv.is_clean:
+        st.success(f"✅ No issues found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}.")
+    else:
+        issue_parts = []
+        if mv.disagreement_count:
+            issue_parts.append(f"{mv.disagreement_count} disagree with Yahoo's own figure")
+        if mv.outlier_count:
+            issue_parts.append(f"{mv.outlier_count} exceed a sanity bound")
+        if mv.fallback_count:
+            issue_parts.append(f"{mv.fallback_count} used a fallback data source")
+        st.warning(f"⚠️ {mv.total_issues} issue(s) found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}: " + "; ".join(issue_parts) + ".")
+
+    vc1, vc2, vc3, vc4 = st.columns(4)
+    vc1.metric("Metrics Evaluated", f"{len(mv.evaluated_checks)} / {len(mv.checks)}")
+    vc2.metric("Yahoo Disagreements", mv.disagreement_count)
+    vc3.metric("Extreme Outliers", mv.outlier_count)
+    vc4.metric("Incomplete Calculations", mv.fallback_count)
+
+    if mv.outliers:
+        with st.expander(f"🚩 {mv.outlier_count} extreme outlier(s)", expanded=True):
+            for o in mv.outliers:
+                st.error(f"**[{o.category}] {o.label}**: {o.display} — {o.note}")
+
+    if mv.fallback_notes:
+        with st.expander(f"🧩 {mv.fallback_count} incomplete calculation(s)", expanded=False):
+            for note in mv.fallback_notes:
+                st.info(note)
+
+    if mv.disagreements:
+        with st.expander(f"⚠️ {mv.disagreement_count} disagreement(s) with Yahoo's own reported figure", expanded=False):
+            disagreement_data = {
+                "Category": [cat for cat, _ in mv.disagreements],
+                "Metric": [c.label for _, c in mv.disagreements],
+                "Computed": [c.computed_display for _, c in mv.disagreements],
+                "Yahoo Reported": [c.reference_display for _, c in mv.disagreements],
+            }
+            st.table(pd.DataFrame(disagreement_data))
+            st.caption("See the category-specific reports below for the likely cause of each disagreement.")
+
+    # ==========================================
+    # SCOREBOARD
+    # ==========================================
+    # Flags and score come straight from the engine's evaluated checks. Both
+    # are sector-aware: Debt-to-Equity uses a looser threshold for Financial
+    # Services companies, and a metric with no computable value for this
+    # company (common for banks) is excluded from the score entirely rather
+    # than counted as a failure — so `total_checks` can be less than the 8
+    # possible scorecard metrics, and the Blueprint Alignment % is a weighted
+    # score over the evaluable ones (core health metrics count for more than
+    # valuation/volatility — see config.SCORECARD.weights).
+    green_flags = fundamentals.green_flags
+    total_checks = fundamentals.total_checks
+    possible_checks = len(fundamentals.scorecard_checks)
+    score_pct = fundamentals.score_pct
+
+    st.header("Strategic Investment Scorecard")
+    sector_note = f"Sector: {standardized.sector}" if standardized.sector else "Sector: Unknown"
+    if standardized.sector in SCORECARD.financials_sector_names:
+        sector_note += f" — Debt-to-Equity benchmark relaxed to < {SCORECARD.financials_max_debt_to_equity} (banks are structurally more leveraged as a business model)"
+    st.caption(sector_note)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Institutional Green Flags", f"{green_flags} / {total_checks}")
+    c2.metric("Operational Warning Signs", f"{total_checks - green_flags}")
+    c3.metric("Blueprint Alignment", f"{score_pct:.0f}%", help="Weighted over evaluable metrics — see the sector/weighting note above.")
+
+    if total_checks < possible_checks:
+        st.caption(f"{possible_checks - total_checks} of {possible_checks} scorecard metric(s) not computable for {ticker_symbol} and excluded from scoring, rather than counted as a failure.")
+
+    if fundamentals.alignment_verdict == "high": st.success("🟢 HIGH ALIGNMENT: Passes major filters.")
+    elif fundamentals.alignment_verdict == "moderate": st.warning("🟡 MODERATE RISK: Proceed with caution.")
+    else: st.error("🔴 ABORT RESEARCH: Fails safety benchmarks.")
+
+    # ==========================================
+    # COMPANY QUALITY CLASSIFICATION
+    # ==========================================
+    # A complementary, differently-framed view from the Scorecard above: five
+    # weighted factors (Profitability, Financial Stability, Growth, Valuation,
+    # Capital Efficiency) blended into one 0-100 quality score and category,
+    # instead of a flat pass/fail checklist. Valuation deliberately does NOT
+    # reward cheapness here — it scores how close each multiple sits to a
+    # "reasonably priced" center point, since excellent businesses often
+    # justly trade at a premium (standard quality-investing methodology
+    # excludes valuation from "quality" for exactly this reason).
+    cq = fundamentals.company_quality
+    st.markdown("---")
+    st.header("Company Quality Classification")
+
+    if cq.overall_score is None:
+        st.warning(f"⚪ Not enough data to classify {ticker_symbol}'s quality — every factor was missing all of its inputs.")
+    else:
+        qc1, qc2 = st.columns([1, 2])
+        qc1.metric("Overall Quality Score", f"{cq.overall_score:.0f} / 100", help="Weighted average across evaluable factors — see config.QUALITY for every band and weight.")
+        with qc2:
+            st.markdown(f"### {cq.category_icon} {cq.category}")
+            if len(cq.evaluable_factors) < len(cq.factors):
+                st.caption(f"{len(cq.evaluable_factors)} of {len(cq.factors)} factors had computable data for {ticker_symbol}; the rest were excluded rather than scored as 0.")
+
+        factor_cols = st.columns(len(cq.factors))
+        for col, factor in zip(factor_cols, cq.factors):
+            with col:
+                if factor.score is None:
+                    st.metric(factor.name, "N/A", help=f"Weight: {factor.weight:.0%}. No computable inputs for {ticker_symbol}.")
+                else:
+                    st.metric(factor.name, f"{factor.score:.0f}", help=f"Weight: {factor.weight:.0%} of the overall score.")
+                    st.progress(min(max(factor.score / 100, 0.0), 1.0))
+
+    with st.expander("Quality methodology & full metric breakdown", expanded=False):
+        st.caption(
+            "Each metric scores 0-100 against a configured band (config.QUALITY), then a factor is the average "
+            "of its evaluable metrics, and the overall score is a weighted average of evaluable factors. A metric "
+            "or factor with no computable data is excluded rather than scored as 0. Every band/weight is a "
+            "disclosed judgment call, not derived from a live external quality-rating source."
+        )
+        for factor in cq.factors:
+            score_label = "N/A" if factor.score is None else f"{factor.score:.0f} / 100"
+            st.markdown(f"**{factor.name}** (weight {factor.weight:.0%}) — {score_label}")
+            factor_data = {
+                "Metric": [met.label for met in factor.metrics],
+                "Value": [met.display for met in factor.metrics],
+                "Sub-Score": ["N/A" if met.sub_score is None else f"{met.sub_score:.0f}" for met in factor.metrics],
+            }
+            st.table(pd.DataFrame(factor_data))
+        st.caption("Asset Turnover (Capital Efficiency) uses one global band and is naturally sector-dependent — asset-heavy businesses like banks score low here structurally, not necessarily because of poor capital discipline.")
+
+    # ==========================================
+    # STEP 1: QUALITATIVE AUDIT
+    # ==========================================
+    st.markdown("---")
+    st.header("Step 1: The Qualitative Business Audit")
+    with st.expander("Run The 2-Sentence Revenue Test", expanded=True):
+        st.subheader("Business Summary")
+        st.write(standardized.business_summary or 'Description not found.')
+        st.text_area("Your 2-Sentence Test (How do they make money?):")
+
+    # ==========================================
+    # STEP 2-5: THE MASTER MATRIX
+    # ==========================================
+    st.header("The Comprehensive Pass / Fail Master Matrix")
+
+    # Rows are generated from the engine's evaluated checks, so adding a new
+    # ratio in fundamental_analysis.py surfaces here automatically.
+    matrix_rows = fundamentals.matrix_checks
+    matrix_data = {
+        "Category": [c.category for c in matrix_rows],
+        "Metric": [c.label for c in matrix_rows],
+        "Current Value": [c.display for c in matrix_rows],
+        "Blueprint Benchmark": [c.benchmark for c in matrix_rows],
+        "Status": [c.status_icon for c in matrix_rows],
+    }
+    st.table(pd.DataFrame(matrix_data))
+
+    # ==========================================
+    # PROFITABILITY VALIDATION REPORT
+    # ==========================================
+    # Every profitability ratio is independently computed from raw statement
+    # data and cross-checked against Yahoo's own separately-reported ratio
+    # for the same concept — the practical substitute here for reconciling
+    # against a real annual report (no live 10-K access in this environment).
+    # A ⚠️ does not necessarily mean our formula is wrong: Yahoo's figure is
+    # often trailing-twelve-month while ours uses the most recent annual
+    # period, and that timing difference alone can exceed the tolerance.
+    st.markdown("---")
+    st.header("Profitability Validation Report")
+    st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+
+    prof_rows = fundamentals.profitability_checks
+    profitability_data = {
+        "Metric": [c.label for c in prof_rows],
+        "Formula": [c.formula for c in prof_rows],
+        "Computed": [c.computed_display for c in prof_rows],
+        "Yahoo Reported": [c.reference_display for c in prof_rows],
+        "Status": [c.status_icon for c in prof_rows],
+    }
+    st.table(pd.DataFrame(profitability_data))
+
+    disagreements = [c for c in prof_rows if c.agrees is False]
+    if disagreements:
+        with st.expander(f"⚠️ {len(disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            for c in disagreements:
+                st.info(
+                    f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
+                    "Likely cause: Yahoo's ratio is typically trailing-twelve-month, while this figure uses "
+                    "the most recently reported annual period — a timing/basis difference, not necessarily a formula error."
+                )
+
+    not_applicable = [c for c in prof_rows if c.agrees is None and c.computed_pct is None]
+    if not_applicable:
+        st.caption(
+            "Not computable for " + ticker_symbol + ": " +
+            ", ".join(c.label for c in not_applicable) +
+            " — the required statement line item isn't reported (common for banks/financials, which don't report cost of revenue)."
+        )
+
+    # ==========================================
+    # LIQUIDITY VALIDATION REPORT
+    # ==========================================
+    # Current Ratio and Quick Ratio, independently computed from the balance
+    # sheet and cross-checked against Yahoo's own separately-reported ratio.
+    # Informational only — the Current Ratio shown in the Master Matrix above
+    # stays sourced from Yahoo directly; this report exists purely to verify
+    # that figure and to surface Quick Ratio, which has no scorecard flag.
+    st.markdown("---")
+    st.header("Liquidity Validation Report")
+    st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+
+    liq_rows = fundamentals.liquidity_checks
+    liquidity_data = {
+        "Metric": [c.label for c in liq_rows],
+        "Formula": [c.formula for c in liq_rows],
+        "Computed": [c.computed_display for c in liq_rows],
+        "Yahoo Reported": [c.reference_display for c in liq_rows],
+        "Status": [c.status_icon for c in liq_rows],
+    }
+    st.table(pd.DataFrame(liquidity_data))
+
+    liq_disagreements = [c for c in liq_rows if c.agrees is False]
+    if liq_disagreements:
+        with st.expander(f"⚠️ {len(liq_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            for c in liq_disagreements:
+                st.info(
+                    f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
+                    "Likely cause: Yahoo's ratio is typically trailing-twelve-month, while this figure uses "
+                    "the most recently reported annual period — a timing/basis difference, not necessarily a formula error."
+                )
+
+    liq_not_applicable = [c for c in liq_rows if c.agrees is None and c.computed_pct is None]
+    if liq_not_applicable:
+        st.caption(
+            "Not computable for " + ticker_symbol + ": " +
+            ", ".join(c.label for c in liq_not_applicable) +
+            " — Current Assets, Current Liabilities, or Inventory isn't reported for this company (common for banks, which don't file a classified balance sheet)."
+        )
+
+    # ==========================================
+    # LEVERAGE VALIDATION REPORT
+    # ==========================================
+    # Debt-to-Equity here IS the value shown in the Master Matrix above —
+    # unlike Current Ratio, it's statement-computed (Total Debt / Stockholders
+    # Equity) rather than a Yahoo passthrough, specifically because Yahoo's
+    # debtToEquity field has been observed at inconsistent scales (ratio vs.
+    # percent) across tickers. This report cross-checks that computed value
+    # against Yahoo's own figure, and separately verifies Total Debt itself by
+    # comparing its two independent Yahoo sources (balance sheet vs. info
+    # dict) side by side, since the app silently prefers one over the other
+    # everywhere else.
+    st.markdown("---")
+    st.header("Leverage Validation Report")
+    st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+
+    lev_rows = fundamentals.leverage_checks
+    leverage_data = {
+        "Metric": [c.label for c in lev_rows],
+        "Formula": [c.formula for c in lev_rows],
+        "Computed": [c.computed_display for c in lev_rows],
+        "Yahoo Reported": [c.reference_display for c in lev_rows],
+        "Status": [c.status_icon for c in lev_rows],
+    }
+    st.table(pd.DataFrame(leverage_data))
+
+    lev_disagreements = [c for c in lev_rows if c.agrees is False]
+    if lev_disagreements:
+        with st.expander(f"⚠️ {len(lev_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            for c in lev_disagreements:
+                if c.key == "total_debt":
+                    st.info(
+                        f"**{c.label}**: balance sheet reports {c.computed_display}, Yahoo's info feed reports {c.reference_display}. "
+                        "Likely cause: for some companies (especially banks/financials) these two Yahoo sources use different underlying "
+                        "definitions of \"debt\" — not a timing issue. The balance sheet figure is what the rest of the app uses."
+                    )
+                else:
+                    st.info(
+                        f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
+                        "Likely cause: Yahoo's debtToEquity field has been observed at inconsistent scales (ratio vs. percent) "
+                        "across tickers — the statement-computed figure above is what the rest of the app uses."
+                    )
+
+    lev_not_applicable = [c for c in lev_rows if c.agrees is None]
+    if lev_not_applicable:
+        st.caption(
+            "No independent Yahoo reference for " + ticker_symbol + ": " +
+            ", ".join(c.label for c in lev_not_applicable) +
+            " — either Yahoo doesn't report an equivalent field (Interest Coverage), or this company doesn't report it (missing Stockholders Equity/Total Debt)."
+        )
+
+    # ==========================================
+    # VALUATION VALIDATION REPORT
+    # ==========================================
+    # P/E and Price-to-Book stay Yahoo-sourced as the canonical Master Matrix
+    # values (Yahoo showed no known scale/unit bug here, unlike Debt-to-Equity)
+    # — this report cross-checks them only. EV/EBITDA is a brand-new metric
+    # with no prior canonical value in the app.
+    st.markdown("---")
+    st.header("Valuation Validation Report")
+    st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+
+    val_rows = fundamentals.valuation_checks
+    valuation_data = {
+        "Metric": [c.label for c in val_rows],
+        "Formula": [c.formula for c in val_rows],
+        "Computed": [c.computed_display for c in val_rows],
+        "Yahoo Reported": [c.reference_display for c in val_rows],
+        "Status": [c.status_icon for c in val_rows],
+    }
+    st.table(pd.DataFrame(valuation_data))
+
+    val_disagreement_reasons = {
+        "price_to_book": "Yahoo's own Price-to-Book appears to use a different book-value basis (e.g. a separately reported/stale book value per share) than the Stockholders Equity line item used here — the ROE cross-check above agreeing with Yahoo suggests the equity figure itself is correct.",
+        "peg_ratio": "Yahoo's pegRatio is typically based on forward-looking multi-year analyst growth estimates, while the figure above uses trailing earnings/revenue growth — a genuine definitional difference, not a formula error (Yahoo's own field is also frequently unavailable/deprecated).",
+        "ev_ebitda": "This inherits the Total Debt disagreement from the Leverage Validation Report above — Enterprise Value here is built from the balance-sheet Total Debt figure, which can differ from whatever total debt Yahoo used to compute its own enterpriseValue.",
+    }
+    val_disagreements = [c for c in val_rows if c.agrees is False]
+    if val_disagreements:
+        with st.expander(f"⚠️ {len(val_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            for c in val_disagreements:
+                reason = val_disagreement_reasons.get(c.key, "Likely a timing/basis difference between this figure and Yahoo's own calculation, not necessarily a formula error.")
+                st.info(f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. {reason}")
+
+    val_not_applicable = [c for c in val_rows if c.agrees is None]
+    if val_not_applicable:
+        st.caption(
+            "No independent Yahoo reference for " + ticker_symbol + ": " +
+            ", ".join(c.label for c in val_not_applicable) +
+            " — Yahoo doesn't report an equivalent field (FCF Yield), doesn't report one for this company (PEG, EV/EBITDA), or a required input (EBIT, Net Income, Market Cap) is missing."
+        )
+
+    # ==========================================
+    # CHARTS & INDICATORS
+    # ==========================================
+    st.markdown("---")
+    st.header("Interactive Price & Technicals")
+
+    # Every indicator below reads from the processed, validated frame (see
+    # price_processing.py) — this note is purely informational: it's rare
+    # for real Yahoo data to trigger any of these, so it stays a quiet
+    # caption rather than a prominent report unless something was found.
+    ppr = price_processing_result
+    if ppr.is_clean:
+        st.caption("✅ Price data validated — no duplicate timestamps, invalid bars, or likely gaps detected.")
+    else:
+        with st.expander(f"⚠️ Price data required cleaning ({ppr.issue_count} issue(s)) — click for details", expanded=False):
+            if ppr.duplicate_rows_removed:
+                st.warning(f"Removed {ppr.duplicate_rows_removed} duplicate timestamp(s).")
+            if ppr.invalid_rows_removed:
+                st.warning(f"Removed {ppr.invalid_rows_removed} structurally invalid bar(s) (e.g. High below Low, non-positive price).")
+            for gap in ppr.possible_gaps:
+                st.info(f"Possible missing observation: {gap}")
+            for w in ppr.warnings:
+                st.info(w)
+
+    # SMA lines and crossover signals are computed by technical_indicators.py
+    # (never inline here) — the custom-length line (sidebar slider) plus,
+    # optionally, the standard 20/50/200-day trio.
+    sma_periods = [sma_length] + (list(TECHNICAL.sma_trio_periods) if show_sma_trio else [])
+    df = compute_sma_lines(df, sma_periods)
+    sma_signals = detect_sma_crossovers(df, sma_length)
+    df[f"RSI_{rsi_length}"] = compute_rsi(df, rsi_length)
+    df = compute_macd(df)
+    macd_signals = detect_macd_crossovers(df)
+    # Bollinger Bands reuse the SMA Length slider as their period (the
+    # middle band IS that same SMA — already plotted above, so it isn't
+    # redrawn separately here) — per your call, one period controls both.
+    df = compute_bollinger_bands(df, sma_length)
+    bb_breakouts = detect_bollinger_breakouts(df)
+    df[f"ATR_{atr_length}"] = compute_atr(df, atr_length)
+
+    # Chart rows are built dynamically from which indicator panels are
+    # toggled on — the price panel (candlesticks + SMA/Bollinger overlays +
+    # volume) is always row 1; RSI and MACD each claim the next row only if
+    # their sidebar toggle is on, so the chart is 1-3 rows depending on what
+    # the user actually wants to see (fewer traces too, when panels are off
+    # — "optimize rendering" isn't just visual, it's fewer Plotly objects).
+    panels = ["price"] + (["rsi"] if show_rsi_panel else []) + (["macd"] if show_macd_panel else [])
+    row_of = {name: i + 1 for i, name in enumerate(panels)}
+    num_rows = len(panels)
+    row_heights = {1: [1.0], 2: [0.65, 0.35], 3: [0.5, 0.25, 0.25]}[num_rows]
+    # secondary_y on row 1 only, for the volume overlay below.
+    specs = [[{"secondary_y": True}]] + [[{}] for _ in range(num_rows - 1)]
+
+    fig = make_subplots(rows=num_rows, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=row_heights, specs=specs)
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+    # Volume bars, overlaid at the bottom of the price panel on a secondary
+    # axis (the standard, space-efficient convention — TradingView does the
+    # same) rather than a dedicated 4th chart row. The secondary axis range
+    # is set to 4x the actual max so the bars stay compact and never
+    # visually compete with the candlesticks.
+    volume_colors = ['#22c55e' if c >= o else '#ef4444' for o, c in zip(df['Open'], df['Close'])]
+    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=volume_colors, name='Volume', opacity=0.3), row=1, col=1, secondary_y=True)
+    fig.update_yaxes(range=[0, df['Volume'].max() * 4], showgrid=False, showticklabels=False, secondary_y=True, row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df[f"SMA_{sma_length}"], line=dict(color='orange', width=2), name=f'SMA {sma_length}'), row=1, col=1)
+    if show_sma_trio:
+        for period, color in zip(TECHNICAL.sma_trio_periods, TECHNICAL.sma_trio_colors):
+            if period == sma_length:
+                continue  # already plotted as the primary orange line above — avoid an exact duplicate overlay
+            fig.add_trace(go.Scatter(x=df.index, y=df[f"SMA_{period}"], line=dict(color=color, width=1), name=f'SMA {period}'), row=1, col=1)
+    if show_bollinger_bands:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['BB_Upper'], line=dict(color='rgba(148, 163, 184, 0.6)', width=1, dash='dot'), name='BB Upper',
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['BB_Lower'], line=dict(color='rgba(148, 163, 184, 0.6)', width=1, dash='dot'), name='BB Lower',
+            fill='tonexty', fillcolor='rgba(148, 163, 184, 0.08)',
+        ), row=1, col=1)
+        if bb_breakouts:
+            bb_upper_breaks = [b for b in bb_breakouts if b.kind == "upper"]
+            bb_lower_breaks = [b for b in bb_breakouts if b.kind == "lower"]
+            fig.add_trace(go.Scatter(
+                x=[b.date for b in bb_upper_breaks], y=[b.price for b in bb_upper_breaks], mode='markers', name='BB Upper Breakout',
+                marker=dict(symbol='star', size=12, color='#ef4444', line=dict(width=1, color='white')),
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=[b.date for b in bb_lower_breaks], y=[b.price for b in bb_lower_breaks], mode='markers', name='BB Lower Breakout',
+                marker=dict(symbol='star', size=12, color='#22c55e', line=dict(width=1, color='white')),
+            ), row=1, col=1)
+    if sma_signals:
+        bullish = [s for s in sma_signals if s.kind == "bullish"]
+        bearish = [s for s in sma_signals if s.kind == "bearish"]
+        fig.add_trace(go.Scatter(
+            x=[s.date for s in bullish], y=[s.price for s in bullish], mode='markers', name='Bullish Crossover',
+            marker=dict(symbol='triangle-up', size=11, color='#22c55e', line=dict(width=1, color='white')),
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=[s.date for s in bearish], y=[s.price for s in bearish], mode='markers', name='Bearish Crossover',
+            marker=dict(symbol='triangle-down', size=11, color='#ef4444', line=dict(width=1, color='white')),
+        ), row=1, col=1)
+    if show_rsi_panel:
+        rsi_row = row_of["rsi"]
+        fig.add_trace(go.Scatter(x=df.index, y=df[f"RSI_{rsi_length}"], line=dict(color='purple'), name='RSI'), row=rsi_row, col=1)
+        # Overbought/oversold reference zones (config.TECHNICAL.rsi_overbought/rsi_oversold)
+        fig.add_hrect(y0=TECHNICAL.rsi_overbought, y1=100, fillcolor="rgba(239, 68, 68, 0.08)", line_width=0, row=rsi_row, col=1)
+        fig.add_hrect(y0=0, y1=TECHNICAL.rsi_oversold, fillcolor="rgba(34, 197, 94, 0.08)", line_width=0, row=rsi_row, col=1)
+        fig.add_hline(y=TECHNICAL.rsi_overbought, line_dash="dash", line_color="rgba(239, 68, 68, 0.6)", row=rsi_row, col=1)
+        fig.add_hline(y=TECHNICAL.rsi_oversold, line_dash="dash", line_color="rgba(34, 197, 94, 0.6)", row=rsi_row, col=1)
+    if show_macd_panel:
+        macd_row = row_of["macd"]
+        # MACD: histogram bars (colored by sign) plus the MACD/Signal lines and crossover markers.
+        hist_colors = ['#22c55e' if v >= 0 else '#ef4444' for v in df['MACD_Histogram'].fillna(0)]
+        fig.add_trace(go.Bar(x=df.index, y=df['MACD_Histogram'], marker_color=hist_colors, name='MACD Histogram', opacity=0.5), row=macd_row, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Line'], line=dict(color='#38bdf8', width=1.5), name='MACD Line'), row=macd_row, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'], line=dict(color='#facc15', width=1.5), name='MACD Signal'), row=macd_row, col=1)
+        fig.add_hline(y=0, line_dash="dot", line_color="rgba(255, 255, 255, 0.3)", row=macd_row, col=1)
+        if macd_signals:
+            macd_bullish = [s for s in macd_signals if s.kind == "bullish"]
+            macd_bearish = [s for s in macd_signals if s.kind == "bearish"]
+            fig.add_trace(go.Scatter(
+                x=[s.date for s in macd_bullish], y=[s.macd_value for s in macd_bullish], mode='markers', name='MACD Bullish Crossover',
+                marker=dict(symbol='triangle-up', size=9, color='#22c55e', line=dict(width=1, color='white')),
+            ), row=macd_row, col=1)
+            fig.add_trace(go.Scatter(
+                x=[s.date for s in macd_bearish], y=[s.macd_value for s in macd_bearish], mode='markers', name='MACD Bearish Crossover',
+                marker=dict(symbol='triangle-down', size=9, color='#ef4444', line=dict(width=1, color='white')),
+            ), row=macd_row, col=1)
+    fig.update_layout(
+    xaxis_rangeslider_visible=False,
+    height=400 + 200 * (num_rows - 1),
+    dragmode='zoom',
+    template="plotly_dark",
+    paper_bgcolor='rgba(0,0,0,0)',
+    plot_bgcolor='rgba(0,0,0,0)'
+    )
+    # Explicit, not relying on Streamlit/Plotly defaults: the modebar (with
+    # its built-in zoom/pan/fullscreen-expand controls) stays visible, mouse
+    # scroll zooms directly, and the Plotly logo link is dropped as clutter.
+    st.plotly_chart(fig, width="stretch", config={'displayModeBar': True, 'scrollZoom': True, 'displaylogo': False})
+
+    # Current-value interpretation (RSI Interpretation Engine) — the shaded
+    # zones above cover the full history at a glance; this is the "what does
+    # today's reading mean" readout for the latest bar specifically.
+    rsi_series = df[f"RSI_{rsi_length}"]
+    rsi_interpretation = interpret_rsi(rsi_series.iloc[-1]) if rsi_series.notna().any() else None
+    if rsi_interpretation:
+        ri1, ri2 = st.columns([1, 3])
+        ri1.metric(f"RSI ({rsi_length})", f"{rsi_interpretation.value:.1f}", help=f"Overbought ≥ {TECHNICAL.rsi_overbought:.0f} · Oversold ≤ {TECHNICAL.rsi_oversold:.0f}")
+        with ri2:
+            st.markdown(f"**{rsi_interpretation.label}**")
+            st.caption(rsi_interpretation.explanation)
+    else:
+        st.info(f"RSI ({rsi_length}) not yet available — the selected date range doesn't cover enough trading days to complete the warm-up period.")
+
+    if sma_signals:
+        with st.expander(f"SMA {sma_length} Crossover Signals ({len(sma_signals)} in range)", expanded=False):
+            recent = sma_signals[-10:][::-1]  # most recent first
+            signal_data = {
+                "Date": [s.date.strftime("%Y-%m-%d") for s in recent],
+                "Signal": [f"{s.icon} {s.label}" for s in recent],
+                "Price": [f"${s.price:.2f}" for s in recent],
+                f"SMA {sma_length}": [f"${s.sma_value:.2f}" for s in recent],
+            }
+            st.table(pd.DataFrame(signal_data))
+            if len(sma_signals) > 10:
+                st.caption(f"Showing the 10 most recent of {len(sma_signals)} signals in the selected date range.")
+
+    if macd_signals:
+        with st.expander(f"MACD Crossover Signals ({len(macd_signals)} in range)", expanded=False):
+            recent_macd = macd_signals[-10:][::-1]  # most recent first
+            macd_signal_data = {
+                "Date": [s.date.strftime("%Y-%m-%d") for s in recent_macd],
+                "Signal": [f"{s.icon} {s.label}" for s in recent_macd],
+                "MACD Line": [f"{s.macd_value:.3f}" for s in recent_macd],
+                "Signal Line": [f"{s.signal_value:.3f}" for s in recent_macd],
+            }
+            st.table(pd.DataFrame(macd_signal_data))
+            if len(macd_signals) > 10:
+                st.caption(f"Showing the 10 most recent of {len(macd_signals)} signals in the selected date range.")
+
+    if bb_breakouts:
+        with st.expander(f"Bollinger Band Breakouts ({len(bb_breakouts)} in range)", expanded=False):
+            recent_bb = bb_breakouts[-10:][::-1]  # most recent first
+            bb_data = {
+                "Date": [b.date.strftime("%Y-%m-%d") for b in recent_bb],
+                "Event": [f"{b.icon} {b.label}" for b in recent_bb],
+                "Close": [f"${b.price:.2f}" for b in recent_bb],
+                "Band": [f"${b.band_value:.2f}" for b in recent_bb],
+            }
+            st.table(pd.DataFrame(bb_data))
+            if len(bb_breakouts) > 10:
+                st.caption(f"Showing the 10 most recent of {len(bb_breakouts)} breakouts in the selected date range.")
+
+    # ==========================================
+    # NEW: ALPHA BENCHMARKING
+    # ==========================================
+    st.markdown("---")
+    st.header("Relative Strength & Alpha Generation")
+    if not bench_df.empty:
+        df['CumReturn'] = (df['Close'] / df['Close'].iloc[0]) - 1
+        bench_df['CumReturn'] = (bench_df['Close'] / bench_df['Close'].iloc[0]) - 1
+
+        ticker_return = df['CumReturn'].iloc[-1] * 100
+        bench_return = bench_df['CumReturn'].iloc[-1] * 100
+        alpha = ticker_return - bench_return
+
+        a1, a2, a3 = st.columns(3)
+        a1.metric(f"{ticker_symbol} Period Return", f"{ticker_return:.2f}%")
+        a2.metric(f"{benchmark_symbol} Period Return", f"{bench_return:.2f}%")
+        a3.metric("Generated Alpha", f"{alpha:.2f}%", help="Performance strictly above the market benchmark.")
+
+        fig_alpha = go.Figure()
+        fig_alpha.add_trace(go.Scatter(x=df.index, y=df['CumReturn']*100, name=ticker_symbol, line=dict(color='orange')))
+        fig_alpha.add_trace(go.Scatter(x=bench_df.index, y=bench_df['CumReturn']*100, name=benchmark_symbol, line=dict(color='gray')))
+        fig_alpha.update_layout(xaxis_rangeslider_visible=False, height=400, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+        st.plotly_chart(fig_alpha, width="stretch")
+
+    # --- QUANTITATIVE CALCULATIONS ---
+    df['Returns'] = df['Close'].pct_change()
+
+    var_95 = df['Returns'].quantile(0.05)
+    cvar_95 = df[df['Returns'] <= var_95]['Returns'].mean()
+
+    risk_free_rate = RISK.risk_free_rate
+    annual_return = df['Returns'].mean() * 252
+    annual_vol = df['Returns'].std() * (252**0.5)
+    sharpe_ratio = (annual_return - risk_free_rate) / annual_vol if annual_vol != 0 else 0
+
+    downside_returns = df['Returns'][df['Returns'] < 0]
+    downside_deviation = downside_returns.std() * (252**0.5)
+    sortino_ratio = (annual_return - risk_free_rate) / downside_deviation if downside_deviation > 0 else 0
+
+    df['Mean'] = df['Close'].rolling(window=sma_length).mean()
+    df['Std'] = df['Close'].rolling(window=sma_length).std()
+    current_z_score = (df['Close'].iloc[-1] - df['Mean'].iloc[-1]) / df['Std'].iloc[-1]
+
+    def calculate_hurst(price_series):
+        lags = range(2, 20)
+        tau = [np.sqrt(np.std(np.subtract(price_series[lag:], price_series[:-lag]))) for lag in lags]
+        poly = np.polyfit(np.log(lags), np.log(tau), 1)
+        return poly[0] * 2.0
+
+    try:
+        hurst_exponent = calculate_hurst(df['Close'].values)
+    except (ValueError, np.linalg.LinAlgError) as e:
+        # np.polyfit raises ValueError on NaN/Inf input and LinAlgError when the
+        # least-squares fit doesn't converge — typically a very short or flat
+        # price history for this date range.
+        st.warning(f"Could not calculate Hurst Exponent (insufficient or degenerate price history for this date range), defaulting to 0.5 (Random Walk): {e}")
+        hurst_exponent = 0.5
+    except Exception as e:
+        log_exception(logger, "calc.error", section="hurst_exponent", ticker=ticker_symbol)
+        st.warning(f"Unexpected error calculating Hurst Exponent, defaulting to 0.5 (Random Walk): {type(e).__name__}: {e}")
+        hurst_exponent = 0.5
+
+    # Altman Z-Score is calculated by the engine (it's pure statement math);
+    # this file only reports the outcome.
+    altman_z = fundamentals.altman_z
+    z_verdict = fundamentals.altman_verdict
+    if fundamentals.altman_missing_inputs:
+        st.warning(f"Could not calculate Altman Z-Score — missing: {', '.join(fundamentals.altman_missing_inputs)}.")
+
+    # --- UI DISPLAY FOR QUANT ---
+    st.markdown("---")
+    st.header("Advanced Quantitative Risk & Time-Series Engine")
+
+    r1_c1, r1_c2, r1_c3, r1_c4 = st.columns(4)
+    r1_c1.metric("1-Day VaR (95%)", f"{var_95 * 100:.2f}%", help="Maximum expected loss on a normal day.")
+    r1_c2.metric("Expected Shortfall (CVaR)", f"{cvar_95 * 100:.2f}%", help="Average loss in the worst 5% of outcomes.")
+    r1_c3.metric("Sharpe Ratio TTM", f"{sharpe_ratio:.2f}", help="Risk-adjusted return penalizing total volatility.")
+    r1_c4.metric("Sortino Ratio TTM", f"{sortino_ratio:.2f}", help="Risk-adjusted return penalizing ONLY downside risk.")
+
+    st.markdown("##")
+    r2_c1, r2_c2, r2_c3 = st.columns(3)
+
+    r2_c1.metric("Current Price Z-Score", f"{current_z_score:.2f}", help="Distance from mean. >2 or <-2 indicates extreme deviation.")
+
+    hurst_desc = "Random Walk"
+    if hurst_exponent < RISK.hurst_mean_reverting_below: hurst_desc = "Mean-Reverting (Statistical Edge)"
+    elif hurst_exponent > RISK.hurst_trending_above: hurst_desc = "Strongly Trending"
+    r2_c2.metric("Hurst Exponent (H)", f"{hurst_exponent:.2f}", delta=hurst_desc, delta_color="normal" if RISK.hurst_mean_reverting_below <= hurst_exponent <= RISK.hurst_trending_above else "inverse")
+
+    r2_c3.metric("Altman Z-Score", f"{altman_z:.2f}" if isinstance(altman_z, float) else "N/A", delta=z_verdict, delta_color="normal" if "Safe" in z_verdict else "inverse")
+
+    st.subheader("Statistical Distance from Mean (Z-Score)")
+    st.line_chart((df['Close'] - df['Mean']) / df['Std'])
+
+    # ==========================================
+    # EXECUTION & POSITION SIZING (KELLY CRITERION)
+    # ==========================================
+    st.markdown("---")
+    st.header("Execution & Position Sizing")
+
+    win_returns = df[df['Returns'] > 0]['Returns']
+    loss_returns = df[df['Returns'] < 0]['Returns']
+    final_allocation = 0.0
+
+    if len(df['Returns'].dropna()) > 0 and len(loss_returns) > 0:
+        win_prob = len(win_returns) / len(df['Returns'].dropna())
+        win_loss_ratio = win_returns.mean() / abs(loss_returns.mean()) if abs(loss_returns.mean()) > 0 else 0
+        kelly_pct = (win_prob - ((1 - win_prob) / win_loss_ratio)) if win_loss_ratio > 0 else 0
+        if kelly_pct > 0:
+            # Half-Kelly for risk management; quartered further when the macro risk flag is active
+            half_kelly_pct = (kelly_pct / RISK.kelly_half_factor) * 100
+            final_allocation = half_kelly_pct / RISK.kelly_macro_risk_extra_factor if macro_risk_flag else half_kelly_pct
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Historical Win Rate", f"{win_prob * 100:.1f}%")
+        k2.metric("Win/Loss Ratio", f"{win_loss_ratio:.2f}")
+        k3.metric("Recommended Allocation", f"{final_allocation:.2f}%", help="Half-Kelly position size, penalized further during high VIX regimes.")
+    else:
+        st.info("Insufficient return data to calculate the Kelly Criterion.")
+
+    # ATR-based volatility stop-loss — computed by technical_indicators.py,
+    # not here (see suggested_stop_loss()). A complementary risk-management
+    # figure alongside Kelly's bet-sizing above: how much to risk vs. where
+    # to exit if the position moves against you.
+    atr_series = df[f"ATR_{atr_length}"]
+    current_atr = atr_series.iloc[-1] if atr_series.notna().any() else None
+    stop_loss = suggested_stop_loss(standardized.current_price, current_atr)
+    st.markdown("##")
+    if stop_loss is not None:
+        a1, a2, a3 = st.columns(3)
+        a1.metric(f"ATR ({atr_length})", f"${current_atr:.2f}", help="Average True Range — the typical size of a full day's price movement, in dollars, over the selected period.")
+        a2.metric(f"Suggested Stop-Loss ({TECHNICAL.atr_stop_multiplier:.0f}× ATR)", f"${stop_loss:.2f}", delta=f"{((stop_loss / standardized.current_price) - 1) * 100:.1f}% below current price", delta_color="off")
+        a3.metric("Risk per Share", f"${standardized.current_price - stop_loss:.2f}")
+        st.caption(f"Long-only, volatility-adjusted downside stop: current price − {TECHNICAL.atr_stop_multiplier:.0f}×ATR. Not a recommendation to hold a short position or a guarantee against gap-through losses.")
+    else:
+        st.info(f"ATR ({atr_length}) not yet available — the selected date range doesn't cover enough trading days to complete the warm-up period.")
+
+    # ==========================================
+    # PROFESSIONAL MULTI-STAGE DCF ENGINE
+    # ==========================================
+    st.markdown("---")
+    st.header("Automated DCF Valuation Engine")
+    with st.expander("Professional Multi-Stage DCF Valuation", expanded=True):
+        try:
+            # The DCF model itself lives in the Fundamental Analysis Engine;
+            # this block only renders its result.
+            dcf_result = fundamentals_engine.run_dcf(dcf_growth, fallback_price=df['Close'].iloc[-1])
+            current_price = dcf_result.current_price
+
+            if dcf_result.ok:
+                wacc = dcf_result.wacc
+                intrinsic_price = dcf_result.intrinsic_price
+                intrinsic_value = intrinsic_price  # Alias για το Executive Briefing
+                margin_of_safety = dcf_result.margin_of_safety_pct
+
+                # UI Metrics
+                d1, d2, d3 = st.columns(3)
+                d1.metric("Market Price", f"${current_price:.2f}")
+                d2.metric("Intrinsic Value (2-Stage)", f"${intrinsic_price:.2f}")
+                d3.metric("Margin of Safety", f"{margin_of_safety:.2f}%", delta=dcf_result.status, delta_color=dcf_result.status_color)
+
+                st.info(f"**WACC Calculated:** {wacc*100:.2f}% (CAPM & Debt Structure) | **Model:** 2-Stage Gordon Growth")
+
+                # Visual Gauge
+                st.write("Safety Gauge:")
+                st.progress(min(max(margin_of_safety / 50, 0), 1.0))
+
+                # Sensitivity Analysis Heatmap
+                st.subheader("Sensitivity Analysis: WACC vs Terminal Growth")
+                wacc_range = np.linspace(max(0.01, wacc - DCF.sensitivity_wacc_delta), wacc + DCF.sensitivity_wacc_delta, DCF.sensitivity_steps)
+                growth_range = np.linspace(max(0.01, dcf_growth - DCF.sensitivity_growth_delta), dcf_growth + DCF.sensitivity_growth_delta, DCF.sensitivity_steps)
+
+                data = [[fundamentals_engine.intrinsic_price(g, w) for w in wacc_range] for g in growth_range]
+                df_heat = pd.DataFrame(data, columns=[f"{w*100:.1f}% WACC" for w in wacc_range], index=[f"{g*100:.1f}% Growth" for g in growth_range])
+                st.dataframe(df_heat.style.format("${:.2f}"))
+
+            else:
+                if dcf_result.reason == "missing market cap":
+                    st.warning("Missing market capitalization data. Cannot compute WACC/DCF reliably.")
+                else:
+                    st.warning("Negative Free Cash Flow or missing shares. Cannot compute DCF reliably.")
+                intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
+
+        except ZeroDivisionError:
+            # Terminal value is undefined when WACC exactly equals the terminal
+            # growth rate used in the Gordon Growth model.
+            st.error(f"DCF Engine Error: the discount rate (WACC) came out equal to the terminal growth rate ({DCF.terminal_growth_rate*100:.0f}%), which makes the terminal value mathematically undefined. Try adjusting the WACC or growth sliders.")
+            intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
+        except Exception as e:
+            log_exception(logger, "calc.error", section="dcf_engine", ticker=ticker_symbol)
+            st.error(f"Unexpected DCF Engine error: {type(e).__name__}: {e}")
+            intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
+
+
+    # ==========================================
+    # PATH 1: ALGORITHMIC BACKTESTING SIMULATOR
+    # ==========================================
+    st.markdown("---")
+    st.header("Algorithmic Backtesting Simulator")
+    st.markdown(f"Testing the Mean-Reversion Edge: **Buy when Z-Score < {RISK.backtest_buy_z_score} | Sell when Z-Score > {RISK.backtest_sell_z_score}**")
+
+    # 1. Generate Strategy Signals (1 = In Market, 0 = In Cash)
+    df['Z_Score'] = (df['Close'] - df['Mean']) / df['Std']
+    df['Signal'] = 0
+
+    # Trigger Buy when extremely oversold
+    df.loc[df['Z_Score'] < RISK.backtest_buy_z_score, 'Signal'] = 1
+    # Trigger Sell when reverted to the mean
+    df.loc[df['Z_Score'] > RISK.backtest_sell_z_score, 'Signal'] = -1
+
+    # Forward fill the positions (Hold until next signal)
+    df['Position'] = df['Signal'].replace(0, np.nan).ffill().fillna(0)
+    df['Position'] = df['Position'].clip(lower=0) # Ensure it's a Long-Only strategy
+
+    # 2. Calculate Strategy Returns vs Buy & Hold
+    df['Strategy_Returns'] = df['Position'].shift(1) * df['Returns']
+    df['Cum_Strategy'] = (1 + df['Strategy_Returns']).cumprod()
+    df['Cum_Buy_Hold'] = (1 + df['Returns']).cumprod()
+
+    # 3. Performance Metrics
+    total_strat_return = (df['Cum_Strategy'].iloc[-1] - 1) * 100
+    total_bh_return = (df['Cum_Buy_Hold'].iloc[-1] - 1) * 100
+
+    # Calculate Maximum Drawdown
+    df['Peak'] = df['Cum_Strategy'].cummax()
+    df['Drawdown'] = (df['Cum_Strategy'] - df['Peak']) / df['Peak']
+    max_drawdown = df['Drawdown'].min() * 100
+
+    bt1, bt2, bt3 = st.columns(3)
+    bt1.metric("Strategy Return", f"{total_strat_return:.2f}%", delta=f"{total_strat_return - total_bh_return:.2f}% vs Buy & Hold")
+    bt2.metric("Buy & Hold Baseline", f"{total_bh_return:.2f}%")
+    bt3.metric("Max Strategy Drawdown", f"{max_drawdown:.2f}%", help="The deepest percentage drop your portfolio would have suffered using this algorithm.", delta_color="inverse")
+
+    # 4. Plotting the Equity Curve
+    fig_bt = go.Figure()
+    fig_bt.add_trace(go.Scatter(x=df.index, y=df['Cum_Buy_Hold'], name='Buy & Hold', line=dict(color='gray', dash='dot')))
+    fig_bt.add_trace(go.Scatter(x=df.index, y=df['Cum_Strategy'], name='Z-Score Algorithm', line=dict(color='cyan', width=2)))
+
+    fig_bt.update_layout(
+        title="Strategy Equity Curve vs Baseline",
+        xaxis_rangeslider_visible=False,
+        height=450,
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        hovermode="x unified"
+    )
+    st.plotly_chart(fig_bt, width="stretch")
+
+    # ==========================================
+    # PATH 2: MONTE CARLO FUTURE PROBABILITY SIMULATOR
+    # ==========================================
+    st.markdown("---")
+    st.header(" Path 2: Monte Carlo Future Probability Simulator")
+    st.markdown("Projecting 1,000 randomized future price paths over the next 60 trading days using Geometric Brownian Motion.")
+
+    # 1. Extract Historical Parameters from the Target Stock
+    returns = df['Returns'].dropna()
+
+    if len(returns) > 30:
+        # Calculate daily drift and volatility
+        daily_drift = returns.mean()
+        daily_vol = returns.std()
+        variance = daily_vol ** 2
+
+        # GBM Drift adjustment: mu - 0.5 * sigma^2
+        mu = daily_drift - (0.5 * variance)
+
+        # Simulation Parameters
+        num_simulations = MONTE_CARLO.num_simulations
+        forecast_days = MONTE_CARLO.forecast_days
+        current_price = df['Close'].iloc[-1]
+
+        # 2. Run the Simulation Matrix
+        # Seed deterministically per-ticker so the simulation is stable across Streamlit reruns
+        np.random.seed(zlib.crc32(ticker_symbol.encode()) % (2**32))
+
+        # Create a matrix of random daily shocks from a standard normal distribution
+        random_shocks = np.random.normal(0, 1, (forecast_days, num_simulations))
+
+        # Calculate the compounding exponential growth factor
+        # Price_t = Price_0 * exp(mu + sigma * Z)
+        simulated_growth = np.exp(mu + daily_vol * random_shocks)
+
+        # Stack the initial current price across all simulations
+        price_paths = np.zeros((forecast_days + 1, num_simulations))
+        price_paths[0] = current_price
+
+        for t in range(1, forecast_days + 1):
+            price_paths[t] = price_paths[t - 1] * simulated_growth[t - 1]
+
+        # 3. Process Statistical Thresholds
+        final_prices = price_paths[-1]
+        pct_above_current = (np.sum(final_prices > current_price) / num_simulations) * 100
+
+        # Quantile thresholds (Value at Risk / Upside potential boundaries)
+        p10 = np.percentile(final_prices, 10)
+        p50 = np.percentile(final_prices, 50) # Median outcome
+        p90 = np.percentile(final_prices, 90)
+
+        # 4. UI Metric Readout
+        mc_c1, mc_c2, mc_c3 = st.columns(3)
+        mc_c1.metric("Upside Probability", f"{pct_above_current:.1f}%", help="The percentage of simulated paths that ended higher than today's price.")
+        mc_c2.metric("Median Target (P50)", f"${p50:.2f}", help="The 50th percentile median expected price outcome.")
+        mc_c3.metric("Downside Floor (P10)", f"${p10:.2f}", help="90% of all simulations stayed ABOVE this price. Extreme statistical floor.")
+
+        # 5. Plot the Probability Cloud using Plotly
+        fig_mc = go.Figure()
+
+        # Create a timeline for the next 60 trading days
+        sim_dates = [df.index[-1] + datetime.timedelta(days=i) for i in range(forecast_days + 1)]
+
+        # Plot a subset of lines to keep UI rendering fast while showing the cloud density
+        for i in range(MONTE_CARLO.plotted_paths):
+            fig_mc.add_trace(go.Scatter(
+                x=sim_dates,
+                y=price_paths[:, i],
+                mode='lines',
+                line=dict(color='rgba(0, 255, 240, 0.08)', width=1),
+                showlegend=False
+            ))
+
+        # Highlight key threshold lines
+        fig_mc.add_trace(go.Scatter(x=sim_dates, y=[p90]*len(sim_dates), name="P90 Optimistic Target", line=dict(color="green", dash="dash")))
+        fig_mc.add_trace(go.Scatter(x=sim_dates, y=[p50]*len(sim_dates), name="P50 Median Trend", line=dict(color="orange", width=2)))
+        fig_mc.add_trace(go.Scatter(x=sim_dates, y=[p10]*len(sim_dates), name="P10 Downside Risk Floor", line=dict(color="red", dash="dash")))
+
+        fig_mc.update_layout(
+            xaxis_title="Simulation Timeline",
+            yaxis_title="Stock Price ($)",
+            height=500,
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            hovermode="x"
+        )
+        st.plotly_chart(fig_mc, width="stretch")
+
+        # 6. Feed the Monte Carlo insights down into the final verdict
+        if pct_above_current > MONTE_CARLO.upside_bias_threshold_pct:
+            st.success(f"Mathematical variance indicates a strong asymmetric upside bias. {pct_above_current:.1f}% of randomized models favor positive drift.")
+        elif pct_above_current < MONTE_CARLO.downside_bias_threshold_pct:
+            st.error(f"Negative drift bias detected. Less than {pct_above_current:.1f}% of randomized models manage to clear current price thresholds.")
+
+    else:
+        st.warning("Insufficient trading history to populate volatility parameters for Monte Carlo simulation.")
+
+    # ==========================================
+    # PATH 3: 3D SEASONALITY & TIME-SERIES SURFACE
+    # ==========================================
+    st.markdown("---")
+    st.header("Path 3: 10-Year 3D Seasonality Surface")
+    st.markdown("Mapping a decade of monthly performance to locate historical liquidity traps and explosive seasonal windows.")
+
+    @st.cache_data(ttl=3600)
+    def fetch_seasonality_data(ticker):
+        try:
+            # Fetch 10 years of monthly data to build the 3D grid
+            hist = load_seasonality_history(ticker)
+            if hist.empty: return pd.DataFrame()
+
+            # Calculate monthly % change
+            hist['Return'] = hist['Close'].pct_change() * 100
+
+            # Extract Year and Month for our X and Y axes
+            hist['Year'] = hist.index.year
+            hist['Month'] = hist.index.strftime('%b')
+
+            # Create a pivot table: Rows = Years, Cols = Months, Z-Values = Return
+            months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            pivot = hist.pivot_table(values='Return', index='Year', columns='Month', aggfunc='sum')
+            pivot = pivot.reindex(columns=months_order)
+
+            return pivot.dropna(how='all')
+        except (AttributeError, KeyError) as e:
+            # load_seasonality_history always returns either an empty frame or
+            # one with a proper DatetimeIndex, so this means Yahoo returned an
+            # unexpected shape (e.g. a missing 'Close' column or non-datetime index).
+            st.warning(f"Could not build seasonality surface for '{ticker}' (unexpected data shape): {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            log_exception(logger, "calc.error", section="seasonality_surface", ticker=ticker)
+            st.warning(f"Unexpected error building seasonality surface for '{ticker}': {type(e).__name__}: {e}")
+            return pd.DataFrame()
+
+    with st.spinner("Generating 3D historical surface mesh..."):
+        season_df = fetch_seasonality_data(ticker_symbol)
+
+        if not season_df.empty:
+            # Fill NaNs with 0 so the 3D surface renders as a continuous sheet
+            z_data = season_df.fillna(0).values
+            x_data = season_df.columns.tolist()
+            y_data = season_df.index.tolist()
+
+            # Build the 3D Plotly Surface
+            fig_3d = go.Figure(data=[go.Surface(
+                z=z_data,
+                x=x_data,
+                y=y_data,
+                colorscale='RdYlGn', # Red = Loss, Yellow = Flat, Green = Massive Gain
+                cmin=-15, # Caps the color scale at +/- 15% so outliers don't wash out the map
+                cmax=15
+            )])
+
+            fig_3d.update_layout(
+                title=f"{ticker_symbol} Monthly Return Topography (%)",
+                autosize=True,
+                height=600,
+                template="plotly_dark",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=0, r=0, b=0, t=40),
+                scene=dict(
+                    xaxis_title='Month',
+                    yaxis_title='Year',
+                    zaxis_title='Return (%)',
+                    camera=dict(eye=dict(x=1.5, y=1.5, z=0.8)) # Angles the camera perfectly
+                )
+            )
+
+            # Split the layout to show the 3D graph and the exact data insights
+            c1, c2 = st.columns([2.5, 1])
+            with c1:
+                st.plotly_chart(fig_3d, width="stretch")
+
+            with c2:
+                st.subheader("Seasonal Edge")
+                avg_monthly = season_df.mean()
+                best_month = avg_monthly.idxmax()
+                worst_month = avg_monthly.idxmin()
+
+                st.success(f"**Historical Best:** {best_month} ({avg_monthly[best_month]:.1f}%)")
+                st.error(f"**Historical Worst:** {worst_month} ({avg_monthly[worst_month]:.1f}%)")
+
+                st.markdown("### How to read the topology:")
+                st.markdown("- **Green Peaks:** Consistent institutional buying. This is your mathematical holding window.")
+                st.markdown("- **Red Valleys:** Historical capitulation. Wait for these drops to buy into the position.")
+                st.markdown("- **The Edge:** If you see a deep trench forming across the exact same month every single year, you are witnessing a structural liquidity drain.")
+        else:
+            st.warning("Insufficient multi-year history to generate a 3D seasonality surface.")
+
+    # ==========================================
+    # PATH 4: SMART MONEY & INSTITUTIONAL FLOW
+    # ==========================================
+    st.markdown("---")
+    st.header("Path 4: Smart Money & Insider Flow")
+    st.markdown("Tracking the allocation of major hedge funds and the personal capital of C-Suite executives.")
+
+    with st.spinner("Scraping SEC filings and institutional ownership data..."):
+        try:
+            # 1. Extract basic ownership metrics from the standardized object
+            insider_pct = standardized.held_pct_insiders * 100 if standardized.held_pct_insiders is not None else None
+            inst_pct = standardized.held_pct_institutions * 100 if standardized.held_pct_institutions is not None else None
+
+            # Calculate the "Float" theoretically available to retail
+            retail_pct = None if (insider_pct is None or inst_pct is None) else max(0, 100 - insider_pct - inst_pct)
+
+            sm1, sm2, sm3 = st.columns(3)
+            sm1.metric("Shares Held by Insiders", fmt_num(insider_pct, "%"), help="High insider ownership aligns management with shareholders.")
+            sm2.metric("Shares Held by Institutions", fmt_num(inst_pct, "%"), help="Shows the level of hedge fund and mutual fund backing.")
+            sm3.metric("Retail / Public Float", fmt_num(retail_pct, "%"), help="The remaining percentage of shares traded by the general public.")
+
+            st.markdown("##")
+
+            # 2. Reuse institutional/insider data already loaded in ticker_bundle
+            inst_df = ticker_bundle.institutional_holders
+            insider_df = ticker_bundle.insider_transactions
+
+            col_inst, col_insider = st.columns(2)
+
+            with col_inst:
+                st.subheader("Top Institutional Holders")
+                if inst_df is not None and not inst_df.empty:
+                    # Clean up the dataframe for a pristine UI display
+                    display_inst = inst_df[['Holder', 'Shares', 'Value']].head(10).copy()
+                    display_inst['Shares'] = display_inst['Shares'].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
+                    display_inst['Value'] = display_inst['Value'].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "$0")
+                    st.dataframe(display_inst, width="stretch", hide_index=True)
+                else:
+                    st.info("No institutional holding data available.")
+
+            with col_insider:
+                st.subheader("Recent Insider Transactions")
+                if insider_df is not None and not insider_df.empty:
+                    # Dynamically check columns to prevent crashes based on yfinance version differences
+                    cols_to_keep = [c for c in ['Start Date', 'Insider', 'Position', 'Transaction', 'Shares', 'Value'] if c in insider_df.columns]
+                    display_insider = insider_df[cols_to_keep].head(10).copy()
+
+                    if 'Shares' in display_insider.columns:
+                        display_insider['Shares'] = pd.to_numeric(display_insider['Shares'], errors='coerce').fillna(0)
+                        display_insider['Shares'] = display_insider['Shares'].apply(lambda x: f"{x:,.0f}")
+
+                    st.dataframe(display_insider, width="stretch", hide_index=True)
+                else:
+                    st.info("No recent insider transactions reported in SEC filings.")
+
+        except KeyError as e:
+            # This section only reads data already fetched (with retries) by
+            # data_loader — it makes no network call of its own, so a KeyError
+            # here means Yahoo's institutional_holders/insider_transactions
+            # columns don't match what this section expects, not a timeout.
+            st.error(f"Could not render institutional/insider data: Yahoo Finance returned an unexpected column layout (missing {e}). This is a known yfinance version-drift issue, not a network failure.")
+        except Exception as e:
+            log_exception(logger, "calc.error", section="smart_money", ticker=ticker_symbol)
+            st.error(f"Unexpected error rendering Smart Money data: {type(e).__name__}: {e}")
+
+    # ==========================================
+    # PATH 5: PEER COMPETITOR MATRIX (RELATIVE VALUE)
+    # ==========================================
+    st.markdown("---")
+    st.header("Path 5: Peer Competitor Matrix")
+    st.markdown("Comparing relative valuation and fundamental health against top industry competitors.")
+
+    # Smart default peers based on common targets to make testing feel seamless
+    default_peers = PEER_DEFAULTS.for_ticker(ticker_symbol)
+
+    peer_input = st.text_input("Enter up to 3 Competitor Tickers (comma-separated):", default_peers)
+
+    def _competitor_row(t, std):
+        return {
+            "Ticker": t,
+            "P/E Ratio": std.pe_ratio if std.pe_ratio is not None else np.nan,
+            "PEG Ratio": std.peg_ratio if std.peg_ratio is not None else np.nan,
+            "Price/Book": std.price_to_book if std.price_to_book is not None else np.nan,
+            "ROE (%)": (std.return_on_equity * 100) if std.return_on_equity is not None else np.nan,
+            "Net Margin (%)": (std.net_margin * 100) if std.net_margin is not None else np.nan,
+            "Debt/Equity": std.debt_to_equity if std.debt_to_equity is not None else np.nan
+        }
+
+    @st.cache_data(ttl=3600)
+    def fetch_competitor_data(target, target_std, peer_string):
+        peers = [p.strip().upper() for p in peer_string.split(',')][:3] # Limit to top 3 peers
+
+        # Target ticker's data was already standardized above, so reuse it here
+        # instead of re-fetching it from Yahoo Finance a second time.
+        metrics = [_competitor_row(target, target_std)]
+        for t in peers:
+            peer_bundle = load_ticker_bundle(t, deep=False)
+            if not peer_bundle.is_valid:
+                st.warning(f"Could not fetch competitor data for '{t}': {'; '.join(peer_bundle.errors)}")
+                continue
+            metrics.append(_competitor_row(t, standardize_financials(peer_bundle)))
+        return pd.DataFrame(metrics)
+
+    with st.spinner("Analyzing sector peers and building relative valuation matrix..."):
+        comp_df = fetch_competitor_data(ticker_symbol, standardized, peer_input)
+
+        if not comp_df.empty and len(comp_df) > 1:
+            # Drop rows where critical data is totally missing
+            comp_df = comp_df.dropna(subset=['P/E Ratio', 'Net Margin (%)'], how='all')
+
+            # 1. Display the raw data matrix
+            st.subheader("Fundamental Comparison Matrix")
+            st.dataframe(comp_df.style.format(precision=2, na_rep="N/A"), width="stretch", hide_index=True)
+
+            # --- 2. Normalize Data for Radar Chart ---
+            radar_df = comp_df.set_index('Ticker').copy()
+            radar_df = radar_df.fillna(radar_df.mean()) # Fill missing with average to prevent chart crashes
+
+            # Define which metrics are "Higher is Better" vs "Lower is Better"
+            higher_better = ['ROE (%)', 'Net Margin (%)']
+
+            normalized_df = pd.DataFrame(index=radar_df.index)
+
+            for col in radar_df.columns:
+                max_val = radar_df[col].max()
+                min_val = radar_df[col].min()
+
+                if max_val == min_val:
+                    normalized_df[col] = 50 # Middle score if everyone is identical
+                else:
+                    if col in higher_better:
+                        # Standard normalization (0 to 100)
+                        normalized_df[col] = ((radar_df[col] - min_val) / (max_val - min_val)) * 100
+                    else:
+                        # Inverted normalization for P/E and Debt (Lower = Closer to 100)
+                        normalized_df[col] = (1 - ((radar_df[col] - min_val) / (max_val - min_val))) * 100
+
+            # 3. Build Radar Chart
+            st.subheader("Relative Edge Radar")
+            st.markdown("*Note: Scores are normalized (0-100). A higher score means 'Best in Class' (e.g., a high score on P/E means the stock is the cheapest).*")
+
+            categories = list(normalized_df.columns)
+            fig_radar = go.Figure()
+
+            # Specific colors: Target is Green, Peers are distinct colors
+            colors = ['#00cc66', '#ffcc00', '#ff4b4b', '#3399ff']
+
+            for i, ticker in enumerate(normalized_df.index):
+                # We append the first value to the end of the list to "close" the radar loop shape
+                r_values = normalized_df.loc[ticker].values.tolist()
+                r_values.append(r_values[0])
+                theta_values = categories + [categories[0]]
+
+                fig_radar.add_trace(go.Scatterpolar(
+                    r=r_values,
+                    theta=theta_values,
+                    fill='toself' if i == 0 else 'none', # Only fill the target stock to make it pop
+                    name=ticker,
+                    line=dict(color=colors[i % len(colors)], width=3 if i == 0 else 1.5)
+                ))
+
+            fig_radar.update_layout(
+                polar=dict(
+                    radialaxis=dict(visible=True, range=[0, 100], showticklabels=False),
+                    angularaxis=dict(tickfont=dict(size=13))
+                ),
+                showlegend=True,
+                height=550,
+                template="plotly_dark",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=40, r=40, t=40, b=40)
+            )
+
+            st.plotly_chart(fig_radar, width="stretch")
+
+        else:
+            st.warning("Could not fetch sufficient competitor data. Please check the tickers and try again.")
+
+    # ==========================================
+    # PATH 6: DYNAMIC EXECUTIVE SYNTHESIS BRIEFING
+    # ==========================================
+    st.markdown("---")
+    st.header("Path 6: Executive Synthesis Briefing")
+    st.markdown("Automated algorithmic synthesis compiling core qualitative and quantitative pillars into a definitive narrative brief.")
+
+    with st.spinner("Compiling investment narrative..."):
+        try:
+            # 1. Gather variables from previous sections dynamically to feed the logic
+            # (Using fallback values if previous sections haven't fully executed)
+            current_p = standardized.current_price if standardized.current_price is not None else 0
+            target_v = intrinsic_value if 'intrinsic_value' in locals() else 0
+            mos_val = margin_of_safety if 'margin_of_safety' in locals() else 0
+
+            # Smart money proxies (reuse the values computed in Path 4 instead of re-deriving them)
+            insider_own = insider_pct if 'insider_pct' in locals() and insider_pct is not None else 0
+            inst_own = inst_pct if 'inst_pct' in locals() and inst_pct is not None else 0
+
+            # Competitor context from Path 5 if available
+            peer_text = ""
+            if 'comp_df' in locals() and not comp_df.empty and len(comp_df) > 1:
+                top_peer = comp_df.iloc[1]['Ticker'] if len(comp_df) > 1 else "industry peers"
+                peer_text = f"When benchmarked against its direct peer group (specifically {top_peer}), "
+            else:
+                peer_text = "Relative to its broader industry sector, "
+
+            # 2. Algorithmic Narrative Logic Block
+            # Valuation Pillar
+            if mos_val > 0:
+                valuation_narrative = f"The asset displays a positive margin of safety ({mos_val:.1f}%), suggesting it is currently underpriced relative to its intrinsic value of ${target_v:.2f} derived via discounted free cash flows."
+            else:
+                valuation_narrative = f"The asset trades at a premium relative to its calculated intrinsic value of ${target_v:.2f}. The current market price of ${current_p:.2f} reflects an baked-in growth premium, narrowing the statistical margin of safety ({mos_val:.1f}%)."
+
+            # Liquidity & Smart Money Pillar
+            if insider_own > TEAR_SHEET.high_insider_ownership_pct:
+                ownership_narrative = f"Management interests are fundamentally aligned with shareholders, underscored by a notable {insider_own:.2f}% insider ownership stake. Institutional backing remains robust at {inst_own:.2f}%, indicating deep liquidity and strong sponsorship from major fund complexes."
+            else:
+                ownership_narrative = f"The equity profile is highly institutionalized with {inst_own:.2f}% controlled by major asset managers, while structural insider ownership sits at a lean {insider_own:.2f}%. Capital allocation decisions will be heavily policed by external institutional blocks."
+
+            # Synthesis Construction
+            briefing_text = f"""### **INVESTMENT MEMORANDUM**
+            **Ticker Target:** {ticker_symbol} | **Generated:** {pd.Timestamp.now().strftime('%B %d, %Y')}
+
+            ---
+
+            #### **1. Core Valuation & Pricing Discrepancy**
+            {valuation_narrative} {peer_text} the asset's structural return profile requires consistent capital efficiency to sustain its trading multiple. If the default projected cash flow compound annual growth rate holds true, current price levels represent a calculated entry window for risk-adjusted accounts.
+
+            #### **2. Market Microstructure & Ownership Alignment**
+            {ownership_narrative} Recent regulatory filings indicate that the supply dynamics are tightly controlled by long-term capital allocators, reducing the probability of erratic, retail-driven liquidity drawdowns.
+
+            #### **3. Strategic Risk Execution Guidance**
+            * **Capital Allocation:** If deploying capital under a conservative risk mandate, entries should ideally be scaled using dynamic positioning or dollar-cost averaging around historical low-volatility seasonal entry windows.
+            * **Structural Invalidation Trigger:** A material degradation in the underlying free cash flow margins or a sudden spike in the structural debt-to-equity ratio relative to the peer group will automatically invalidate the current valuation thesis.
+            """
+
+            # 3. Render the output text cleanly in an institutional text layout
+            st.info("### CIO Synthesis Brief")
+            st.markdown(briefing_text)
+
+            # Add a functional copy button for workflow convenience
+            st.text_area("Raw Text Export (Click inside to select all and copy):", briefing_text, height=250)
+
+        except (KeyError, IndexError) as e:
+            # comp_df access (e.g. iloc[1]['Ticker']) is the one place here
+            # that indexes into data built by an earlier section rather than
+            # reading already-guarded standardized/locals() values.
+            st.error(f"Could not construct the text briefing — unexpected shape in the peer comparison data: {e}")
+        except Exception as e:
+            log_exception(logger, "calc.error", section="executive_briefing", ticker=ticker_symbol)
+            st.error(f"Unexpected error constructing the text briefing: {type(e).__name__}: {e}")
+
+    # ==========================================
+    # PRINTABLE TEAR SHEET (HTML/CSS)
+    # ==========================================
+    st.markdown("---")
+    st.header("Quantitative Tear Sheet")
+    st.markdown("Press **Command + P** (Mac) or **Ctrl + P** (Windows) to save this final report as a PDF.")
+
+    # 1. Safely extract variables
+    _intrinsic = intrinsic_price if 'intrinsic_price' in locals() else 0.0
+    _mos = margin_of_safety if 'margin_of_safety' in locals() else 0.0
+    _kelly = final_allocation if 'final_allocation' in locals() else 0.0
+    _altman_display = fmt_num(altman_z)
+
+    # 2. Determine the CIO Verdict
+    if macro_risk_flag:
+        verdict = "STRONG AVOID"
+        verdict_color = "#dc2626"
+        reason = f"Systemic market risk (VIX > {RISK.vix_high_risk_threshold:.0f}). Capital preservation prioritized over individual asset alpha."
+    elif score_pct >= TEAR_SHEET.strong_buy_min_score_pct and _mos > TEAR_SHEET.strong_buy_min_margin_of_safety:
+        verdict = "STRONG BUY"
+        verdict_color = "#16a34a"
+        reason = "Elite institutional fundamentals and trading at an attractive valuation."
+    elif score_pct >= TEAR_SHEET.strong_buy_min_score_pct and _mos <= TEAR_SHEET.strong_buy_min_margin_of_safety:
+        verdict = "HOLD (PREMIUM)"
+        verdict_color = "#2563eb"
+        reason = "Flawless underlying business, but the market is pricing it at a massive premium. Wait for a technical pullback."
+    elif score_pct >= TEAR_SHEET.hold_watchlist_min_score_pct and _mos > TEAR_SHEET.hold_watchlist_min_margin_of_safety:
+        verdict = "HOLD / WATCHLIST"
+        verdict_color = "#ca8a04"
+        reason = "Stable underlying business but currently commands a high market premium."
+    else:
+        verdict = "AVOID"
+        verdict_color = "#dc2626"
+        reason = "Fails fundamental safety checks, carries extreme debt, or is severely overvalued relative to cash flow."
+
+    # --- DEFINE DATE AND LOGO ---
+    report_date = datetime.date.today().strftime("%B %d, %Y")
+
+    website = standardized.website or ''
+    domain = website.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
+    logo_html = f'<img src="https://logo.clearbit.com/{domain}" onerror="this.style.display=\'none\'" style="height: 55px; width: 55px; object-fit: contain; margin-right: 20px; border-radius: 8px; border: 1px solid #e2e8f0; padding: 2px; background: white;">' if domain else ''
+
+    # 3. Build the HTML Template
+    tear_sheet_html = f"""
+    <div class="tear-sheet">
+        <div class="ts-top-accent"></div>
+        <div class="ts-header">
+            <div style="display: flex; align-items: center;">
+                {logo_html}
+                <div>
+                    <div style="font-size: 0.8rem; font-weight: 700; color: #3b82f6; letter-spacing: 2px; margin-bottom: 4px;">POWERED BY QUANTIX</div>
+                    <h1 style="margin:0; font-size: 2.5rem; color: #0f172a; letter-spacing: -1px;">{ticker_symbol}</h1>
+                    <p style="margin:4px 0 0 0; color: #64748b; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 1px;">Institutional Tear Sheet • {report_date}</p>
+                </div>
+            </div>
+            <div style="text-align: right;">
+                <h2 style="margin:0; font-size: 2.2rem; color: #0f172a;">${current_price:.2f}</h2>
+                <span style="background-color: {verdict_color}; color: white; padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 0.9rem; display: inline-block; margin-top: 8px; letter-spacing: 0.5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{verdict}</span>
+            </div>
+        </div>
+
+        <div class="ts-section">
+            <h3 class="ts-title">Chief Investment Officer Thesis</h3>
+            <p style="font-size: 1.05rem; color: #1e293b; line-height: 1.7;"><strong>Primary Driver:</strong> {reason}</p>
+            <p style="font-size: 0.95rem; color: #475569; line-height: 1.6; border-left: 3px solid #e2e8f0; padding-left: 15px; margin-top: 15px;">{(standardized.business_summary or 'Business summary not available.')[:450]}...</p>
+        </div>
+
+        <div class="ts-grid">
+            <div class="ts-card">
+                <h4>Valuation & DCF</h4>
+                <div class="ts-metric"><span class="ts-label">Intrinsic Value</span> <span class="ts-value">${_intrinsic:.2f}</span></div>
+                <div class="ts-metric"><span class="ts-label">Margin of Safety</span> <span class="ts-value" style="color: {'#16a34a' if _mos > 0 else '#dc2626'};">{_mos:.2f}%</span></div>
+                <div class="ts-metric"><span class="ts-label">FCF Yield</span> <span class="ts-value">{fmt_num(fcf_yield_val, "%")}</span></div>
+            </div>
+            <div class="ts-card">
+                <h4>Fundamental Health</h4>
+                <div class="ts-metric"><span class="ts-label">Blueprint Score</span> <span class="ts-value">{score_pct:.0f}%</span></div>
+                <div class="ts-metric"><span class="ts-label">Net Margin</span> <span class="ts-value">{fmt_num(None if net_margin is None else net_margin * 100, "%", decimals=1)}</span></div>
+                <div class="ts-metric"><span class="ts-label">Altman Z-Score</span> <span class="ts-value">{_altman_display}</span></div>
+            </div>
+            <div class="ts-card">
+                <h4>Execution & Risk</h4>
+                <div class="ts-metric"><span class="ts-label">Kelly Allocation</span> <span class="ts-value">{_kelly:.2f}%</span></div>
+                <div class="ts-metric"><span class="ts-label">Z-Score (Trend)</span> <span class="ts-value">{current_z_score:.2f}</span></div>
+                <div class="ts-metric"><span class="ts-label">1-Day VaR</span> <span class="ts-value">{var_95 * 100:.2f}%</span></div>
+            </div>
+        </div>
+
+        <div class="ts-footer">
+            <p>Generated by <strong>Quantix Terminal</strong> | Algorithmic execution carries inherent risk. Verify all execution parameters via broker.</p>
+        </div>
+    </div>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+        .tear-sheet {{
+            background-color: #ffffff;
+            color: #0f172a;
+            padding: 40px 50px;
+            border-radius: 12px;
+            margin-top: 20px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+            position: relative;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+        }}
+        .ts-top-accent {{
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 6px;
+            background: linear-gradient(90deg, #3b82f6, #0f172a); /* Updated gradient to match Quantix blue */
+        }}
+        .ts-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #f1f5f9;
+            padding-bottom: 25px;
+            margin-bottom: 25px;
+        }}
+        .ts-section {{ margin-bottom: 35px; }}
+        .ts-title {{
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 10px;
+            color: #0f172a;
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            letter-spacing: 1.5px;
+            margin-bottom: 15px;
+        }}
+        .ts-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 25px;
+            margin-bottom: 30px;
+        }}
+        .ts-card {{
+            background-color: #f8fafc;
+            padding: 20px;
+            border-top: 3px solid #0f172a;
+            border-radius: 0 0 8px 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        }}
+        .ts-card h4 {{
+            margin-top: 0;
+            color: #475569;
+            margin-bottom: 15px;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 8px;
+        }}
+        .ts-metric {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 0.95rem;
+        }}
+        .ts-label {{ color: #64748b; }}
+        .ts-value {{ font-weight: 600; color: #0f172a; }}
+        .ts-footer {{
+            text-align: center;
+            font-size: 0.75rem;
+            color: #94a3b8;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 20px;
+            letter-spacing: 0.5px;
+        }}
+        .ts-footer strong {{ color: #3b82f6; font-weight: 700; }}
+
+        @media print {{
+            body * {{ visibility: hidden; }}
+            .tear-sheet, .tear-sheet * {{ visibility: visible; }}
+            .tear-sheet {{
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                padding: 0;
+                box-shadow: none;
+                border: none;
+            }}
+            .ts-top-accent {{ display: none; }}
+            header, .stSidebar, .stApp > header, footer {{ display: none !important; }}
+        }}
+    </style>
+    """
+    st.html(tear_sheet_html)
+
+
+# ==========================================
+# DIAGNOSTICS: IN-APP LOG VIEWER
+# ==========================================
+# Deliberately outside the `if df.empty` branch above so it still renders when
+# data loading fails — that's exactly when the log is most useful. Placed last
+# so it captures every event emitted during this run.
+if debug_mode:
+    st.markdown("---")
+    st.subheader("🐞 Diagnostics — Recent Log")
+    st.caption(f"Newest last · also written to `{log_file_path()}`")
+    entries = recent_logs(limit=200)
+    if entries:
+        st.code("\n".join(entries), language="log")
+    else:
+        st.info("No log entries captured yet this session.")
