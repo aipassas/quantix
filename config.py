@@ -208,6 +208,21 @@ class MonteCarloConfig:
 
 
 @dataclass(frozen=True)
+class WalkForwardConfig:
+    """Defaults for the Backtest section's optional walk-forward mode.
+    Trading days, not calendar months, to match how every other lookback
+    in this app (Monte Carlo's forecast_days, VaR's lookback, etc.) is
+    already expressed — ~6 months train / ~2 months test is a common
+    walk-forward convention, not a fitted or validated split (this engine
+    has no parameters to fit; see strategy_builder.run_walk_forward_backtest
+    for what the train segment actually does here)."""
+    default_train_days: int = 126
+    default_test_days: int = 42
+    min_train_days: int = 20
+    min_test_days: int = 10
+
+
+@dataclass(frozen=True)
 class ChartDefaults:
     default_ticker: str = "AAPL"
     default_benchmark: str = "SPY"
@@ -445,6 +460,7 @@ SCORECARD = ScorecardConfig()
 DCF = DCFAssumptions()
 RISK = RiskConfig()
 MONTE_CARLO = MonteCarloConfig()
+WALK_FORWARD = WalkForwardConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

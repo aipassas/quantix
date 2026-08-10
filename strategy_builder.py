@@ -214,6 +214,127 @@ def run_backtest(df: pd.DataFrame, rule: StrategyRule, sma_length: int, rsi_leng
     )
 
 
+@dataclass
+class WalkForwardWindow:
+    """One out-of-sample test segment's own result — reported per-window
+    (not just in aggregate) so a user can see whether performance is
+    consistent across time or concentrated in one lucky stretch."""
+    test_start: pd.Timestamp
+    test_end: pd.Timestamp
+    strategy_return_pct: float
+    trade_count: int
+
+
+@dataclass
+class WalkForwardResult:
+    """Never a crash, never a fabricated single window: ok=False with a
+    disclosed reason when the selected date range can't fit even one
+    train+test window."""
+    ok: bool
+    reason: Optional[str] = None
+    windows: Tuple[WalkForwardWindow, ...] = ()
+    stitched_equity_curve: Optional[pd.Series] = None  # chronological out-of-sample equity across every test window, for plotting against the in-sample curve
+    total_oos_return_pct: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
+    win_rate_pct: Optional[float] = None
+    trade_count: int = 0
+    window_count: int = 0
+
+
+def run_walk_forward_backtest(
+    df: pd.DataFrame,
+    rule: StrategyRule,
+    sma_length: int,
+    rsi_length: int,
+    train_days: int,
+    test_days: int,
+) -> WalkForwardResult:
+    """Rolling walk-forward validation, alongside (never replacing) the
+    single in-sample run_backtest() pass: split `df` into sequential
+    (train_days lookback + test_days out-of-sample) windows, rolling
+    forward by exactly test_days each step so test windows never overlap,
+    and stitch every window's out-of-sample segment into one continuous
+    equity curve. Reuses run_backtest() unchanged per window rather than a
+    second Signal/Position/Strategy_Returns pipeline.
+
+    The "train" segment is NOT a parameter-fitting step — this engine has
+    no free parameters to fit, only the fixed StrategyRule the user already
+    configured (this is a backtest-EXECUTION change, not a new strategy
+    schema). Its role is context: it gives each window's rolling indicators
+    (SMA/RSI/MACD/Bollinger) room to warm up, and gives Position's
+    forward-fill something real to carry INTO the test segment, so a
+    position already open when the test segment starts isn't wrongly
+    treated as flat.
+
+    Each window is evaluated independently from its OWN train_days
+    lookback — a position open at one window's test-end is deliberately
+    NOT carried into the next window's test-start (each window re-derives
+    its own signal/position history from only its own train segment). This
+    is what keeps every window's out-of-sample result honestly independent
+    of the others, rather than one continuous run that would let an early
+    window's context leak into a later one's "out-of-sample" result.
+    """
+    total_days = len(df)
+    if total_days < train_days + test_days:
+        return WalkForwardResult(
+            ok=False,
+            reason=(
+                f"the selected date range has {total_days} trading days; walk-forward mode needs at "
+                f"least {train_days + test_days} ({train_days} train + {test_days} test) for even one window"
+            ),
+        )
+
+    windows: List[WalkForwardWindow] = []
+    returns_parts: List[pd.Series] = []
+    active_returns_parts: List[pd.Series] = []
+
+    test_start_idx = train_days
+    while test_start_idx + test_days <= total_days:
+        test_end_idx = test_start_idx + test_days
+        window_slice = df.iloc[test_start_idx - train_days: test_end_idx]
+        window_result = run_backtest(window_slice, rule, sma_length, rsi_length)
+
+        # Slice OUT just the test segment from the window's own full
+        # (train+test) result — .shift(1)/.diff() were computed over the
+        # whole slice above, so the test segment's first bar still sees the
+        # real position/return carried over from the train segment's last
+        # bar, rather than an artificial reset to "flat."
+        test_strategy_returns = window_result.df["Strategy_Returns"].iloc[train_days:]
+        test_returns = window_result.df["Returns"].iloc[train_days:]
+        test_position_prior = window_result.df["Position"].shift(1).iloc[train_days:]
+        test_position_diff = window_result.df["Position"].diff().iloc[train_days:]
+
+        window_trade_count = int((test_position_diff == 1).sum())
+        window_return_pct = float(((1 + test_strategy_returns.fillna(0)).prod() - 1) * 100)
+
+        windows.append(WalkForwardWindow(
+            test_start=test_strategy_returns.index[0],
+            test_end=test_strategy_returns.index[-1],
+            strategy_return_pct=window_return_pct,
+            trade_count=window_trade_count,
+        ))
+        returns_parts.append(test_strategy_returns)
+        active_returns_parts.append(test_returns[test_position_prior == 1])
+
+        test_start_idx += test_days
+
+    stitched_returns = pd.concat(returns_parts)
+    stitched_equity_curve = (1 + stitched_returns.fillna(0)).cumprod()
+    total_oos_return_pct = float((stitched_equity_curve.iloc[-1] - 1) * 100)
+
+    dd_result = compute_max_drawdown(stitched_equity_curve)
+    max_drawdown_pct = dd_result.max_drawdown * 100 if dd_result is not None else 0.0
+
+    pooled_active_returns = pd.concat(active_returns_parts) if active_returns_parts else pd.Series(dtype=float)
+    win_rate_pct = (pooled_active_returns > 0).mean() * 100 if len(pooled_active_returns) > 0 else None
+
+    return WalkForwardResult(
+        ok=True, windows=tuple(windows), stitched_equity_curve=stitched_equity_curve,
+        total_oos_return_pct=total_oos_return_pct, max_drawdown_pct=max_drawdown_pct,
+        win_rate_pct=win_rate_pct, trade_count=sum(w.trade_count for w in windows), window_count=len(windows),
+    )
+
+
 def classic_mean_reversion(buy_z_score: float, sell_z_score: float) -> StrategyRule:
     """The app's original, already-shipped strategy — buy when Z-Score
     drops below `buy_z_score`, sell when it rises above `sell_z_score` —

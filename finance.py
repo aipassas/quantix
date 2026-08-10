@@ -15,11 +15,11 @@ from risk_analytics import compute_rolling_volatility, compute_annualized_volati
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
-from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest
+from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 from executive_digest import collect_flags
@@ -1942,6 +1942,70 @@ else:
         hovermode="x unified"
     )
     st.plotly_chart(fig_bt, width="stretch")
+
+    # --- Walk-Forward Validation (optional, alongside the single-pass backtest above) ---
+    walk_forward_enabled = st.checkbox(
+        "Enable Walk-Forward Validation", value=False,
+        help=(
+            "Splits the selected date range into sequential train/test windows and reports "
+            "out-of-sample-only performance, stitched together across every test window — alongside, "
+            "never replacing, the single in-sample pass above. A large gap between the two curves is "
+            "itself the useful signal: it means the strategy's apparent edge above depends on having "
+            "already seen the period it's being judged against."
+        ),
+    )
+    if walk_forward_enabled:
+        wf_c1, wf_c2 = st.columns(2)
+        train_days = int(wf_c1.number_input(
+            "Train Window (trading days)", min_value=WALK_FORWARD.min_train_days,
+            value=WALK_FORWARD.default_train_days, step=5,
+            help="History each test window gets to warm up its indicators and carry forward any open position — not a parameter-fitting step, this strategy has no parameters to fit.",
+        ))
+        test_days = int(wf_c2.number_input(
+            "Test Window (trading days)", min_value=WALK_FORWARD.min_test_days,
+            value=WALK_FORWARD.default_test_days, step=5,
+            help="Length of each out-of-sample segment. Windows roll forward by exactly this many days, never overlapping.",
+        ))
+
+        wf_result = run_walk_forward_backtest(df, active_rule, sma_length, rsi_length, train_days, test_days)
+
+        if not wf_result.ok:
+            st.warning(f"Walk-forward validation not available: {wf_result.reason}.")
+        else:
+            wf1, wf2, wf3, wf4, wf5 = st.columns(5)
+            wf1.metric(
+                "Out-of-Sample Return", f"{wf_result.total_oos_return_pct:.2f}%",
+                delta=f"{wf_result.total_oos_return_pct - backtest_result.total_strategy_return_pct:.2f}% vs in-sample",
+                help="Stitched performance across every out-of-sample test window only — never a period the strategy was evaluated against before.",
+            )
+            wf2.metric("Windows", f"{wf_result.window_count}", help=f"{train_days} train / {test_days} test trading days per window, rolled forward non-overlapping.")
+            wf3.metric("OOS Max Drawdown", f"{wf_result.max_drawdown_pct:.2f}%", delta_color="inverse")
+            wf4.metric("OOS Win Rate", f"{wf_result.win_rate_pct:.1f}%" if wf_result.win_rate_pct is not None else "N/A")
+            wf5.metric("OOS Trades", f"{wf_result.trade_count}")
+
+            fig_wf = go.Figure()
+            fig_wf.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Strategy'], name="In-Sample (single pass)", line=dict(color='cyan', dash='dot')))
+            fig_wf.add_trace(go.Scatter(x=wf_result.stitched_equity_curve.index, y=wf_result.stitched_equity_curve, name="Walk-Forward (out-of-sample)", line=dict(color='magenta', width=2)))
+            fig_wf.update_layout(
+                title="In-Sample vs. Walk-Forward Out-of-Sample Equity",
+                xaxis_rangeslider_visible=False,
+                height=450,
+                template="plotly_dark",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_wf, width="stretch")
+
+            with st.expander(f"Per-window out-of-sample performance ({wf_result.window_count} windows)"):
+                wf_table = pd.DataFrame([
+                    {
+                        "Test Start": w.test_start.date(), "Test End": w.test_end.date(),
+                        "Return": f"{w.strategy_return_pct:.2f}%", "Trades": w.trade_count,
+                    }
+                    for w in wf_result.windows
+                ])
+                st.dataframe(wf_table, hide_index=True, width="stretch")
 
     # ==========================================
     # PATH 2: MONTE CARLO FUTURE PROBABILITY SIMULATOR

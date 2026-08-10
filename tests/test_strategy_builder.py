@@ -17,6 +17,7 @@ from strategy_builder import (
     evaluate_condition,
     evaluate_condition_set,
     run_backtest,
+    run_walk_forward_backtest,
 )
 from technical_indicators import (
     compute_bollinger_bands,
@@ -163,3 +164,95 @@ def test_backtest_with_no_entry_conditions_never_enters_position(prepared_df):
     result = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH)
     assert (result.df["Position"] == 0).all()
     assert result.trade_count == 0
+
+
+# --- run_walk_forward_backtest() --------------------------------------------
+
+def test_walk_forward_insufficient_history_returns_explicit_reason(prepared_df):
+    short_df = prepared_df.iloc[:30]
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(short_df, rule, SMA_LENGTH, RSI_LENGTH, train_days=126, test_days=42)
+    assert result.ok is False
+    assert result.reason is not None and "30" in result.reason
+    assert result.windows == ()
+    assert result.stitched_equity_curve is None
+
+
+def test_walk_forward_window_boundaries_are_sequential_non_overlapping_and_counted_correctly(prepared_df):
+    train_days, test_days = 50, 25
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, train_days, test_days)
+
+    assert result.ok is True
+    for i in range(1, len(result.windows)):
+        assert result.windows[i].test_start > result.windows[i - 1].test_end
+
+    expected_window_count = (len(prepared_df) - train_days) // test_days
+    assert result.window_count == expected_window_count
+    assert len(result.stitched_equity_curve) == expected_window_count * test_days
+
+
+def test_walk_forward_drops_partial_final_window_rather_than_fabricating_it(prepared_df):
+    train_days, test_days = 50, 30  # 300-bar fixture: (300-50)=250, 250 // 30 = 8 remainder 10 -> a genuine partial leftover
+    total_days = len(prepared_df)
+    remainder = (total_days - train_days) % test_days
+    assert remainder != 0  # sanity: this really exercises a non-exact division
+
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, train_days, test_days)
+    assert result.window_count == (total_days - train_days) // test_days
+
+
+def test_walk_forward_position_continuity_across_train_test_boundary(prepared_df):
+    """A position opened inside window 0's TRAIN segment, that never exits,
+    must still be open at the test segment's very first bar — not wrongly
+    reset to flat just because the reported window starts there. Proven
+    precisely: if continuity held, the stitched curve's first-bar return
+    exactly equals that day's real price return (Position=1); if it didn't,
+    it would be exactly 0 (Position wrongly flat)."""
+    df = prepared_df.copy()
+    train_days, test_days = 40, 20
+    df["Z_Score"] = -1.0  # between buy(-2) and sell(0): holds an open position, never re-fires either signal
+    df.iloc[5, df.columns.get_loc("Z_Score")] = -3.0  # one bar deep in train: fires the entry
+
+    rule = classic_mean_reversion(buy_z_score=-2.0, sell_z_score=0.0)
+    result = run_walk_forward_backtest(df, rule, SMA_LENGTH, RSI_LENGTH, train_days, test_days)
+
+    assert result.ok is True
+    first_stitched_return = result.stitched_equity_curve.iloc[0] - 1
+    actual_price_return_at_test_start = df["Returns"].iloc[train_days]
+    assert first_stitched_return == pytest.approx(actual_price_return_at_test_start)
+
+
+def test_walk_forward_pooled_trade_count_and_win_rate_are_sane(prepared_df):
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, train_days=50, test_days=25)
+    assert result.trade_count >= 0
+    assert result.trade_count == sum(w.trade_count for w in result.windows)
+    if result.win_rate_pct is not None:
+        assert 0.0 <= result.win_rate_pct <= 100.0
+
+
+def test_walk_forward_max_drawdown_matches_manual_computation_on_stitched_curve(prepared_df):
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, train_days=50, test_days=25)
+    manual_dd = compute_max_drawdown(result.stitched_equity_curve)
+    assert result.max_drawdown_pct == pytest.approx(manual_dd.max_drawdown * 100)
+
+
+def test_walk_forward_total_return_matches_stitched_curve_final_value(prepared_df):
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, train_days=50, test_days=25)
+    assert result.total_oos_return_pct == pytest.approx((result.stitched_equity_curve.iloc[-1] - 1) * 100)
+
+
+def test_walk_forward_per_window_return_matches_its_slice_of_the_stitched_curve(prepared_df):
+    train_days, test_days = 50, 25
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, train_days, test_days)
+
+    for i, window in enumerate(result.windows):
+        segment = result.stitched_equity_curve.iloc[i * test_days:(i + 1) * test_days]
+        start_value = result.stitched_equity_curve.iloc[i * test_days - 1] if i > 0 else 1.0
+        manual_return_pct = (segment.iloc[-1] / start_value - 1) * 100
+        assert window.strategy_return_pct == pytest.approx(manual_return_pct)
