@@ -223,6 +223,21 @@ class WalkForwardConfig:
 
 
 @dataclass(frozen=True)
+class BacktestCostConfig:
+    """Default transaction-cost assumption for the Backtesting Simulator —
+    a flat basis-point charge on every entry/exit, not a full market-impact
+    model (no size/liquidity/volatility dependency). On by default at a
+    sensible value rather than zero: 10 bps (0.10%) per leg is a common
+    round-number stand-in for commission + bid/ask spread + slippage on a
+    liquid large-cap name, deliberately not fine-tuned per ticker since
+    there's no live execution-cost data source in this environment to
+    validate a more precise number against — the same disclosed-assumption
+    convention as every other judgment-call constant in this file."""
+    default_cost_bps: float = 10.0
+    max_cost_bps: float = 100.0
+
+
+@dataclass(frozen=True)
 class ChartDefaults:
     default_ticker: str = "AAPL"
     default_benchmark: str = "SPY"
@@ -461,6 +476,7 @@ DCF = DCFAssumptions()
 RISK = RiskConfig()
 MONTE_CARLO = MonteCarloConfig()
 WALK_FORWARD = WalkForwardConfig()
+BACKTEST_COST = BacktestCostConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

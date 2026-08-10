@@ -166,6 +166,71 @@ def test_backtest_with_no_entry_conditions_never_enters_position(prepared_df):
     assert result.trade_count == 0
 
 
+# --- transaction costs (cost_bps) -------------------------------------------
+
+def test_zero_cost_bps_makes_net_identical_to_gross(prepared_df):
+    """Default cost_bps=0.0 must be perfectly behavior-preserving for every
+    existing caller (including run_walk_forward_backtest(), which doesn't
+    pass cost_bps at all) — net must equal gross exactly, not approximately."""
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=0.0)
+    assert result.total_net_strategy_return_pct == pytest.approx(result.total_strategy_return_pct)
+    assert result.net_max_drawdown_pct == pytest.approx(result.max_drawdown_pct)
+    assert result.total_cost_pct == pytest.approx(0.0)
+    pd.testing.assert_series_equal(result.df["Cum_Net_Strategy"], result.df["Cum_Strategy"], check_names=False)
+
+
+def test_positive_cost_bps_produces_lower_net_return_for_a_trading_strategy(prepared_df):
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=10.0)
+    assert result.trade_count > 0  # sanity: this strategy actually trades on the fixture
+    assert result.total_net_strategy_return_pct < result.total_strategy_return_pct
+    assert result.total_cost_pct > 0.0
+
+
+def test_cost_charged_on_both_entry_and_exit_transitions(prepared_df):
+    """Cost hits every 0->1 AND every 1->0 transition independently — a
+    strategy with N round trips (2N transitions) pays 2N * cost_bps, not N."""
+    rule = classic_mean_reversion(-2.0, 0.0)
+    gross_result = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=0.0)
+    cost_bps = 25.0
+    result = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=cost_bps)
+
+    total_transitions = int((gross_result.df["Position"].diff().abs() == 1).sum())
+    expected_total_cost_pct = total_transitions * (cost_bps / 10_000.0) * 100
+    assert result.total_cost_pct == pytest.approx(expected_total_cost_pct)
+    assert total_transitions >= 2 * result.trade_count  # at least entry+exit per completed round trip
+
+
+def test_higher_cost_bps_produces_progressively_lower_net_return(prepared_df):
+    rule = classic_mean_reversion(-2.0, 0.0)
+    low = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=5.0)
+    high = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=50.0)
+    assert high.total_net_strategy_return_pct < low.total_net_strategy_return_pct
+    assert high.total_cost_pct > low.total_cost_pct
+
+
+def test_cost_bps_never_affects_the_gross_curve_or_win_rate(prepared_df):
+    """Gross figures must stay identical regardless of cost_bps — cost is
+    purely additive on top, never mutating the cost-free baseline."""
+    rule = classic_mean_reversion(-2.0, 0.0)
+    no_cost = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=0.0)
+    with_cost = run_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, cost_bps=25.0)
+    assert with_cost.total_strategy_return_pct == pytest.approx(no_cost.total_strategy_return_pct)
+    assert with_cost.max_drawdown_pct == pytest.approx(no_cost.max_drawdown_pct)
+    assert with_cost.win_rate_pct == pytest.approx(no_cost.win_rate_pct)
+    assert with_cost.trade_count == no_cost.trade_count
+    pd.testing.assert_series_equal(with_cost.df["Cum_Strategy"], no_cost.df["Cum_Strategy"], check_names=False)
+
+
+def test_walk_forward_still_runs_unaffected_by_the_new_cost_parameter(prepared_df):
+    """run_walk_forward_backtest() doesn't pass cost_bps at all — confirms
+    the new required-with-default parameter didn't silently break it."""
+    rule = classic_mean_reversion(-2.0, 0.0)
+    result = run_walk_forward_backtest(prepared_df, rule, SMA_LENGTH, RSI_LENGTH, train_days=50, test_days=25)
+    assert result.ok is True
+
+
 # --- run_walk_forward_backtest() --------------------------------------------
 
 def test_walk_forward_insufficient_history_returns_explicit_reason(prepared_df):

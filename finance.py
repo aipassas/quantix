@@ -15,7 +15,7 @@ from risk_analytics import compute_rolling_volatility, compute_annualized_volati
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
@@ -1919,18 +1919,41 @@ else:
         if _preview_overlap:
             st.caption(f"⚠️ {_preview_overlap} of those bars satisfy both entry and exit conditions at once — the exit takes precedence on a same-bar conflict, so those specific bars won't open a new position.")
 
-    backtest_result = run_backtest(df, active_rule, sma_length, rsi_length)
+    cost_bps = st.slider(
+        "Transaction Cost (bps per trade leg)", min_value=0.0, max_value=BACKTEST_COST.max_cost_bps,
+        value=BACKTEST_COST.default_cost_bps, step=1.0,
+        help=(
+            "A flat basis-point commission + slippage charge on EVERY entry AND every exit "
+            "independently (not once per round trip) — a simplifying assumption, not a full "
+            "market-impact model with size/liquidity/volatility dependence. Set to 0 to see the "
+            "(unrealistic) cost-free gross result on its own."
+        ),
+    )
+    backtest_result = run_backtest(df, active_rule, sma_length, rsi_length, cost_bps=cost_bps)
 
     bt1, bt2, bt3, bt4, bt5 = st.columns(5)
-    bt1.metric("Strategy Return", f"{backtest_result.total_strategy_return_pct:.2f}%", delta=f"{backtest_result.total_strategy_return_pct - backtest_result.total_buy_hold_return_pct:.2f}% vs Buy & Hold")
+    bt1.metric("Strategy Return (Gross)", f"{backtest_result.total_strategy_return_pct:.2f}%", delta=f"{backtest_result.total_strategy_return_pct - backtest_result.total_buy_hold_return_pct:.2f}% vs Buy & Hold")
     bt2.metric("Buy & Hold Baseline", f"{backtest_result.total_buy_hold_return_pct:.2f}%")
-    bt3.metric("Max Strategy Drawdown", f"{backtest_result.max_drawdown_pct:.2f}%", help="The deepest percentage drop your portfolio would have suffered using this algorithm.", delta_color="inverse")
+    bt3.metric("Max Strategy Drawdown", f"{backtest_result.max_drawdown_pct:.2f}%", help="The deepest percentage drop your portfolio would have suffered using this algorithm (gross).", delta_color="inverse")
     bt4.metric("Win Rate", f"{backtest_result.win_rate_pct:.1f}%" if backtest_result.win_rate_pct is not None else "N/A", help="Of the days this strategy held a position, the fraction with a positive return.")
     bt5.metric("Trades", f"{backtest_result.trade_count}", help="Number of distinct times this strategy entered a position over the selected date range.")
 
+    if cost_bps > 0:
+        nc1, nc2, nc3 = st.columns(3)
+        nc1.metric(
+            "Strategy Return (Net of Cost)", f"{backtest_result.total_net_strategy_return_pct:.2f}%",
+            delta=f"{backtest_result.total_net_strategy_return_pct - backtest_result.total_strategy_return_pct:.2f}% vs gross",
+            delta_color="inverse",
+            help="Gross return minus every entry/exit's transaction cost charge — the more realistic net-of-cost outcome.",
+        )
+        nc2.metric("Net Max Drawdown", f"{backtest_result.net_max_drawdown_pct:.2f}%", delta_color="inverse")
+        nc3.metric("Total Cost Paid", f"{backtest_result.total_cost_pct:.2f}%", help="Sum of every entry/exit's cost charge, as a percentage of starting capital.")
+
     fig_bt = go.Figure()
     fig_bt.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Buy_Hold'], name='Buy & Hold', line=dict(color='gray', dash='dot')))
-    fig_bt.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Strategy'], name=active_rule.name, line=dict(color='cyan', width=2)))
+    fig_bt.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Strategy'], name=f"{active_rule.name} (Gross)", line=dict(color='cyan', width=2)))
+    if cost_bps > 0:
+        fig_bt.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Net_Strategy'], name=f"{active_rule.name} (Net of Cost)", line=dict(color='orange', width=2, dash='dash')))
 
     fig_bt.update_layout(
         title="Strategy Equity Curve vs Baseline",

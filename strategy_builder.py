@@ -146,17 +146,27 @@ def evaluate_condition_set(df: pd.DataFrame, conditions: Tuple[StrategyCondition
 
 @dataclass
 class BacktestResult:
-    df: pd.DataFrame  # copy of the input with Signal/Position/Strategy_Returns/Cum_Strategy added
+    df: pd.DataFrame  # copy of the input with Signal/Position/Strategy_Returns/Cum_Strategy/Net_Strategy_Returns/Cum_Net_Strategy added
     entry_series: pd.Series
     exit_series: pd.Series
-    total_strategy_return_pct: float
+    total_strategy_return_pct: float   # gross — no transaction costs deducted
     total_buy_hold_return_pct: float
-    max_drawdown_pct: float
-    win_rate_pct: Optional[float]
+    max_drawdown_pct: float            # gross
+    win_rate_pct: Optional[float]      # gross (a day's win/loss is unaffected by that day's own entry/exit cost)
     trade_count: int
+    cost_bps: float                    # the per-transition cost this result was computed with (0.0 = no cost, gross == net)
+    total_net_strategy_return_pct: float  # equals total_strategy_return_pct when cost_bps == 0.0
+    net_max_drawdown_pct: float
+    total_cost_pct: float              # sum of every entry/exit cost charge, as a % of starting capital — the raw cost drag, not back-solved from the two curves
 
 
-def run_backtest(df: pd.DataFrame, rule: StrategyRule, sma_length: int, rsi_length: int) -> BacktestResult:
+def run_backtest(
+    df: pd.DataFrame,
+    rule: StrategyRule,
+    sma_length: int,
+    rsi_length: int,
+    cost_bps: float = 0.0,
+) -> BacktestResult:
     """Turn a StrategyRule into Position/equity-curve metrics — the same
     Signal -> forward-filled Position -> Strategy_Returns -> Cum_Strategy
     pipeline the app's original hardcoded Z-Score strategy used, now driven
@@ -172,6 +182,17 @@ def run_backtest(df: pd.DataFrame, rule: StrategyRule, sma_length: int, rsi_leng
     trend-following entry with a mean-reversion exit) can genuinely hit
     this case; finance.py's live preview surfaces it explicitly rather than
     leaving "entry signal count doesn't match trade count" unexplained.
+
+    Transaction costs (cost_bps): a flat basis-point charge deducted on
+    EVERY Position transition — both the 0->1 entry and the 1->0 exit each
+    pay it independently, not once per round trip — a simplifying
+    commission+slippage assumption, not a market-impact model (no
+    dependency on trade size, liquidity, or volatility). Defaults to 0.0 so
+    every existing caller (including run_walk_forward_backtest(), which
+    doesn't pass this) gets byte-identical gross behavior unless it opts
+    in. Both the gross (cost-free) and net-of-cost curves/metrics are
+    always computed and returned side by side, never just one silently
+    replacing the other — see BacktestResult.
     """
     df = df.copy()
     entry_series = evaluate_condition_set(df, rule.entry_conditions, rule.entry_logic, sma_length, rsi_length)
@@ -205,12 +226,29 @@ def run_backtest(df: pd.DataFrame, rule: StrategyRule, sma_length: int, rsi_leng
 
     trade_count = int((df["Position"].diff() == 1).sum())
 
+    # Cost is charged on the exact bar Position transitions (abs() so both
+    # 0->1 entries and 1->0 exits pay the same flat rate independently) —
+    # reuses the identical transition definition trade_count itself uses,
+    # per the task's own instruction, rather than a second detection path.
+    trade_cost = df["Position"].diff().abs() * (cost_bps / 10_000.0)
+    df["Net_Strategy_Returns"] = df["Strategy_Returns"] - trade_cost
+    df["Cum_Net_Strategy"] = (1 + df["Net_Strategy_Returns"]).cumprod()
+
+    total_net_strategy_return_pct = (df["Cum_Net_Strategy"].iloc[-1] - 1) * 100
+    net_dd_result = compute_max_drawdown(df["Cum_Net_Strategy"])
+    net_max_drawdown_pct = net_dd_result.max_drawdown * 100 if net_dd_result is not None else 0.0
+    total_cost_pct = float(trade_cost.fillna(0).sum() * 100)
+
     return BacktestResult(
         df=df, entry_series=entry_series, exit_series=exit_series,
         total_strategy_return_pct=total_strategy_return_pct,
         total_buy_hold_return_pct=total_buy_hold_return_pct,
         max_drawdown_pct=max_drawdown_pct,
         win_rate_pct=win_rate_pct, trade_count=trade_count,
+        cost_bps=cost_bps,
+        total_net_strategy_return_pct=total_net_strategy_return_pct,
+        net_max_drawdown_pct=net_max_drawdown_pct,
+        total_cost_pct=total_cost_pct,
     )
 
 
