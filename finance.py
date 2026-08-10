@@ -22,6 +22,7 @@ from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_MET
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
+from executive_digest import collect_flags
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -578,6 +579,17 @@ if df.empty:
 else:
 
     # ==========================================
+    # EXECUTIVE DIGEST (placeholder — filled in after the DCF section below,
+    # once every source signal it synthesizes has been computed, but
+    # rendered HERE at the top via Streamlit's container-as-placeholder
+    # pattern: content written into a container later in the script still
+    # appears at the container's position in the page, not at the point in
+    # execution where it was written. See the "EXECUTIVE DIGEST (fill)"
+    # block after the DCF section for what actually goes in this slot.)
+    # ==========================================
+    executive_digest_container = st.container()
+
+    # ==========================================
     # DATA QUALITY REPORT
     # ==========================================
     # Combines field-level statement completeness (financial_validation.py),
@@ -623,7 +635,7 @@ else:
     # ==========================================
     # NEW: MACRO REGIME FILTER
     # ==========================================
-    st.header("Macro Regime & Systemic Risk")
+    st.header("Macro Regime & Systemic Risk", anchor="macro-regime")
     vix_current = vix_df['Close'].iloc[-1] if not vix_df.empty else 20.0
     tnx_current = tnx_df['Close'].iloc[-1] if not tnx_df.empty else 4.0
     macro_risk_flag = vix_current > RISK.vix_high_risk_threshold
@@ -734,7 +746,7 @@ else:
     possible_checks = len(fundamentals.scorecard_checks)
     score_pct = fundamentals.score_pct
 
-    st.header("Strategic Investment Scorecard")
+    st.header("Strategic Investment Scorecard", anchor="scorecard")
     sector_note = f"Sector: {standardized.sector}" if standardized.sector else "Sector: Unknown"
     if standardized.sector in SCORECARD.financials_sector_names:
         sector_note += f" — Debt-to-Equity benchmark relaxed to < {SCORECARD.financials_max_debt_to_equity} (banks are structurally more leveraged as a business model)"
@@ -765,7 +777,7 @@ else:
     # excludes valuation from "quality" for exactly this reason).
     cq = fundamentals.company_quality
     st.markdown("---")
-    st.header("Company Quality Classification")
+    st.header("Company Quality Classification", anchor="quality-classification")
 
     if cq.overall_score is None:
         st.warning(f"⚪ Not enough data to classify {ticker_symbol}'s quality — every factor was missing all of its inputs.")
@@ -1036,7 +1048,7 @@ else:
     # CHARTS & INDICATORS
     # ==========================================
     st.markdown("---")
-    st.header("Interactive Price & Technicals")
+    st.header("Interactive Price & Technicals", anchor="technicals")
 
     # Every indicator below reads from the processed, validated frame (see
     # price_processing.py) — this note is purely informational: it's rare
@@ -1425,7 +1437,7 @@ else:
     )
 
     st.markdown("---")
-    st.header("Risk Dashboard")
+    st.header("Risk Dashboard", anchor="risk-dashboard")
     st.caption("At-a-glance summary of every risk metric below — click through to the detailed panels further down this page for the full picture on any one of them.")
 
     gauge_color = {"🟢": "#22c55e", "🟡": "#eab308", "🟠": "#f97316", "🔴": "#ef4444"}[risk_score_result.grade_icon]
@@ -1655,7 +1667,8 @@ else:
     # PROFESSIONAL MULTI-STAGE DCF ENGINE
     # ==========================================
     st.markdown("---")
-    st.header("Automated DCF Valuation Engine")
+    st.header("Automated DCF Valuation Engine", anchor="dcf")
+    dcf_result = None  # stays None if the try block below raises before assignment — the Executive Digest checks this rather than assuming it's always set
     with st.expander("Professional Multi-Stage DCF Valuation", expanded=True):
         try:
             # The DCF model itself lives in the Fundamental Analysis Engine;
@@ -1707,6 +1720,70 @@ else:
             st.error(f"Unexpected DCF Engine error: {type(e).__name__}: {e}")
             intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
 
+    # ==========================================
+    # EXECUTIVE DIGEST (fill) — every source signal this synthesizes
+    # (Scorecard, Company Quality, Altman Z, Risk Score, DCF, buy-and-hold
+    # Max Drawdown, VIX, RSI/SMA/MACD/Bollinger) has now been computed by
+    # the sections above, so this is the earliest point in the script where
+    # the digest can actually be built. It still renders at the TOP of the
+    # page, in executive_digest_container, created before Data Quality
+    # Report — see that container's own comment for why writing to it here
+    # doesn't mean it displays here.
+    # ==========================================
+    with executive_digest_container:
+        st.header("Executive Digest")
+        st.caption("The top strengths and concerns auto-prioritized from every signal computed on this page — not a new analysis, a synthesis of what's already below. Click a line to jump to its source section.")
+
+        # "Recent" = within the last 10 trading days of the selected range —
+        # an SMA/MACD cross or Bollinger breakout from 6 months ago isn't a
+        # current signal worth headlining here, even though it's still a
+        # valid historical entry in its own section's table.
+        _digest_recency_cutoff = df.index[-10] if len(df.index) >= 10 else df.index[0]
+        _digest_recent_sma = sma_signals[-1] if sma_signals and sma_signals[-1].date >= _digest_recency_cutoff else None
+        _digest_recent_macd = macd_signals[-1] if macd_signals and macd_signals[-1].date >= _digest_recency_cutoff else None
+        _digest_recent_bb = bb_breakouts[-1] if bb_breakouts and bb_breakouts[-1].date >= _digest_recency_cutoff else None
+
+        _digest_strengths, _digest_concerns = collect_flags(
+            alignment_verdict=fundamentals.alignment_verdict,
+            alignment_score_pct=fundamentals.score_pct,
+            scorecard_checks=fundamentals.scorecard_checks,
+            company_quality_category=cq.category,
+            company_quality_score=cq.overall_score,
+            altman_z=fundamentals.altman_z,
+            altman_verdict=fundamentals.altman_verdict,
+            risk_score=risk_score_result.score,
+            risk_grade=risk_score_result.grade,
+            risk_factors=risk_score_result.factors,
+            dcf_ok=dcf_result.ok if dcf_result is not None else False,
+            dcf_status=dcf_result.status if dcf_result is not None else None,
+            dcf_margin_of_safety_pct=dcf_result.margin_of_safety_pct if dcf_result is not None else None,
+            buy_hold_max_drawdown_pct=(max_dd_result.max_drawdown * 100) if max_dd_result is not None else None,
+            macro_risk_flag=macro_risk_flag,
+            vix_current=vix_current,
+            rsi_interpretation=rsi_interpretation,
+            recent_sma_signal=_digest_recent_sma,
+            recent_macd_signal=_digest_recent_macd,
+            recent_bollinger_breakout=_digest_recent_bb,
+        )
+
+        if not _digest_strengths and not _digest_concerns:
+            st.info("No standout strengths or concerns right now — every computed signal for this ticker currently reads as neutral, or too little data was available to classify one. See the sections below for the full picture.")
+        else:
+            _dcol1, _dcol2 = st.columns(2)
+            with _dcol1:
+                st.markdown("**🟢 Top Strengths**")
+                if _digest_strengths:
+                    for _flag in _digest_strengths:
+                        st.markdown(f"- [{_flag.text}](#{_flag.anchor})")
+                else:
+                    st.caption("No standout strengths identified.")
+            with _dcol2:
+                st.markdown("**🔴 Top Concerns**")
+                if _digest_concerns:
+                    for _flag in _digest_concerns:
+                        st.markdown(f"- [{_flag.text}](#{_flag.anchor})")
+                else:
+                    st.caption("No standout concerns identified.")
 
     # ==========================================
     # PATH 1: ALGORITHMIC BACKTESTING SIMULATOR
