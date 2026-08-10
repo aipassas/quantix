@@ -20,6 +20,7 @@ from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest
+from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -541,6 +542,14 @@ else:
     fundamentals_engine = FundamentalAnalysisEngine(standardized, raw_info=ticker_bundle.info)
     fundamentals = fundamentals_engine.analyze()
 
+    # Sector-relative standing — computed once here, displayed alongside
+    # (never instead of) the fixed-threshold Scorecard/Master Matrix rows
+    # and the Quality Classification's Return on Equity metric below. None
+    # when the sector is unknown or too few configured-universe peers share
+    # it (see sector_percentile.py's MIN_PEERS guard) — an honest "N/A",
+    # never a percentile computed from 1-2 companies.
+    sector_percentiles = compute_sector_percentiles(standardized)
+
     net_margin = fundamentals.net_margin
     de_ratio = fundamentals.debt_to_equity
     pe_ratio = fundamentals.pe_ratio
@@ -673,6 +682,19 @@ else:
                     st.metric(factor.name, f"{factor.score:.0f}", help=f"Weight: {factor.weight:.0%} of the overall score.")
                     st.progress(min(max(factor.score / 100, 0.0), 1.0))
 
+        # Sector-relative ROE — a separate small callout rather than a new
+        # column on the Capital Efficiency factor's table above, since that
+        # table's "Return on Equity" row uses the statement-computed figure
+        # (roe_pct_computed()) while peers here are only ever shallow-fetched,
+        # so the percentile is against Yahoo's own reported ROE — a related
+        # but distinct number, labeled explicitly so the two are never
+        # conflated.
+        if sector_percentiles is not None:
+            if sector_percentiles.percentiles.get("roe") is not None:
+                st.caption(f"Sector-relative standing: Return on Equity (Yahoo-reported, {sector_percentiles.target_values['roe']*100:.1f}%) ranks at the {format_percentile(sector_percentiles.percentiles['roe'])} among {sector_percentiles.peer_count} {sector_percentiles.sector} peers.")
+            else:
+                st.caption(f"Sector-relative Return on Equity standing unavailable — too few {sector_percentiles.sector} peers report this specific metric.")
+
     with st.expander("Quality methodology & full metric breakdown", expanded=False):
         st.caption(
             "Each metric scores 0-100 against a configured band (config.QUALITY), then a factor is the average "
@@ -709,12 +731,18 @@ else:
     # Rows are generated from the engine's evaluated checks, so adding a new
     # ratio in fundamental_analysis.py surfaces here automatically.
     matrix_rows = fundamentals.matrix_checks
+    if sector_percentiles is not None:
+        st.caption(f"Sector Percentile column ranks against {sector_percentiles.peer_count} {sector_percentiles.sector} peers from Quantix's configured watchlist/peer universe: {', '.join(sector_percentiles.peer_tickers)}.")
+    else:
+        reason = "sector unknown" if not standardized.sector else f"fewer than {SECTOR_MIN_PEERS} same-sector peers in the configured universe"
+        st.caption(f"Sector Percentile column unavailable ({reason} for {ticker_symbol}) — never shown as a fabricated rank.")
     matrix_data = {
         "Category": [c.category for c in matrix_rows],
         "Metric": [c.label for c in matrix_rows],
         "Current Value": [c.display for c in matrix_rows],
         "Blueprint Benchmark": [c.benchmark for c in matrix_rows],
         "Status": [c.status_icon for c in matrix_rows],
+        "Sector Percentile": [format_percentile(sector_percentiles.percentiles.get(c.key)) if sector_percentiles else "N/A" for c in matrix_rows],
     }
     matrix_df = pd.DataFrame(matrix_data)
     st.table(matrix_df)
