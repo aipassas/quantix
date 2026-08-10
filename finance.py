@@ -12,7 +12,7 @@ from financial_standardization import standardize_financials
 from price_processing import process_price_data
 from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss, compute_stochastic, detect_stochastic_crossovers, compute_anchored_vwap, compute_adx, compute_ichimoku, compute_obv
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score
-from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification
+from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL
@@ -1669,12 +1669,24 @@ else:
     # ==========================================
     st.markdown("---")
     st.header("Automated DCF Valuation Engine", anchor="dcf")
+
+    # CAPM beta for the DCF's WACC: regressed against the selected benchmark
+    # (df/bench_df are already loaded above for the Alpha section) when
+    # there's enough overlapping history to regress reliably; wacc()/run_dcf()
+    # fall back to Yahoo's reported beta, then a declared 1.0 market
+    # assumption, when this comes back None.
+    beta_regression = compute_capm_beta(df, bench_df) if not bench_df.empty else None
+
     dcf_result = None  # stays None if the try block below raises before assignment — the Executive Digest checks this rather than assuming it's always set
     with st.expander("Professional Multi-Stage DCF Valuation", expanded=True):
         try:
             # The DCF model itself lives in the Fundamental Analysis Engine;
             # this block only renders its result.
-            dcf_result = fundamentals_engine.run_dcf(dcf_growth, fallback_price=df['Close'].iloc[-1])
+            dcf_result = fundamentals_engine.run_dcf(
+                dcf_growth, fallback_price=df['Close'].iloc[-1],
+                regressed_beta=beta_regression.beta if beta_regression else None,
+                beta_r_squared=beta_regression.r_squared if beta_regression else None,
+            )
             current_price = dcf_result.current_price
 
             if dcf_result.ok:
@@ -1689,7 +1701,15 @@ else:
                 d2.metric("Intrinsic Value (2-Stage)", f"${intrinsic_price:.2f}")
                 d3.metric("Margin of Safety", f"{margin_of_safety:.2f}%", delta=dcf_result.status, delta_color=dcf_result.status_color)
 
-                st.info(f"**WACC Calculated:** {wacc*100:.2f}% (CAPM & Debt Structure) | **Model:** 2-Stage Gordon Growth")
+                beta_labels = {
+                    "regressed": f"regressed vs. {benchmark_symbol}, R²={dcf_result.beta_r_squared:.2f}",
+                    "yahoo_reported": "Yahoo-reported",
+                    "market_assumption": "1.0 market assumption — no reported or regressible beta available",
+                }
+                st.info(
+                    f"**WACC Calculated:** {wacc*100:.2f}% (CAPM & Debt Structure) | **Model:** 2-Stage Gordon Growth  \n"
+                    f"**Beta:** {dcf_result.beta:.2f} ({beta_labels[dcf_result.beta_source]})"
+                )
 
                 # Visual Gauge
                 st.write("Safety Gauge:")

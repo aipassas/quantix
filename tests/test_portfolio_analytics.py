@@ -6,7 +6,7 @@ import pytest
 
 from portfolio_analytics import (
     build_aligned_returns, compute_correlation_matrix, compute_covariance_matrix,
-    compute_portfolio_diversification,
+    compute_portfolio_diversification, compute_capm_beta,
 )
 
 
@@ -101,3 +101,72 @@ def test_excluded_ticker_disclosed_with_reason(four_ticker_baskets):
     alignment = build_aligned_returns(baskets)
     assert "EMPTY" in alignment.excluded_tickers
     assert "EMPTY" in alignment.exclusion_reasons
+
+
+# --- compute_capm_beta() ----------------------------------------------------
+
+def test_beta_is_one_for_identical_returns(four_ticker_baskets):
+    """B has IDENTICAL log returns to A (just a different starting price) —
+    textbook beta of 1.0 and a perfect R²."""
+    result = compute_capm_beta(four_ticker_baskets["B"], four_ticker_baskets["A"], min_observations=20)
+    assert result is not None
+    assert result.beta == pytest.approx(1.0, abs=1e-9)
+    assert result.r_squared == pytest.approx(1.0, abs=1e-9)
+
+
+def test_beta_is_negative_one_for_inverted_returns(four_ticker_baskets):
+    """C is the exact negative of A's log returns — beta of -1.0, still a
+    perfect R² (a perfect NEGATIVE linear relationship is still perfect)."""
+    result = compute_capm_beta(four_ticker_baskets["C"], four_ticker_baskets["A"], min_observations=20)
+    assert result is not None
+    assert result.beta == pytest.approx(-1.0, abs=1e-9)
+    assert result.r_squared == pytest.approx(1.0, abs=1e-9)
+
+
+def test_beta_matches_manual_ols_slope(four_ticker_baskets):
+    """D is independent of A — cross-check against numpy's own OLS fit
+    rather than another hand-derivation of the same formula."""
+    result = compute_capm_beta(four_ticker_baskets["D"], four_ticker_baskets["A"], min_observations=20)
+    assert result is not None
+
+    ticker_returns = np.log(four_ticker_baskets["D"]["Close"] / four_ticker_baskets["D"]["Close"].shift(1)).dropna()
+    bench_returns = np.log(four_ticker_baskets["A"]["Close"] / four_ticker_baskets["A"]["Close"].shift(1)).dropna()
+    aligned = pd.DataFrame({"t": ticker_returns, "b": bench_returns}).dropna()
+    manual_beta = np.polyfit(aligned["b"], aligned["t"], 1)[0]
+
+    assert result.beta == pytest.approx(manual_beta, rel=1e-9)
+
+
+def test_beta_none_when_insufficient_observations(four_ticker_baskets):
+    result = compute_capm_beta(
+        four_ticker_baskets["A"].iloc[:10], four_ticker_baskets["B"].iloc[:10], min_observations=60,
+    )
+    assert result is None
+
+
+def test_beta_none_when_benchmark_has_zero_variance(four_ticker_baskets):
+    flat = four_ticker_baskets["A"].copy()
+    flat["Close"] = 100.0  # constant price -> zero-variance returns
+    result = compute_capm_beta(four_ticker_baskets["A"], flat, min_observations=20)
+    assert result is None
+
+
+def test_beta_observation_count_reflects_actual_overlap(four_ticker_baskets):
+    result = compute_capm_beta(four_ticker_baskets["A"], four_ticker_baskets["B"], min_observations=20)
+    assert result.observation_count == len(four_ticker_baskets["A"]) - 1  # one lost to the first day's pct_change/log-return NaN
+
+
+def test_beta_handles_tz_naive_vs_tz_aware_index_mismatch(four_ticker_baskets):
+    """finance.py's ticker df is tz-stripped by price_processing.py; a
+    benchmark df fetched straight from data_loader.py's macro bundle isn't
+    guaranteed to be — pandas raises constructing a DataFrame from two
+    Series with mismatched tz-awareness, so this must not crash."""
+    ticker_df = four_ticker_baskets["A"]
+    benchmark_df = four_ticker_baskets["B"].copy()
+    benchmark_df.index = benchmark_df.index.tz_localize("UTC")
+
+    result = compute_capm_beta(ticker_df, benchmark_df, min_observations=20)
+
+    assert result is not None
+    naive_result = compute_capm_beta(four_ticker_baskets["A"], four_ticker_baskets["B"], min_observations=20)
+    assert result.beta == pytest.approx(naive_result.beta)

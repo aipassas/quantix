@@ -113,6 +113,60 @@ def compute_correlation_matrix(returns: pd.DataFrame) -> pd.DataFrame:
     return returns.corr()
 
 
+@dataclass
+class BetaRegressionResult:
+    beta: float
+    r_squared: float
+    observation_count: int
+
+
+def compute_capm_beta(
+    ticker_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame,
+    min_observations: Optional[int] = None,
+) -> Optional[BetaRegressionResult]:
+    """OLS beta of the ticker's log returns regressed against the
+    benchmark's log returns: beta = Cov(ticker, benchmark) / Var(benchmark),
+    the closed-form slope of a single-variable linear regression (same
+    coefficient np.polyfit(benchmark, ticker, 1)[0] would give). R² (the
+    squared Pearson correlation) is returned alongside so a low-confidence
+    regression is visible to the caller rather than presented with false
+    precision — this is the fundamental_analysis.py CAPM/WACC input the
+    "CAPM Beta Regression" feature replaces the static Yahoo-reported beta
+    with.
+
+    Returns None (never a fabricated or degenerate beta) when there isn't
+    enough overlapping history to regress reliably, or when the benchmark
+    itself has zero variance over the window — the caller falls back to
+    Yahoo's reported beta, then to a declared 1.0 market-beta assumption.
+    """
+    min_observations = min_observations or RISK.beta_regression_min_observations
+    ticker_returns = compute_log_returns(ticker_df).dropna()
+    benchmark_returns = compute_log_returns(benchmark_df).dropna()
+    # The ticker and benchmark price histories don't necessarily go through
+    # the same tz-normalization pipeline before reaching here (finance.py's
+    # own ticker df is stripped of tz via price_processing.py; a benchmark
+    # fetched straight from data_loader.py's macro bundle isn't) — a
+    # tz-naive/tz-aware mismatch would otherwise make pandas raise
+    # constructing the aligned frame below, so both are normalized to
+    # tz-naive right here rather than trusting the caller already did it.
+    if ticker_returns.index.tz is not None:
+        ticker_returns.index = ticker_returns.index.tz_localize(None)
+    if benchmark_returns.index.tz is not None:
+        benchmark_returns.index = benchmark_returns.index.tz_localize(None)
+    aligned = pd.DataFrame({"ticker": ticker_returns, "benchmark": benchmark_returns}).dropna()
+    if len(aligned) < min_observations:
+        return None
+
+    benchmark_variance = aligned["benchmark"].var()
+    if not benchmark_variance:
+        return None
+
+    beta = aligned["ticker"].cov(aligned["benchmark"]) / benchmark_variance
+    r_squared = aligned["ticker"].corr(aligned["benchmark"]) ** 2
+    return BetaRegressionResult(beta=float(beta), r_squared=float(r_squared), observation_count=len(aligned))
+
+
 def compute_covariance_matrix(returns: pd.DataFrame, trading_days_per_year: Optional[int] = None) -> pd.DataFrame:
     """Annualized covariance matrix of aligned log returns."""
     trading_days_per_year = trading_days_per_year or RISK.trading_days_per_year

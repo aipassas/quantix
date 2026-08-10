@@ -413,6 +413,9 @@ class DCFResult:
     margin_of_safety_pct: Optional[float] = None
     status: Optional[str] = None          # Strong Buy / Buy / Overvalued
     status_color: Optional[str] = None    # streamlit delta_color
+    beta: Optional[float] = None
+    beta_source: Optional[str] = None     # "regressed" / "yahoo_reported" / "market_assumption"
+    beta_r_squared: Optional[float] = None  # only set when beta_source == "regressed"
 
 
 @dataclass
@@ -660,15 +663,30 @@ class FundamentalAnalysisEngine:
 
     # ----- valuation ---------------------------------------------------------
 
-    def wacc(self) -> Optional[float]:
+    def beta_estimate(self, regressed_beta: Optional[float] = None) -> Tuple[float, str]:
+        """Beta for CAPM, in explicit fallback-chain priority: a regressed
+        beta (OLS slope of this ticker's returns against the user's selected
+        benchmark — see portfolio_analytics.compute_capm_beta, computed in
+        finance.py where both return series are already loaded) takes
+        priority when the caller supplies one; otherwise Yahoo's reported
+        beta; otherwise a declared 1.0 market-beta assumption. Every step
+        down the chain is an explicit, disclosed choice, never a silently
+        fabricated number.
+        """
+        s = self.std
+        if regressed_beta is not None:
+            return regressed_beta, "regressed"
+        if s.beta is not None:
+            return s.beta, "yahoo_reported"
+        return 1.0, "market_assumption"
+
+    def wacc(self, regressed_beta: Optional[float] = None) -> Optional[float]:
         """Weighted average cost of capital via CAPM plus after-tax cost of debt."""
         s = self.std
         mcap = s.market_cap
         if not mcap:
             return None
-        # CAPM modeling assumption: absent a reported beta, assume market beta
-        # (1.0). A declared assumption, not a fabricated data value.
-        beta = s.beta if s.beta is not None else 1.0
+        beta, _ = self.beta_estimate(regressed_beta)
         cost_of_equity = RISK.risk_free_rate + beta * (DCF.market_return - RISK.risk_free_rate)
 
         interest = abs(s.interest_expense) if s.interest_expense else 0
@@ -777,7 +795,13 @@ class FundamentalAnalysisEngine:
         pv_terminal = terminal / (1 + discount_rate) ** DCF.projection_years
         return (pv_projections + pv_terminal) / shares
 
-    def run_dcf(self, growth_rate: float, fallback_price: Optional[float] = None) -> DCFResult:
+    def run_dcf(
+        self,
+        growth_rate: float,
+        fallback_price: Optional[float] = None,
+        regressed_beta: Optional[float] = None,
+        beta_r_squared: Optional[float] = None,
+    ) -> DCFResult:
         """Full DCF valuation. Never raises — an un-runnable model returns
         ok=False with the reason, so the dashboard can explain itself."""
         s = self.std
@@ -809,7 +833,8 @@ class FundamentalAnalysisEngine:
             )
             return DCFResult(ok=False, reason=reason, current_price=price)
 
-        discount_rate = self.wacc()
+        discount_rate = self.wacc(regressed_beta)
+        beta_used, beta_source = self.beta_estimate(regressed_beta)
         intrinsic = self.intrinsic_price(growth_rate, discount_rate)
         margin_of_safety = ((intrinsic - price) / intrinsic) * 100
 
@@ -824,6 +849,8 @@ class FundamentalAnalysisEngine:
             ok=True, wacc=discount_rate, current_price=price,
             intrinsic_price=intrinsic, margin_of_safety_pct=margin_of_safety,
             status=status, status_color=color,
+            beta=beta_used, beta_source=beta_source,
+            beta_r_squared=beta_r_squared if beta_source == "regressed" else None,
         )
 
     # ----- basket pre-screen -------------------------------------------------

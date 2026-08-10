@@ -159,6 +159,11 @@ class RiskConfig:
     var_confidence_default: float = 0.95
     var_min_observations: int = 20  # below this, a percentile/normal-fit estimate is too unstable to show
     correlation_min_observations: int = 20  # below this, a correlation/covariance estimate is too unstable to show
+    # A regressed beta needs more history than a simple correlation to be
+    # stable — 60 trading days (~3 months) is a floor, not the standard
+    # academic 2-year/weekly window, since the app already loads whatever
+    # date range the user selected rather than a second, separate fetch.
+    beta_regression_min_observations: int = 60
 
     # Composite Risk Score: normalization anchors (value at 0-score <-> 100-score)
     # and weights for the Risk Dashboard's single 0-100 summary figure. Weights
