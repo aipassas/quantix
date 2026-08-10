@@ -64,6 +64,29 @@ class ScorecardConfig:
     max_beta: float = 1.5
     pe_range: Tuple[float, float] = (10, 45)
     peg_range: Tuple[float, float] = (0, 2.5)
+    # Sector-adjusted P/E override table. Deliberately NOT a full ~11-sector
+    # GICS benchmark table — same disclosed limitation as Debt-to-Equity
+    # above: no live external industry-benchmark source in this environment
+    # to validate invented numbers against. Configured only for sectors with
+    # a well-established, widely-cited structural reason the flat (10, 45)
+    # band misprices them: asset-light growth sectors sustainably trade
+    # above it; leverage-driven, regulated, or commodity-cyclical sectors
+    # sustainably trade below it. Every other sector (Healthcare, Consumer
+    # Cyclical, Industrials, Communication Services, Basic Materials, Real
+    # Estate) falls back to the global band via pe_range_for() rather than a
+    # guessed number — Healthcare and Communication Services in particular
+    # mix structurally different sub-industries under one Yahoo sector label
+    # (biotech vs. staple pharma; legacy telecom vs. mega-cap growth ad-tech)
+    # so no single band is defensible for either without finer-grained data
+    # this app doesn't have.
+    sector_pe_ranges: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
+        "Technology": (15.0, 65.0),         # asset-light, scalable margins — the market has sustained a growth premium here for decades
+        "Financial Services": (6.0, 18.0),  # leverage-driven earnings and regulatory capital rules cap what the market affords banks
+        "Financials": (6.0, 18.0),          # Yahoo's alternate spelling for the same sector, mirrors financials_sector_names above
+        "Utilities": (12.0, 22.0),          # regulated, low-single-digit earnings growth — priced as a bond proxy, not a growth equity
+        "Energy": (6.0, 22.0),              # commodity-cyclical earnings swing with oil/gas prices — historically discounted to the broad market
+        "Consumer Defensive": (14.0, 28.0), # stable, low-growth staples — priced above deep-value cyclicals but below growth sectors
+    })
     min_interest_coverage: float = 3.0
     min_roic_pct: float = 10.0
     min_fcf_yield_pct: float = 4.0  # shown in the Master Matrix; not one of the scoreboard flags
@@ -88,6 +111,20 @@ class ScorecardConfig:
         if sector in self.financials_sector_names:
             return self.financials_max_debt_to_equity
         return self.max_debt_to_equity
+
+    def pe_range_for(self, sector: Optional[str]) -> Tuple[float, float]:
+        """The sector-adjusted P/E band, or the global fallback band if the
+        sector has no configured override (see sector_pe_ranges above).
+
+        PEG is deliberately NOT given the same per-sector treatment: PEG
+        already divides P/E by the growth rate, which is specifically what
+        makes a flat P/E band misleading across growth-premium vs. low-growth
+        sectors in the first place. A PEG of ~1.0 reads as "fairly priced
+        relative to its own growth" whether the underlying stock is a
+        high-growth/high-P/E name or a low-growth/low-P/E one — the sector
+        distortion P/E has is already normalized out.
+        """
+        return self.sector_pe_ranges.get(sector, self.pe_range)
 
     def weight_for(self, key: str) -> float:
         return self.weights.get(key, 1.0)

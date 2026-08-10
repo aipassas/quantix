@@ -1286,6 +1286,8 @@ class FundamentalAnalysisEngine:
         nm, de, cr = s.net_margin, s.debt_to_equity, s.current_ratio
         pe, peg, beta = s.pe_ratio, s.peg_ratio, s.beta
         de_threshold = SCORECARD.max_debt_to_equity_for(s.sector)
+        pe_low, pe_high = SCORECARD.pe_range_for(s.sector)
+        pe_is_sector_adjusted = (pe_low, pe_high) != SCORECARD.pe_range
 
         return [
             MetricCheck(
@@ -1327,10 +1329,17 @@ class FundamentalAnalysisEngine:
             MetricCheck(
                 key="pe_ratio", category="Valuation (P/E)", label="P/E Ratio TTM",
                 value=pe, display="N/A" if pe is None else f"{pe}",
-                benchmark=f"{SCORECARD.pe_range[0]:.0f} - {SCORECARD.pe_range[1]:.0f}",
-                passed=None if pe is None else SCORECARD.pe_range[0] <= pe <= SCORECARD.pe_range[1],
+                benchmark=(
+                    f"{pe_low:.0f} - {pe_high:.0f} (sector-adjusted)" if pe_is_sector_adjusted
+                    else f"{pe_low:.0f} - {pe_high:.0f}"
+                ),
+                passed=None if pe is None else pe_low <= pe <= pe_high,
                 weight=SCORECARD.weight_for("pe_ratio"),
             ),
+            # Not sector-adjusted like P/E above, deliberately: PEG already
+            # divides P/E by the growth rate, which is exactly what makes a
+            # flat P/E band misleading across sectors in the first place.
+            # See SCORECARD.pe_range_for()'s docstring.
             MetricCheck(
                 key="peg_ratio", category="Valuation (PEG)", label="PEG Ratio (Proxy)",
                 value=peg, display="N/A" if peg is None else f"{peg}",
