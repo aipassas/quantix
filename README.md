@@ -9,7 +9,8 @@ Quantix pulls price history and financial statements for a ticker, runs
 them through a validation/standardization/quality-scoring pipeline, and
 surfaces fundamental analysis (ratios, scorecard, Altman Z-Score, DCF,
 Monte Carlo simulation), technical analysis (SMA, RSI, MACD, Bollinger
-Bands, ATR) and an interactive charting dashboard — all from one search box.
+Bands, ATR, Stochastic Oscillator, Anchored VWAP, ADX, Ichimoku Cloud, OBV)
+and an interactive charting dashboard — all from one search box.
 
 ## Features
 
@@ -17,8 +18,10 @@ Bands, ATR) and an interactive charting dashboard — all from one search box.
   solvency metrics, a weighted scorecard, Altman Z-Score, and a DCF model
   with Monte Carlo sensitivity simulation.
 - **Technical analysis** — SMA crossover signals, RSI with overbought/
-  oversold interpretation, MACD, Bollinger Band breakouts, and ATR-based
-  stop-loss suggestions.
+  oversold interpretation, MACD, Bollinger Band breakouts, ATR-based
+  stop-loss suggestions, Stochastic Oscillator, Anchored VWAP, ADX/DMI
+  trend strength, the Ichimoku Cloud (with a real forward-projected cloud),
+  and On-Balance Volume.
 - **Interactive charting** — candlestick chart with volume overlay,
   togglable indicator panels, zoom/pan, built on Plotly.
 - **Risk analytics** — historical volatility, Historical/Parametric VaR,

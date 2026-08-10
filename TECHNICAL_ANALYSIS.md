@@ -23,7 +23,8 @@ output of [`price_processing.py`](price_processing.py)'s
 ```
 data_loader.py            → raw OHLCV from Yahoo Finance
 price_processing.py       → validated, deduplicated, gap-checked DataFrame
-technical_indicators.py   → SMA, RSI, MACD, Bollinger Bands, ATR
+technical_indicators.py   → SMA, RSI, MACD, Bollinger Bands, ATR,
+                             Stochastic, Anchored VWAP, ADX, Ichimoku, OBV
 finance.py                → renders the chart, reads the results
 ```
 
@@ -222,7 +223,231 @@ existing "Execution & Position Sizing" section alongside the Kelly
 Criterion allocation, not a separate panel — both answer "how do I manage
 risk on this position."
 
-## 7. Cross-validation methodology
+## 7. Stochastic Oscillator
+
+**Formula** (the "Slow Stochastic" — see note below):
+
+```
+Raw %K = 100 × (Close − Lowest Low(k_period)) / (Highest High(k_period) − Lowest Low(k_period))
+%K     = SMA(Raw %K, smooth_k)
+%D     = SMA(%K, d_period)
+```
+
+**Fast vs. Slow Stochastic**: the original spec for this task described the
+textbook "Fast Stochastic" (%D = SMA(3) of the *raw* %K directly). Reading
+pandas_ta's `stoch()` source showed its actual default output — the one
+TradingView also plots by default — is the **Slow Stochastic**: raw %K is
+first smoothed by `SMA(smooth_k)` (default 3) into what this codebase calls
+`Stoch_K`, and *that* smoothed line, not the raw one, feeds the `SMA(d_period)`
+that produces `Stoch_D`. Implemented the Slow variant, since genuine
+TradingView parity was the point, not the literal wording of the original
+note.
+
+**Configuration**: `k_period` (sidebar "Stochastic %K Length", default 14),
+`d_period` (fixed at 3), `smooth_k` (fixed at 3) —
+`config.TECHNICAL.stochastic_k_period/d_period/smooth_k`. Overbought/oversold
+thresholds fixed at 80/20 (`stochastic_overbought`/`stochastic_oversold`),
+the standard convention (distinct from RSI's 70/30).
+
+**Crossover signals** (`detect_stochastic_crossovers`): same
+dropna-first, diff-based edge-detection technique as every other crossover
+detector in this module — %K crossing above %D is bullish, below is bearish.
+
+**Validated against**: pandas_ta's `stoch()` — `Stoch_K`/`Stoch_D` matched to
+within floating-point noise (~5.7e-14) across the full valid range on real
+data. Crossover count cross-checked independently by re-deriving the
+transition count from a dropna-first boolean diff (matched exactly) — an
+early version of the *verification script itself* (not the product code)
+double-counted one warm-up-boundary transition by computing `above` on the
+full, not-yet-dropna'd series, where `NaN > NaN` evaluates to `False` rather
+than `NaN`; fixed by dropping NaN first, mirroring what
+`detect_stochastic_crossovers()` already did correctly throughout.
+
+## 8. Anchored VWAP
+
+**Formula**:
+
+```
+Typical Price = (High + Low + Close) / 3
+VWAP          = cumulative(Typical Price × Volume) / cumulative(Volume), from anchor_date forward
+```
+
+**Deliberately not TradingView's intraday, session-resetting VWAP.** Quantix
+only has daily bars — a daily "session reset" would produce a single-bar
+VWAP, which is meaningless. An **anchored** VWAP, cumulative from a
+user-chosen start date, is the daily-bar equivalent that's actually
+informative: "the volume-weighted average price since this reference
+point." Labeled "Anchored VWAP" in the UI specifically so it isn't mistaken
+for the intraday convention.
+
+**Configuration**: `anchor_date` via the sidebar "VWAP Anchor Date" picker
+(only shown once "Show Anchored VWAP" is toggled on), defaulting to the
+first date in the loaded price history if left blank.
+
+**Null handling**: bars before `anchor_date` are `NaN` — VWAP is undefined
+before its own anchor point, never backfilled or zero-filled.
+
+**Validated against**: a hand-worked 3-bar manual calculation (both the
+default anchor and a mid-series anchor, checking that pre-anchor bars are
+correctly `NaN`) — matched to within `1e-9`.
+
+## 9. Average Directional Index (ADX)
+
+**Formula** (Wilder, 1978 — a trend-**strength** indicator, not direction):
+
+```
++DM = max(High − PrevHigh, 0) if (High − PrevHigh) > (PrevLow − Low) else 0
+-DM = max(PrevLow − Low, 0)   if (PrevLow − Low) > (High − PrevHigh) else 0
++DI = 100 × WilderSmooth(+DM, period) / ATR(period)
+-DI = 100 × WilderSmooth(-DM, period) / ATR(period)
+DX  = 100 × |+DI − -DI| / (+DI + -DI)
+ADX = WilderSmooth(DX, period)
+```
+
+**Configuration**: period via the sidebar "ADX Length" slider (default 14).
+Trend-strength threshold fixed at the standard 25 (`config.TECHNICAL.adx_trend_threshold`),
+drawn as a reference line on the ADX panel (ADX above it: trending; below:
+non-trending — direction still comes from comparing +DI/-DI, not ADX itself).
+
+### The seeding bug this task caught — a genuinely harder sequel to MACD's
+
+This was the standout technical challenge of the "Additional Technical
+Indicators" work, and a two-part, *compounding* version of the same class of
+bug MACD's seeding caught (§4) and ATR's seeding pre-empted (§6).
+
+**First attempt**: reused this module's own `compute_atr()` (already
+verified exact against pandas_ta standalone, §6) as ADX's internal ATR
+denominator. Result: `Plus_DI`/`Minus_DI` matched pandas_ta *exactly*
+(`0.00e+00`), but final `ADX` diverged by ≈0.49 — not floating-point noise.
+
+**The trap**: DI matching exactly while ADX doesn't looks like it should be
+impossible, since ADX is *derived from* DI (via DX). It isn't — DX itself
+matched pandas_ta exactly on the overlapping non-NaN range; the divergence
+was purely about **which bar each series' recursion effectively starts
+from**, something that doesn't show up in a plain value-diff on the
+overlapping range but does compound once a second, unseeded `.ewm()` stage
+(DX → ADX) is chained on top.
+
+**Root cause, found by reading pandas_ta's source directly** (not
+guessed, not tuned to match — the same discipline as §4 and §6), had two
+independent parts:
+
+1. `pandas_ta.adx()` calls its own `atr()` internally with **`prenan=True`**
+   — forcing the very first True Range bar to `NaN` before seeding — which
+   differs from `atr()`'s own **standalone** default of `prenan=False` (the
+   convention this codebase's own `compute_atr()` correctly matches for
+   ATR-as-an-indicator, §6). Same function, different default depending on
+   whether it's called standalone or as ADX's internal building block.
+2. Given that leading `NaN`, `atr()`'s SMA-seed step (`presma=True`) uses a
+   **positional** slice — `tr[0:length].mean()`, skipping the `NaN` via
+   pandas' default `skipna` — not the "drop `NaN` first, then take the first
+   `length` valid values" approach this module's existing `_sma_seed()`
+   helper uses for MACD/ATR. The two approaches are **identical** whenever
+   there's no leading `NaN` in the seed window (true for every other seeded
+   indicator already in this codebase) — and diverge specifically when
+   `prenan=True` introduces one, exactly ADX's internal case.
+
+**Debugging trail** (documented in full in `_sma_seed_positional()` and
+`_atr_for_adx()`'s docstrings in `technical_indicators.py`): removing
+`min_periods` from the shared `_rma_unseeded()` helper was tried first and
+made the divergence *worse* (0.49 → 1.28) — a genuine wrong turn, corrected
+by manually replicating pandas_ta's algorithm step-by-step with this
+codebase's own helpers (reproduced the same divergence, confirming the
+algorithm structure was right and a building block was wrong), then
+rebuilding the same chain with pandas_ta's *own* `atr()`/`ma()` functions
+directly (got an exact `0.0` diff, isolating the bug to this module's ATR
+substitute specifically), then comparing `first_valid_index()` across
+intermediate series (found a genuine one-bar offset — pandas_ta's internal
+series all started one trading day earlier than this module's).
+
+**Fix**: `_atr_for_adx()` — a dedicated internal ATR helper (distinct from
+the public `compute_atr()`) that forces `tr.iloc[0] = NaN`, then seeds via
+the new `_sma_seed_positional()` helper, then applies bare
+`.ewm(alpha=1/period, adjust=False)`. `_rma_unseeded()` — bare Wilder
+smoothing with **no** `min_periods` constraint (the correct final state;
+`compute_adx()` chains it across *two* stages, +DM/-DM then DX→ADX, and
+adding a warm-up mask to the first stage was what shifted the second
+stage's effective starting bar in the first place).
+
+**Result**: `ADX`, `Plus_DI`, and `Minus_DI` all match pandas_ta **exactly**
+— `0.00e+00` difference across the full overlapping valid range.
+
+## 10. Ichimoku Cloud
+
+**Formula** ("one-glance equilibrium chart"):
+
+```
+Tenkan-sen (Conversion) = midprice(High, Low, tenkan_period)
+Kijun-sen (Base)        = midprice(High, Low, kijun_period)
+Senkou Span A           = (Tenkan + Kijun) / 2, plotted kijun_period − 1 bars ahead
+Senkou Span B           = midprice(High, Low, senkou_b_period), plotted kijun_period − 1 bars ahead
+Chikou Span             = Close, plotted kijun_period − 1 bars behind
+```
+
+where `midprice(H, L, n) = (rolling_max(H, n) + rolling_min(L, n)) / 2`.
+
+**Configuration**: fixed at the standard 9/26/52 periods
+(`config.TECHNICAL.ichimoku_tenkan_period/kijun_period/senkou_b_period`) —
+per the original task spec, these are not user-tunable via the sidebar the
+way SMA/RSI/ADX periods are.
+
+### Why this returns two DataFrames, not one
+
+pandas_ta's own `ichimoku()` returns a `(historical, forward)` pair, and
+`compute_ichimoku()` mirrors that exactly via the `IchimokuResult`
+dataclass — confirmed by reading pandas_ta's source directly that this is
+its actual, intentional design, not incidental:
+
+- **`historical`** — index matches the input `df` exactly. Senkou A/B are
+  shifted `kijun_period − 1` bars **backward**, so today's plotted cloud
+  value is what was actually computed `kijun_period − 1` bars ago (the
+  standard Ichimoku convention — the cloud you see today was "cast" in the
+  past).
+- **`forward`** — genuinely extends the date index **beyond** the last
+  observed bar, by `kijun_period` new business days
+  (`pd.bdate_range(start=last_date + 1 day, periods=kijun_period)`), holding
+  the real forward-projected Senkou A/B values. A fixed, input-matching
+  index literally cannot hold real future-dated cloud values, so a second
+  DataFrame is the only way to represent them at all.
+
+This is a standard, universally-understood **forward projection** — not
+data fabrication in the sense this codebase otherwise strictly avoids
+(inventing missing historical observations). The forward cloud is clearly
+a projection of already-known High/Low history, plotted on real future
+calendar dates, the same way any charting platform draws it.
+
+**Validated against**: pandas_ta's `ichimoku()` — all 5 historical
+components (Tenkan, Kijun, Senkou A, Senkou B, Chikou) and both forward
+Senkou A/B values matched **exactly** (`0.00e+00`), and the forward
+DataFrame's date index matched pandas_ta's own forward index element-for-element.
+
+## 11. On-Balance Volume (OBV)
+
+**Formula** (Granville, 1963):
+
+```
+OBV = cumulative sum of: +Volume (Close up), −Volume (Close down), 0 (Close unchanged)
+```
+
+**First-bar behavior — deliberately replicated, not "fixed"**: pandas_ta's
+`obv()` produces `NaN` for the very first bar rather than an assumed
+starting value, traced to a shadowed `initial` parameter in its internal
+`signed_series()` helper that always resolves to `None` (→ `NaN`)
+regardless of the `initial=1` argument `obv()` itself passes — arguably an
+unintentional quirk in pandas_ta's own code, confirmed empirically (not
+just theorized) via a direct small-scale `ta.obv()` test. This module
+replicates it deliberately rather than "fixing" it to some other
+convention, because it's actually philosophically **consistent** with this
+codebase's own rule throughout: the first bar has no prior Close to compare
+against, so its direction is genuinely undefined — `NaN`, never a fabricated
+"+1" assumption.
+
+**Configuration**: none — OBV has no period or threshold to tune.
+
+**Validated against**: pandas_ta's `obv()` — matched exactly
+(`0.00e+00`), including the matching `NaN` first-bar behavior on both sides.
+
+## 12. Cross-validation methodology
 
 Every indicator was checked against **pandas_ta** — a mature, widely-used
 Python technical-analysis library whose non-TA-Lib code paths implement
@@ -232,10 +457,13 @@ guess, but a cross-check against an independent, reputable implementation,
 with the *source code itself* read whenever results diverged rather than
 tweaking constants until numbers happened to match.
 
-This caught two real, non-obvious bugs (MACD's and, pre-emptively, ATR's
-EMA seeding — see §4 and §6) that a purely "eyeball the chart" validation
-would have missed, since both errors are largest during the warm-up period
-and shrink into apparent agreement over time.
+This caught three real, non-obvious seeding bugs (MACD's, ADX's, and,
+pre-emptively, ATR's — see §4, §9, and §6) that a purely "eyeball the
+chart" validation would have missed, since seeding errors are largest
+during the warm-up period and shrink into apparent agreement over time.
+ADX's was the hardest of the three: a two-part, compounding discrepancy
+that left the intermediate +DI/-DI values matching exactly while the final
+ADX still diverged — see §9 for the full debugging trail.
 
 | Indicator | Result | Match type |
 |---|---|---|
@@ -244,6 +472,11 @@ and shrink into apparent agreement over time.
 | MACD (Line/Signal/Histogram) | `0.00e+00` | Exact, after the seeding fix |
 | Bollinger Bands | ~1e-13 max diff | Floating-point noise |
 | ATR | `0.0` | Exact, first attempt |
+| Stochastic (%K/%D) | ~5.7e-14 max diff | Floating-point noise |
+| Anchored VWAP | ~1e-9 max diff | Floating-point noise, vs. hand-worked manual calc |
+| ADX / +DI / -DI | `0.00e+00` | Exact, after the seeding fix |
+| Ichimoku (5 historical + 2 forward components) | `0.00e+00` | Exact |
+| OBV | `0.00e+00` | Exact, including matching NaN first bar |
 
 Every indicator was also tested against a bank ticker (JPM) alongside a
 normal company (AAPL) throughout this project — technical indicators don't
@@ -251,7 +484,7 @@ have the sector-structural gaps fundamentals do, so this mainly confirmed
 no ticker-specific edge cases, rather than surfacing new ones the way it
 did for the fundamentals validation reports.
 
-## 8. Interactive dashboard
+## 13. Interactive dashboard
 
 The price chart (`finance.py`) is built dynamically from which indicator
 panels are toggled on in the sidebar:
@@ -259,20 +492,35 @@ panels are toggled on in the sidebar:
 - **Price panel** (row 1, always shown): candlesticks, the custom SMA line,
   the optional 20/50/200-day SMA trio, Bollinger Bands (shaded region
   between dotted upper/lower lines), SMA/Bollinger crossover and breakout
-  markers, and **volume bars** — overlaid at the bottom of the price panel
-  on a secondary y-axis (scaled to 4× the actual max so bars stay compact),
-  the same space-efficient convention TradingView uses, rather than a
-  dedicated 4th chart row.
+  markers, the optional Anchored VWAP line and Ichimoku Cloud overlay
+  (Tenkan-sen/Kijun-sen/Chikou Span lines plus the shaded Senkou A/B cloud,
+  drawn continuously across the historical *and* forward-projected segments
+  — see §10), and **volume bars** — overlaid at the bottom of the price
+  panel on a secondary y-axis (scaled to 4× the actual max so bars stay
+  compact), the same space-efficient convention TradingView uses, rather
+  than a dedicated extra chart row.
 - **RSI panel** (toggleable, "Show RSI Panel"): the RSI line, shaded
   overbought/oversold reference zones.
 - **MACD panel** (toggleable, "Show MACD Panel"): histogram (colored by
   sign), MACD/Signal lines, crossover markers.
+- **Stochastic panel** (toggleable, "Show Stochastic Panel"): %K/%D lines,
+  shaded 80/20 overbought/oversold reference zones, crossover markers.
+- **ADX panel** (toggleable, "Show ADX Panel"): ADX, +DI, -DI lines, a
+  reference line at the trend-strength threshold (25).
+- **OBV panel** (toggleable, "Show OBV Panel"): the OBV line.
 
-The chart is 1-3 rows depending on what's active — `row_heights` and each
-trace's row number are computed from the active panel list, not hardcoded,
-so toggling a panel off both shrinks the chart and reduces the number of
-Plotly trace objects rendered (part of "optimize rendering," not just a
-visual preference).
+All 5 newer panels/overlays (Stochastic, VWAP, Ichimoku, ADX, OBV) default
+**off** — a deliberate choice so a first-time chart stays exactly as
+uncluttered as it was before this indicator set existed; a user who wants
+them opts in per-indicator.
+
+The chart is 1-6 rows depending on what's active — `row_heights` and each
+trace's row number are computed from the active panel list, not hardcoded.
+The price panel always keeps half the total chart height; any active
+oscillator rows (RSI/MACD/Stochastic/ADX/OBV) split the remaining half
+evenly between however many of them are on. Toggling a panel off both
+shrinks the chart and reduces the number of Plotly trace objects rendered
+(part of "optimize rendering," not just a visual preference).
 
 **Zoom, pan, and fullscreen** use Plotly's native modebar rather than a
 custom-built control: `dragmode='zoom'` (drag-to-zoom on the chart itself)
@@ -282,13 +530,13 @@ than left to library defaults, so it's clear in the code that these
 aren't accidentally disabled. The modebar's expand icon provides
 fullscreen viewing.
 
-Every indicator's current-value summary (the RSI badge, the SMA/MACD
-crossover-signal tables, the Bollinger breakout table) stays visible
-regardless of whether that indicator's *chart panel* is toggled on — hiding
-a chart row declutters the visualization, it doesn't mean the underlying
-information stops being useful.
+Every indicator's current-value summary (the RSI badge, the SMA/MACD/
+Stochastic crossover-signal tables, the Bollinger breakout table) stays
+visible regardless of whether that indicator's *chart panel* is toggled on
+— hiding a chart row declutters the visualization, it doesn't mean the
+underlying information stops being useful.
 
-## 9. Developer guide: adding a new indicator
+## 14. Developer guide: adding a new indicator
 
 1. Write the calculation as a function taking the cleaned OHLCV `df` (and
    any parameters) and returning either a new `pd.Series` or a copy of `df`
@@ -314,17 +562,24 @@ information stops being useful.
    recent values, since a seeding discrepancy is largest during the
    warm-up period and can look like agreement if you only check the tail.
 
-## 10. References
+## 15. References
 
 - Wilder, J. Welles Jr. *New Concepts in Technical Trading Systems.*
-  Trend Research, 1978 — the original definition of RSI, ATR, and the
-  smoothing technique ("Wilder's Moving Average" / RMA) both share.
+  Trend Research, 1978 — the original definition of RSI, ATR, ADX/DMI, and
+  the smoothing technique ("Wilder's Moving Average" / RMA) they share.
 - Appel, Gerald. *Technical Analysis: Power Tools for Active Investors.*
   Financial Times Prentice Hall, 2005 — MACD, developed by Appel in the
   late 1970s.
 - Bollinger, John. *Bollinger on Bollinger Bands.* McGraw-Hill, 2001.
+- Lane, George C. — developer of the Stochastic Oscillator in the late
+  1950s.
+- Hosoda, Goichi. *Ichimoku Kinkō Hyō* — published under the pen name
+  "Ichimoku Sanjin," 1969.
+- Granville, Joseph. *Granville's New Key to Stock Market Profits.*
+  Prentice-Hall, 1963 — On-Balance Volume.
 - [pandas_ta](https://github.com/twopirllc/pandas-ta) — the independent
   reference implementation used for cross-validation throughout this
   module's development; several of its own function source files (`ema()`,
-  `rma()`, `atr()`, `bbands()`, `true_range()`) were read directly to
-  confirm exact conventions rather than assumed from documentation alone.
+  `rma()`, `atr()`, `bbands()`, `true_range()`, `stoch()`, `adx()`,
+  `ichimoku()`, `obv()`) were read directly to confirm exact conventions
+  rather than assumed from documentation alone.

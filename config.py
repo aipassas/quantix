@@ -170,6 +170,8 @@ class ChartDefaults:
     rsi_range: Tuple[int, int] = (5, 50)
     atr_default: int = 14
     atr_range: Tuple[int, int] = (5, 50)
+    stochastic_k_range: Tuple[int, int] = (5, 50)
+    adx_range: Tuple[int, int] = (5, 50)
     vol_window_default: int = 21
     vol_window_range: Tuple[int, int] = (5, 120)
     var_lookback_default: int = 252
@@ -187,8 +189,8 @@ class ChartDefaults:
 @dataclass(frozen=True)
 class TechnicalConfig:
     """Settings for technical_indicators.py — the technical analysis
-    calculation layer (SMA now; RSI/MACD/Bollinger Bands/ATR land here as
-    their own tasks are built out)."""
+    calculation layer (SMA, RSI, MACD, Bollinger Bands, ATR, Stochastic,
+    ADX, Ichimoku Cloud, and OBV)."""
     # The three most widely-used SMA periods (short/medium/long-term trend),
     # shown as an optional overlay alongside the user's custom-length line
     # (CHART_DEFAULTS.sma_default/sma_range) — standard across virtually
@@ -228,6 +230,31 @@ class TechnicalConfig:
     # throughout (Kelly Criterion, DCF, Quality Score all assume going
     # long, never shorting), so only a downside stop is shown.
     atr_stop_multiplier: float = 2.0
+
+    # Standard Stochastic Oscillator periods (the "Slow Stochastic" —
+    # pre-smoothed %K — is what TradingView and pandas_ta both actually
+    # ship as their default "Stochastic", confirmed by reading pandas_ta's
+    # source rather than the simpler textbook Fast Stochastic formula).
+    # Overbought/oversold at 80/20 — Stochastic's own universal convention,
+    # deliberately different from RSI's 70/30.
+    stochastic_k_period: int = 14
+    stochastic_d_period: int = 3
+    stochastic_smooth_k: int = 3
+    stochastic_overbought: float = 80.0
+    stochastic_oversold: float = 20.0
+
+    # ADX trend-strength threshold — the standard Wilder convention: ADX
+    # above this is considered "trending" (favors trend-following),
+    # below is considered "non-trending/choppy" (favors mean-reversion) —
+    # directly relevant to this app's own mean-reversion Backtest section.
+    adx_period: int = 14
+    adx_trend_threshold: float = 25.0
+
+    # Standard Ichimoku Cloud periods — virtually universal across every
+    # platform that implements it; rarely tuned in practice, unlike SMA/RSI.
+    ichimoku_tenkan_period: int = 9
+    ichimoku_kijun_period: int = 26
+    ichimoku_senkou_b_period: int = 52
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ import zlib
 from data_loader import load_ticker_bundle, load_macro_bundle, load_seasonality_history, load_price_history_only, clear_all_caches
 from financial_standardization import standardize_financials
 from price_processing import process_price_data
-from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss
+from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss, compute_stochastic, detect_stochastic_crossovers, compute_anchored_vwap, compute_adx, compute_ichimoku, compute_obv
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification
 from report_export import generate_tear_sheet_pdf
@@ -247,17 +247,29 @@ show_rsi_panel = st.sidebar.checkbox("Show RSI Panel", value=True)
 atr_length = st.sidebar.slider("ATR Length", min_value=CHART_DEFAULTS.atr_range[0], max_value=CHART_DEFAULTS.atr_range[1], value=CHART_DEFAULTS.atr_default)
 show_macd_panel = st.sidebar.checkbox("Show MACD Panel", value=True)
 
-st.sidebar.header("4. Risk Analytics")
+st.sidebar.header("4. Additional Indicators")
+stochastic_k_length = st.sidebar.slider("Stochastic %K Length", min_value=CHART_DEFAULTS.stochastic_k_range[0], max_value=CHART_DEFAULTS.stochastic_k_range[1], value=TECHNICAL.stochastic_k_period)
+show_stochastic_panel = st.sidebar.checkbox("Show Stochastic Panel", value=False)
+show_vwap = st.sidebar.checkbox("Show Anchored VWAP", value=False, help="Cumulative Volume-Weighted Average Price from a chosen anchor date. Quantix only has daily bars, so this is an anchored VWAP rather than an intraday session VWAP.")
+vwap_anchor_date = None
+if show_vwap:
+    vwap_anchor_date = st.sidebar.date_input("VWAP Anchor Date", value=None, help="Defaults to the start of the loaded price history if left blank.")
+show_ichimoku = st.sidebar.checkbox("Show Ichimoku Cloud", value=False, help=f"Tenkan {TECHNICAL.ichimoku_tenkan_period} / Kijun {TECHNICAL.ichimoku_kijun_period} / Senkou B {TECHNICAL.ichimoku_senkou_b_period} — fixed periods, includes a real forward-projected cloud.")
+adx_length = st.sidebar.slider("ADX Length", min_value=CHART_DEFAULTS.adx_range[0], max_value=CHART_DEFAULTS.adx_range[1], value=TECHNICAL.adx_period)
+show_adx_panel = st.sidebar.checkbox("Show ADX Panel", value=False)
+show_obv_panel = st.sidebar.checkbox("Show OBV Panel", value=False)
+
+st.sidebar.header("5. Risk Analytics")
 vol_window = st.sidebar.slider("Volatility Window (days)", min_value=CHART_DEFAULTS.vol_window_range[0], max_value=CHART_DEFAULTS.vol_window_range[1], value=CHART_DEFAULTS.vol_window_default)
 var_confidence = st.sidebar.selectbox("VaR Confidence Level", options=RISK.var_confidence_levels, index=list(RISK.var_confidence_levels).index(RISK.var_confidence_default), format_func=lambda c: f"{c:.0%}")
 var_lookback = st.sidebar.slider("VaR Lookback (days)", min_value=CHART_DEFAULTS.var_lookback_range[0], max_value=CHART_DEFAULTS.var_lookback_range[1], value=CHART_DEFAULTS.var_lookback_default)
 risk_free_rate = st.sidebar.slider("Risk-Free Rate (%)", min_value=CHART_DEFAULTS.risk_free_rate_range_pct[0], max_value=CHART_DEFAULTS.risk_free_rate_range_pct[1], value=RISK.risk_free_rate * 100, step=0.25, help="Feeds the Sharpe/Sortino ratios below. The DCF's CAPM cost of equity uses its own fixed risk-free-rate assumption (RISK.risk_free_rate), unaffected by this slider.") / 100
 
-st.sidebar.header("5. Portfolio Basket")
+st.sidebar.header("6. Portfolio Basket")
 portfolio_basket_input = st.sidebar.text_input("Correlation Basket (comma-separated)", value=CHART_DEFAULTS.portfolio_default_basket, help="Tickers to include in the Portfolio Correlation & Diversification section further down the page. The main Stock Ticker above is always included automatically.")
 portfolio_lookback = st.sidebar.slider("Portfolio Lookback (days)", min_value=CHART_DEFAULTS.portfolio_lookback_range[0], max_value=CHART_DEFAULTS.portfolio_lookback_range[1], value=CHART_DEFAULTS.portfolio_lookback_default)
 
-st.sidebar.header("6. Diagnostics")
+st.sidebar.header("7. Diagnostics")
 # Rendered BEFORE the Force Refresh button below on purpose. Streamlit
 # discards the session_state entry for any keyed widget that isn't rendered
 # during a run — and Force Refresh calls st.rerun(), which aborts the script
@@ -278,7 +290,7 @@ setup_logging(logging.DEBUG if debug_mode else logging.INFO)
 log_event(logger, logging.DEBUG, "logging.level",
           level=logging.getLevelName(get_logger("data_loader").getEffectiveLevel()))
 
-st.sidebar.header("7. Data Cache")
+st.sidebar.header("8. Data Cache")
 st.sidebar.caption("Quotes: 30 min · Prices: 1 hr · Statements: 24 hr · Ownership: 12 hr")
 if st.sidebar.button("🔄 Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
     log_event(logger, logging.INFO, "user.force_refresh", ticker=ticker_symbol)
@@ -795,16 +807,43 @@ else:
     bb_breakouts = detect_bollinger_breakouts(df)
     df[f"ATR_{atr_length}"] = compute_atr(df, atr_length)
 
+    # The 5 newer indicators are only computed when their sidebar toggle is
+    # on — all default off (see config.py / sidebar section 4), so a fresh
+    # chart stays exactly as it was before this section existed.
+    stoch_signals = []
+    if show_stochastic_panel:
+        df = compute_stochastic(df, k_period=stochastic_k_length)
+        stoch_signals = detect_stochastic_crossovers(df)
+    if show_vwap:
+        df["VWAP"] = compute_anchored_vwap(df, anchor_date=vwap_anchor_date)
+    if show_adx_panel:
+        df = compute_adx(df, period=adx_length)
+    if show_obv_panel:
+        df["OBV"] = compute_obv(df)
+    ichimoku_result = compute_ichimoku(df) if show_ichimoku else None
+
     # Chart rows are built dynamically from which indicator panels are
-    # toggled on — the price panel (candlesticks + SMA/Bollinger overlays +
-    # volume) is always row 1; RSI and MACD each claim the next row only if
-    # their sidebar toggle is on, so the chart is 1-3 rows depending on what
-    # the user actually wants to see (fewer traces too, when panels are off
-    # — "optimize rendering" isn't just visual, it's fewer Plotly objects).
-    panels = ["price"] + (["rsi"] if show_rsi_panel else []) + (["macd"] if show_macd_panel else [])
+    # toggled on — the price panel (candlesticks + SMA/Bollinger/VWAP/
+    # Ichimoku overlays + volume) is always row 1; RSI, MACD, Stochastic,
+    # ADX, and OBV each claim the next row only if their sidebar toggle is
+    # on, so the chart is 1-6 rows depending on what the user actually wants
+    # to see (fewer traces too, when panels are off — "optimize rendering"
+    # isn't just visual, it's fewer Plotly objects).
+    panels = (
+        ["price"]
+        + (["rsi"] if show_rsi_panel else [])
+        + (["macd"] if show_macd_panel else [])
+        + (["stochastic"] if show_stochastic_panel else [])
+        + (["adx"] if show_adx_panel else [])
+        + (["obv"] if show_obv_panel else [])
+    )
     row_of = {name: i + 1 for i, name in enumerate(panels)}
     num_rows = len(panels)
-    row_heights = {1: [1.0], 2: [0.65, 0.35], 3: [0.5, 0.25, 0.25]}[num_rows]
+    # Price panel keeps half the chart height; any oscillator rows split the
+    # remaining half evenly between them. This generalizes the old
+    # hand-picked {1,2,3}-row table (which this reduces to exactly for the
+    # num_rows==3 case) to the now-possible 4-6 row layouts.
+    row_heights = [1.0] if num_rows == 1 else [0.5] + [0.5 / (num_rows - 1)] * (num_rows - 1)
     # secondary_y on row 1 only, for the volume overlay below.
     specs = [[{"secondary_y": True}]] + [[{}] for _ in range(num_rows - 1)]
 
@@ -854,6 +893,25 @@ else:
             x=[s.date for s in bearish], y=[s.price for s in bearish], mode='markers', name='Bearish Crossover',
             marker=dict(symbol='triangle-down', size=11, color='#ef4444', line=dict(width=1, color='white')),
         ), row=1, col=1)
+    if show_vwap:
+        fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], line=dict(color='#e879f9', width=2, dash='dash'), name='Anchored VWAP'), row=1, col=1)
+    if show_ichimoku and ichimoku_result is not None:
+        hist, fwd = ichimoku_result.historical, ichimoku_result.forward
+        # Senkou A/B plotted across the FULL horizon (historical + forward
+        # projection) as one continuous pair of lines, with the cloud shaded
+        # between them — the forward segment uses real future business dates
+        # (see compute_ichimoku's docstring), not a fabricated extension of
+        # historical price.
+        senkou_a_full = pd.concat([hist['SenkouA'], fwd['SenkouA']])
+        senkou_b_full = pd.concat([hist['SenkouB'], fwd['SenkouB']])
+        fig.add_trace(go.Scatter(x=senkou_a_full.index, y=senkou_a_full, line=dict(color='rgba(34, 197, 94, 0.5)', width=1), name='Senkou A'), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=senkou_b_full.index, y=senkou_b_full, line=dict(color='rgba(239, 68, 68, 0.5)', width=1), name='Senkou B',
+            fill='tonexty', fillcolor='rgba(148, 163, 184, 0.12)',
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['Tenkan'], line=dict(color='#38bdf8', width=1), name='Tenkan-sen'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['Kijun'], line=dict(color='#facc15', width=1), name='Kijun-sen'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['Chikou'], line=dict(color='#a3a3a3', width=1, dash='dot'), name='Chikou Span'), row=1, col=1)
     if show_rsi_panel:
         rsi_row = row_of["rsi"]
         fig.add_trace(go.Scatter(x=df.index, y=df[f"RSI_{rsi_length}"], line=dict(color='purple'), name='RSI'), row=rsi_row, col=1)
@@ -881,6 +939,34 @@ else:
                 x=[s.date for s in macd_bearish], y=[s.macd_value for s in macd_bearish], mode='markers', name='MACD Bearish Crossover',
                 marker=dict(symbol='triangle-down', size=9, color='#ef4444', line=dict(width=1, color='white')),
             ), row=macd_row, col=1)
+    if show_stochastic_panel:
+        stoch_row = row_of["stochastic"]
+        fig.add_trace(go.Scatter(x=df.index, y=df['Stoch_K'], line=dict(color='#38bdf8', width=1.5), name='%K'), row=stoch_row, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Stoch_D'], line=dict(color='#facc15', width=1.5), name='%D'), row=stoch_row, col=1)
+        fig.add_hrect(y0=TECHNICAL.stochastic_overbought, y1=100, fillcolor="rgba(239, 68, 68, 0.08)", line_width=0, row=stoch_row, col=1)
+        fig.add_hrect(y0=0, y1=TECHNICAL.stochastic_oversold, fillcolor="rgba(34, 197, 94, 0.08)", line_width=0, row=stoch_row, col=1)
+        fig.add_hline(y=TECHNICAL.stochastic_overbought, line_dash="dash", line_color="rgba(239, 68, 68, 0.6)", row=stoch_row, col=1)
+        fig.add_hline(y=TECHNICAL.stochastic_oversold, line_dash="dash", line_color="rgba(34, 197, 94, 0.6)", row=stoch_row, col=1)
+        if stoch_signals:
+            stoch_bullish = [s for s in stoch_signals if s.kind == "bullish"]
+            stoch_bearish = [s for s in stoch_signals if s.kind == "bearish"]
+            fig.add_trace(go.Scatter(
+                x=[s.date for s in stoch_bullish], y=[s.k_value for s in stoch_bullish], mode='markers', name='Stochastic Bullish Crossover',
+                marker=dict(symbol='triangle-up', size=9, color='#22c55e', line=dict(width=1, color='white')),
+            ), row=stoch_row, col=1)
+            fig.add_trace(go.Scatter(
+                x=[s.date for s in stoch_bearish], y=[s.k_value for s in stoch_bearish], mode='markers', name='Stochastic Bearish Crossover',
+                marker=dict(symbol='triangle-down', size=9, color='#ef4444', line=dict(width=1, color='white')),
+            ), row=stoch_row, col=1)
+    if show_adx_panel:
+        adx_row = row_of["adx"]
+        fig.add_trace(go.Scatter(x=df.index, y=df['ADX'], line=dict(color='white', width=1.5), name='ADX'), row=adx_row, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Plus_DI'], line=dict(color='#22c55e', width=1), name='+DI'), row=adx_row, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Minus_DI'], line=dict(color='#ef4444', width=1), name='-DI'), row=adx_row, col=1)
+        fig.add_hline(y=TECHNICAL.adx_trend_threshold, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)", row=adx_row, col=1)
+    if show_obv_panel:
+        obv_row = row_of["obv"]
+        fig.add_trace(go.Scatter(x=df.index, y=df['OBV'], line=dict(color='#a78bfa', width=1.5), name='OBV'), row=obv_row, col=1)
     fig.update_layout(
     xaxis_rangeslider_visible=False,
     height=400 + 200 * (num_rows - 1),
@@ -934,6 +1020,19 @@ else:
             if len(macd_signals) > 10:
                 st.caption(f"Showing the 10 most recent of {len(macd_signals)} signals in the selected date range.")
 
+    if stoch_signals:
+        with st.expander(f"Stochastic Crossover Signals ({len(stoch_signals)} in range)", expanded=False):
+            recent_stoch = stoch_signals[-10:][::-1]  # most recent first
+            stoch_signal_data = {
+                "Date": [s.date.strftime("%Y-%m-%d") for s in recent_stoch],
+                "Signal": [f"{s.icon} {s.label}" for s in recent_stoch],
+                "%K": [f"{s.k_value:.1f}" for s in recent_stoch],
+                "%D": [f"{s.d_value:.1f}" for s in recent_stoch],
+            }
+            st.table(pd.DataFrame(stoch_signal_data))
+            if len(stoch_signals) > 10:
+                st.caption(f"Showing the 10 most recent of {len(stoch_signals)} signals in the selected date range.")
+
     if bb_breakouts:
         with st.expander(f"Bollinger Band Breakouts ({len(bb_breakouts)} in range)", expanded=False):
             recent_bb = bb_breakouts[-10:][::-1]  # most recent first
@@ -952,7 +1051,7 @@ else:
         data=df.to_csv().encode("utf-8"),
         file_name=f"{ticker_symbol}_price_indicators_{start_date}_{end_date}.csv",
         mime="text/csv",
-        help="OHLCV plus every technical indicator column computed above (SMA/RSI/MACD/Bollinger/ATR) — exactly what's plotted, one row per trading day.",
+        help="OHLCV plus every technical indicator column computed above (SMA/RSI/MACD/Bollinger/ATR, and Stochastic/VWAP/ADX/OBV if their panel is toggled on) — exactly what's plotted, one row per trading day. The Ichimoku Cloud's forward-projected segment isn't included, since it extends past the last trading day in this table.",
     )
 
     # ==========================================
