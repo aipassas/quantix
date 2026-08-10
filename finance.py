@@ -23,6 +23,7 @@ from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, cla
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 from executive_digest import collect_flags
+from monte_carlo import simulate_gbm_paths, simulate_bootstrap_paths, terminal_stats
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -1927,20 +1928,29 @@ else:
     # ==========================================
     st.markdown("---")
     st.header(" Path 2: Monte Carlo Future Probability Simulator")
-    st.markdown("Projecting 1,000 randomized future price paths over the next 60 trading days using Geometric Brownian Motion.")
+
+    sim_method = st.radio(
+        "Simulation Method",
+        options=["Block Bootstrap (Historical Resampling)", "Geometric Brownian Motion (Normal)"],
+        index=0,
+        horizontal=True,
+        help=(
+            "Block Bootstrap resamples actual historical 5-day return blocks, preserving whatever real "
+            "fat tails, skew, and volatility clustering the ticker's own history has. Geometric Brownian "
+            "Motion instead draws shocks from a fitted normal distribution, which structurally cannot "
+            "produce fatter-than-normal tails no matter what really happened historically."
+        ),
+    )
+    is_bootstrap = sim_method.startswith("Block Bootstrap")
+
+    st.markdown(
+        f"Projecting 1,000 randomized future price paths over the next 60 trading days using **{sim_method}**."
+    )
 
     # 1. Extract Historical Parameters from the Target Stock
     returns = df['Returns'].dropna()
 
-    if len(returns) > 30:
-        # Calculate daily drift and volatility
-        daily_drift = returns.mean()
-        daily_vol = returns.std()
-        variance = daily_vol ** 2
-
-        # GBM Drift adjustment: mu - 0.5 * sigma^2
-        mu = daily_drift - (0.5 * variance)
-
+    if len(returns) > MONTE_CARLO.min_history_days_for_bootstrap:
         # Simulation Parameters
         num_simulations = MONTE_CARLO.num_simulations
         forecast_days = MONTE_CARLO.forecast_days
@@ -1948,30 +1958,18 @@ else:
 
         # 2. Run the Simulation Matrix
         # Seed deterministically per-ticker so the simulation is stable across Streamlit reruns
-        np.random.seed(zlib.crc32(ticker_symbol.encode()) % (2**32))
+        seed = zlib.crc32(ticker_symbol.encode()) % (2**32)
 
-        # Create a matrix of random daily shocks from a standard normal distribution
-        random_shocks = np.random.normal(0, 1, (forecast_days, num_simulations))
-
-        # Calculate the compounding exponential growth factor
-        # Price_t = Price_0 * exp(mu + sigma * Z)
-        simulated_growth = np.exp(mu + daily_vol * random_shocks)
-
-        # Stack the initial current price across all simulations
-        price_paths = np.zeros((forecast_days + 1, num_simulations))
-        price_paths[0] = current_price
-
-        for t in range(1, forecast_days + 1):
-            price_paths[t] = price_paths[t - 1] * simulated_growth[t - 1]
+        if is_bootstrap:
+            price_paths = simulate_bootstrap_paths(
+                df['Close'], current_price, num_simulations, forecast_days,
+                MONTE_CARLO.bootstrap_block_days, seed,
+            )
+        else:
+            price_paths = simulate_gbm_paths(returns, current_price, num_simulations, forecast_days, seed)
 
         # 3. Process Statistical Thresholds
-        final_prices = price_paths[-1]
-        pct_above_current = (np.sum(final_prices > current_price) / num_simulations) * 100
-
-        # Quantile thresholds (Value at Risk / Upside potential boundaries)
-        p10 = np.percentile(final_prices, 10)
-        p50 = np.percentile(final_prices, 50) # Median outcome
-        p90 = np.percentile(final_prices, 90)
+        pct_above_current, p10, p50, p90 = terminal_stats(price_paths, current_price)
 
         # 4. UI Metric Readout
         mc_c1, mc_c2, mc_c3 = st.columns(3)

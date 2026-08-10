@@ -157,6 +157,12 @@ class MonteCarloConfig:
     plotted_paths: int = 150
     upside_bias_threshold_pct: float = 65.0
     downside_bias_threshold_pct: float = 40.0
+    # Block length for the bootstrap-resampling simulation method. Trading
+    # days are resampled in contiguous blocks (not individually) so that
+    # whatever short-run autocorrelation/volatility clustering actually
+    # occurred historically survives into the simulated paths.
+    bootstrap_block_days: int = 5
+    min_history_days_for_bootstrap: int = 30
 
 
 @dataclass(frozen=True)
