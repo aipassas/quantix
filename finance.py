@@ -21,6 +21,7 @@ from logging_setup import setup_logging, get_logger, log_event, log_exception, r
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
+from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -348,6 +349,109 @@ if _screener_state:
         if st.button(f"📈 Open full analysis for {_screener_selected_ticker} →"):
             st.session_state["ticker_input"] = _screener_selected_ticker
             st.rerun()
+
+# ==========================================
+# SMART RISK-AWARE ALERTS
+# ==========================================
+st.markdown("---")
+st.header("Smart Risk-Aware Alerts")
+st.caption(
+    "Alerts built from Quantix's own risk engine (Composite Risk Score, Altman Z-Score, 1-Day VaR, Expected Shortfall, "
+    "Max Drawdown) across your Institutional Watchlist — checked when you click \"Check Alerts\", not a real-time push "
+    "notification. Quantix is a stateless app with no background worker, so this is an on-load snapshot check "
+    "(\"triggered right now\"), not a historical crossing event; live push delivery (email/SMS) would need new "
+    "infrastructure and isn't built here."
+)
+
+if "risk_alert_rules" not in st.session_state:
+    st.session_state["risk_alert_rules"] = [
+        {"metric": "risk_score", "operator": "<", "threshold": 50.0},
+        {"metric": "altman_z", "operator": "<", "threshold": RISK.altman_grey_zone},
+    ]
+
+_alert_metric_options = [m.key for m in RISK_ALERT_METRICS]
+_alert_operator_options = list(RISK_ALERT_OPERATORS.keys())
+
+_alert_remove_index = None
+for _ai, _rule in enumerate(st.session_state["risk_alert_rules"]):
+    _ac1, _ac2, _ac3, _ac4 = st.columns([3, 1, 2, 1])
+    with _ac1:
+        _rule["metric"] = st.selectbox(
+            "Metric", _alert_metric_options, index=_alert_metric_options.index(_rule["metric"]),
+            format_func=lambda k: RISK_ALERT_METRICS_BY_KEY[k].label, key=f"alert_metric_{_ai}",
+            label_visibility="visible" if _ai == 0 else "collapsed",
+        )
+    with _ac2:
+        _rule["operator"] = st.selectbox(
+            "Op", _alert_operator_options, index=_alert_operator_options.index(_rule["operator"]),
+            key=f"alert_operator_{_ai}", label_visibility="visible" if _ai == 0 else "collapsed",
+        )
+    with _ac3:
+        _rule["threshold"] = st.number_input(
+            "Threshold", value=float(_rule["threshold"]), key=f"alert_threshold_{_ai}",
+            label_visibility="visible" if _ai == 0 else "collapsed",
+        )
+    with _ac4:
+        if _ai == 0:
+            st.markdown("&nbsp;")
+        if st.button("✕", key=f"alert_remove_{_ai}", help="Remove this alert rule"):
+            _alert_remove_index = _ai
+
+if _alert_remove_index is not None:
+    st.session_state["risk_alert_rules"].pop(_alert_remove_index)
+    st.rerun()
+
+_alert_btn_col1, _alert_btn_col2 = st.columns([1, 1])
+with _alert_btn_col1:
+    if st.button("+ Add Alert Rule"):
+        st.session_state["risk_alert_rules"].append({"metric": "max_drawdown", "operator": "<", "threshold": -0.20})
+        st.rerun()
+with _alert_btn_col2:
+    check_alerts_clicked = st.button("🔔 Check Alerts", type="primary")
+
+if check_alerts_clicked:
+    if not st.session_state["risk_alert_rules"]:
+        st.warning("Add at least one alert rule.")
+    else:
+        _alert_watchlist = watchlist_tickers()
+        _alert_rules_tuple = tuple(
+            AlertRule(metric=r["metric"], operator=r["operator"], threshold=float(r["threshold"]))
+            for r in st.session_state["risk_alert_rules"]
+        )
+        with st.spinner(f"Checking risk metrics for {len(_alert_watchlist)} watchlist ticker(s)..."):
+            _alert_snapshots = compute_watchlist_snapshots(_alert_watchlist)
+        _alert_triggered = evaluate_alerts(_alert_snapshots, _alert_rules_tuple)
+        st.session_state["risk_alerts_state"] = {"snapshots": _alert_snapshots, "triggered": _alert_triggered}
+        log_event(logger, logging.INFO, "user.risk_alerts_check", watchlist_size=len(_alert_watchlist), rule_count=len(_alert_rules_tuple), triggered=len(_alert_triggered))
+
+_alerts_state = st.session_state.get("risk_alerts_state")
+if _alerts_state:
+    _alert_snapshots = _alerts_state["snapshots"]
+    _alert_triggered = _alerts_state["triggered"]
+    _alert_error_count = sum(1 for s in _alert_snapshots if s.status == "fetch_error")
+    _alert_insufficient_count = sum(1 for s in _alert_snapshots if s.status == "insufficient_data")
+
+    if _alert_triggered:
+        _alert_tickers_hit = sorted({t.ticker for t in _alert_triggered})
+        st.error(f"🔔 {len(_alert_triggered)} alert(s) triggered across {len(_alert_tickers_hit)} ticker(s): {', '.join(_alert_tickers_hit)}")
+        _alert_rows = []
+        for t in _alert_triggered:
+            spec = RISK_ALERT_METRICS_BY_KEY[t.rule.metric]
+            value_display = f"{t.value * 100:.{spec.decimals}f}%" if spec.unit == "%" else f"{t.value:.{spec.decimals}f}"
+            threshold_display = f"{t.rule.threshold * 100:.{spec.decimals}f}%" if spec.unit == "%" else f"{t.rule.threshold:.{spec.decimals}f}"
+            _alert_rows.append({
+                "Ticker": t.ticker, "Metric": spec.label, "Current Value": value_display,
+                "Condition": f"{t.rule.operator} {threshold_display}",
+            })
+        st.table(pd.DataFrame(_alert_rows))
+    else:
+        st.success(f"✅ No alerts triggered across your {len(_alert_snapshots)}-ticker watchlist right now.")
+
+    if _alert_error_count or _alert_insufficient_count:
+        st.caption(f"{_alert_error_count} ticker(s) could not be loaded · {_alert_insufficient_count} had at least one non-computable metric — never silently excluded from the check.")
+        with st.expander("Data issues detail", expanded=False):
+            _alert_issue_rows = [{"Ticker": s.ticker, "Status": s.status, "Detail": s.detail} for s in _alert_snapshots if s.status != "ok"]
+            st.table(pd.DataFrame(_alert_issue_rows))
 
 
 # --- Sidebar Controls ---
