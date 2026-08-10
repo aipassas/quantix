@@ -19,6 +19,7 @@ from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS,
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
+from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -1245,6 +1246,11 @@ else:
     df['Mean'] = df['Close'].rolling(window=sma_length).mean()
     df['Std'] = df['Close'].rolling(window=sma_length).std()
     current_z_score = (df['Close'].iloc[-1] - df['Mean'].iloc[-1]) / df['Std'].iloc[-1]
+    # Computed here (not inline in the Strategy Builder section below) so
+    # both the Z-Score condition in strategy_builder.py's condition library
+    # and the "Statistical Distance from Mean" chart further down read the
+    # same column.
+    df['Z_Score'] = (df['Close'] - df['Mean']) / df['Std']
 
     def calculate_hurst(price_series):
         lags = range(2, 20)
@@ -1415,7 +1421,7 @@ else:
     r2_c3.metric("Altman Z-Score", f"{altman_z:.2f}" if isinstance(altman_z, float) else "N/A", delta=z_verdict, delta_color="normal" if "Safe" in z_verdict else "inverse")
 
     st.subheader("Statistical Distance from Mean (Z-Score)")
-    st.line_chart((df['Close'] - df['Mean']) / df['Std'])
+    st.line_chart(df['Z_Score'])
 
     st.markdown("##")
     st.subheader("Maximum Drawdown")
@@ -1575,45 +1581,126 @@ else:
     # ==========================================
     st.markdown("---")
     st.header("Algorithmic Backtesting Simulator")
-    st.markdown(f"Testing the Mean-Reversion Edge: **Buy when Z-Score < {RISK.backtest_buy_z_score} | Sell when Z-Score > {RISK.backtest_sell_z_score}**")
+    st.caption("Compose an entry/exit strategy from indicators already on the chart — no code — or run the original Classic Mean-Reversion strategy.")
 
-    # 1. Generate Strategy Signals (1 = In Market, 0 = In Cash)
-    df['Z_Score'] = (df['Close'] - df['Mean']) / df['Std']
-    df['Signal'] = 0
+    strategy_preset = st.radio(
+        "Strategy", ["Classic Mean-Reversion", "Custom"], horizontal=True, key="strategy_preset",
+        help="Classic Mean-Reversion is the app's original Z-Score strategy. Custom lets you build entry/exit rules from RSI, SMA/price crossovers, MACD crossovers, Bollinger Band breakouts, and Z-Score thresholds.",
+    )
 
-    # Trigger Buy when extremely oversold
-    df.loc[df['Z_Score'] < RISK.backtest_buy_z_score, 'Signal'] = 1
-    # Trigger Sell when reverted to the mean
-    df.loc[df['Z_Score'] > RISK.backtest_sell_z_score, 'Signal'] = -1
+    _strategy_library = condition_library(sma_length, rsi_length)
 
-    # Forward fill the positions (Hold until next signal)
-    df['Position'] = df['Signal'].replace(0, np.nan).ffill().fillna(0)
-    df['Position'] = df['Position'].clip(lower=0) # Ensure it's a Long-Only strategy
+    if strategy_preset == "Classic Mean-Reversion":
+        st.markdown(f"**Buy when Z-Score < {RISK.backtest_buy_z_score} | Sell when Z-Score > {RISK.backtest_sell_z_score}**")
+        active_rule = classic_mean_reversion(RISK.backtest_buy_z_score, RISK.backtest_sell_z_score)
+    else:
+        st.session_state.setdefault("strategy_entry_conditions", [{"indicator": "zscore", "operator": "<", "threshold": -2.0}])
+        st.session_state.setdefault("strategy_exit_conditions", [{"indicator": "zscore", "operator": ">", "threshold": 0.0}])
 
-    # 2. Calculate Strategy Returns vs Buy & Hold
-    df['Strategy_Returns'] = df['Position'].shift(1) * df['Returns']
-    df['Cum_Strategy'] = (1 + df['Strategy_Returns']).cumprod()
-    df['Cum_Buy_Hold'] = (1 + df['Returns']).cumprod()
+        def _render_condition_rows(state_key, key_prefix):
+            remove_index = None
+            for i, cond in enumerate(st.session_state[state_key]):
+                indicator_keys = list(_strategy_library.keys())
+                c1, c2, c3, c4 = st.columns([3, 3, 2, 1])
+                with c1:
+                    cond["indicator"] = st.selectbox(
+                        "Indicator", indicator_keys, index=indicator_keys.index(cond["indicator"]),
+                        format_func=lambda k: _strategy_library[k].label, key=f"{key_prefix}_indicator_{i}",
+                        label_visibility="visible" if i == 0 else "collapsed",
+                    )
+                spec = _strategy_library[cond["indicator"]]
+                valid_ops = [op for op, _ in spec.operators]
+                # The indicator dropdown may have just changed to one with a
+                # different operator set (e.g. a level "<" to an event
+                # "bullish") — fall back to that indicator's first operator
+                # rather than keeping a now-invalid stored one.
+                if cond["operator"] not in valid_ops:
+                    cond["operator"] = valid_ops[0]
+                op_labels = dict(spec.operators)
+                with c2:
+                    cond["operator"] = st.selectbox(
+                        "Condition", valid_ops, index=valid_ops.index(cond["operator"]),
+                        format_func=lambda k: op_labels[k], key=f"{key_prefix}_operator_{i}",
+                        label_visibility="visible" if i == 0 else "collapsed",
+                    )
+                with c3:
+                    if spec.kind == "level":
+                        default_threshold = cond.get("threshold")
+                        if default_threshold is None:
+                            default_threshold = spec.default_threshold
+                        cond["threshold"] = st.number_input(
+                            "Threshold", value=float(default_threshold), key=f"{key_prefix}_threshold_{i}",
+                            label_visibility="visible" if i == 0 else "collapsed",
+                        )
+                    else:
+                        cond["threshold"] = None
+                        if i == 0:
+                            st.markdown("&nbsp;")
+                with c4:
+                    if i == 0:
+                        st.markdown("&nbsp;")
+                    if st.button("✕", key=f"{key_prefix}_remove_{i}", help="Remove this condition"):
+                        remove_index = i
+            if remove_index is not None:
+                st.session_state[state_key].pop(remove_index)
+                st.rerun()
 
-    # 3. Performance Metrics
-    total_strat_return = (df['Cum_Strategy'].iloc[-1] - 1) * 100
-    total_bh_return = (df['Cum_Buy_Hold'].iloc[-1] - 1) * 100
+        st.markdown("**Entry Conditions**")
+        entry_logic = st.radio("Combine with", LOGIC_OPTIONS, horizontal=True, key="strategy_entry_logic", label_visibility="collapsed")
+        _render_condition_rows("strategy_entry_conditions", "strategy_entry")
+        if st.button("+ Add Entry Condition"):
+            st.session_state["strategy_entry_conditions"].append({"indicator": "rsi", "operator": "<", "threshold": 30.0})
+            st.rerun()
 
-    # Maximum Drawdown of the strategy's own equity curve — same engine as
-    # the buy-and-hold drawdown above (risk_analytics.py), just applied to
-    # Cum_Strategy instead of raw Close.
-    strategy_dd_result = compute_max_drawdown(df['Cum_Strategy'])
-    max_drawdown = strategy_dd_result.max_drawdown * 100 if strategy_dd_result is not None else 0.0
+        st.markdown("**Exit Conditions**")
+        exit_logic = st.radio("Combine with", LOGIC_OPTIONS, horizontal=True, key="strategy_exit_logic", label_visibility="collapsed")
+        _render_condition_rows("strategy_exit_conditions", "strategy_exit")
+        if st.button("+ Add Exit Condition"):
+            st.session_state["strategy_exit_conditions"].append({"indicator": "rsi", "operator": ">", "threshold": 70.0})
+            st.rerun()
 
-    bt1, bt2, bt3 = st.columns(3)
-    bt1.metric("Strategy Return", f"{total_strat_return:.2f}%", delta=f"{total_strat_return - total_bh_return:.2f}% vs Buy & Hold")
-    bt2.metric("Buy & Hold Baseline", f"{total_bh_return:.2f}%")
-    bt3.metric("Max Strategy Drawdown", f"{max_drawdown:.2f}%", help="The deepest percentage drop your portfolio would have suffered using this algorithm.", delta_color="inverse")
+        active_rule = StrategyRule(
+            name="Custom",
+            entry_conditions=tuple(StrategyCondition(**c) for c in st.session_state["strategy_entry_conditions"]),
+            entry_logic=entry_logic,
+            exit_conditions=tuple(StrategyCondition(**c) for c in st.session_state["strategy_exit_conditions"]),
+            exit_logic=exit_logic,
+        )
 
-    # 4. Plotting the Equity Curve
+        # Live preview — how many historical bars this rule set would fire
+        # on, computed the same way the backtest itself will, so it's an
+        # honest preview rather than an approximation. No "Run" button: this
+        # is pure in-memory vectorized math on data already loaded for the
+        # chart above, cheap enough to recompute on every edit.
+        _preview_entries = evaluate_condition_set(df, active_rule.entry_conditions, active_rule.entry_logic, sma_length, rsi_length)
+        _preview_exits = evaluate_condition_set(df, active_rule.exit_conditions, active_rule.exit_logic, sma_length, rsi_length)
+        st.caption(f"Live preview: {int(_preview_entries.sum())} historical entry signal(s) · {int(_preview_exits.sum())} historical exit signal(s) in the selected date range.")
+        if not active_rule.entry_conditions:
+            st.info("Add at least one entry condition to generate a strategy.")
+        # On a bar where entry AND exit both fire, the exit wins (see
+        # run_backtest()'s Signal assignment order) — surfaced explicitly
+        # here rather than left as a silent "why did my signal count not
+        # match my trade count" surprise, since mixing indicator families
+        # (e.g. a trend-following entry with a mean-reversion exit) makes
+        # same-bar overlap genuinely possible, unlike the Classic preset
+        # where Z-Score entry/exit thresholds are mutually exclusive by
+        # construction.
+        _preview_overlap = int((_preview_entries & _preview_exits).sum())
+        if _preview_overlap:
+            st.caption(f"⚠️ {_preview_overlap} of those bars satisfy both entry and exit conditions at once — the exit takes precedence on a same-bar conflict, so those specific bars won't open a new position.")
+
+    backtest_result = run_backtest(df, active_rule, sma_length, rsi_length)
+
+    bt1, bt2, bt3, bt4, bt5 = st.columns(5)
+    bt1.metric("Strategy Return", f"{backtest_result.total_strategy_return_pct:.2f}%", delta=f"{backtest_result.total_strategy_return_pct - backtest_result.total_buy_hold_return_pct:.2f}% vs Buy & Hold")
+    bt2.metric("Buy & Hold Baseline", f"{backtest_result.total_buy_hold_return_pct:.2f}%")
+    bt3.metric("Max Strategy Drawdown", f"{backtest_result.max_drawdown_pct:.2f}%", help="The deepest percentage drop your portfolio would have suffered using this algorithm.", delta_color="inverse")
+    bt4.metric("Win Rate", f"{backtest_result.win_rate_pct:.1f}%" if backtest_result.win_rate_pct is not None else "N/A", help="Of the days this strategy held a position, the fraction with a positive return.")
+    bt5.metric("Trades", f"{backtest_result.trade_count}", help="Number of distinct times this strategy entered a position over the selected date range.")
+
     fig_bt = go.Figure()
-    fig_bt.add_trace(go.Scatter(x=df.index, y=df['Cum_Buy_Hold'], name='Buy & Hold', line=dict(color='gray', dash='dot')))
-    fig_bt.add_trace(go.Scatter(x=df.index, y=df['Cum_Strategy'], name='Z-Score Algorithm', line=dict(color='cyan', width=2)))
+    fig_bt.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Buy_Hold'], name='Buy & Hold', line=dict(color='gray', dash='dot')))
+    fig_bt.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Strategy'], name=active_rule.name, line=dict(color='cyan', width=2)))
 
     fig_bt.update_layout(
         title="Strategy Equity Curve vs Baseline",
