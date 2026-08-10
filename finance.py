@@ -18,6 +18,7 @@ from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
+from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -222,10 +223,141 @@ with st.spinner("Analyzing macro sectors and grouping asset classes..."):
     else:
         st.write("No diversified sector leaders currently pass basic filters.")
 
+# ==========================================
+# STOCK SCREENER
+# ==========================================
+st.markdown("---")
+st.header("Stock Screener")
+st.caption("Screen an arbitrary ticker universe against your own fundamental, technical, and risk criteria — not just the fixed thresholds above.")
+
+_screener_default_universe = ", ".join(WATCHLIST.tech_basket + WATCHLIST.diversified_basket)
+screener_universe_input = st.text_input(
+    "Ticker Universe (comma-separated)", value=_screener_default_universe,
+    help=f"Up to {SCREENER_MAX_UNIVERSE_SIZE} tickers — Yahoo Finance rate limits scale with universe size, so larger universes get truncated with a warning.",
+)
+
+if "screener_criteria" not in st.session_state:
+    st.session_state["screener_criteria"] = [{"metric": "pe_ratio", "operator": "<", "threshold": 25.0}]
+
+st.markdown("**Filter Criteria**")
+_screener_metric_options = [m.key for m in SCREENER_METRICS]
+_screener_operator_options = list(SCREENER_OPERATORS.keys())
+
+_screener_remove_index = None
+for _i, _crit in enumerate(st.session_state["screener_criteria"]):
+    _c1, _c2, _c3, _c4 = st.columns([3, 1, 2, 1])
+    with _c1:
+        _crit["metric"] = st.selectbox(
+            "Metric", _screener_metric_options, index=_screener_metric_options.index(_crit["metric"]),
+            format_func=lambda k: SCREENER_METRICS_BY_KEY[k].label, key=f"screener_metric_{_i}",
+            label_visibility="visible" if _i == 0 else "collapsed",
+        )
+    with _c2:
+        _crit["operator"] = st.selectbox(
+            "Op", _screener_operator_options, index=_screener_operator_options.index(_crit["operator"]),
+            key=f"screener_operator_{_i}", label_visibility="visible" if _i == 0 else "collapsed",
+        )
+    with _c3:
+        _crit["threshold"] = st.number_input(
+            "Threshold", value=float(_crit["threshold"]), key=f"screener_threshold_{_i}",
+            label_visibility="visible" if _i == 0 else "collapsed",
+        )
+    with _c4:
+        if _i == 0:
+            st.markdown("&nbsp;")  # aligns the remove button with the inputs, which have a label row above them on row 0
+        if st.button("✕", key=f"screener_remove_{_i}", help="Remove this filter"):
+            _screener_remove_index = _i
+
+if _screener_remove_index is not None:
+    st.session_state["screener_criteria"].pop(_screener_remove_index)
+    st.rerun()
+
+_screener_btn_col1, _screener_btn_col2 = st.columns([1, 1])
+with _screener_btn_col1:
+    if st.button("+ Add Filter"):
+        st.session_state["screener_criteria"].append({"metric": "rsi", "operator": "<", "threshold": 30.0})
+        st.rerun()
+with _screener_btn_col2:
+    screener_run_clicked = st.button("🔍 Run Screen", type="primary")
+
+if screener_run_clicked:
+    _screener_universe = [t.strip().upper() for t in screener_universe_input.split(",") if t.strip()]
+    _screener_universe = list(dict.fromkeys(_screener_universe))  # dedupe, preserve order
+    if len(_screener_universe) > SCREENER_MAX_UNIVERSE_SIZE:
+        st.warning(f"Universe capped at {SCREENER_MAX_UNIVERSE_SIZE} tickers — dropped: {', '.join(_screener_universe[SCREENER_MAX_UNIVERSE_SIZE:])}")
+        _screener_universe = _screener_universe[:SCREENER_MAX_UNIVERSE_SIZE]
+
+    if not _screener_universe:
+        st.warning("Enter at least one ticker in the Ticker Universe field.")
+    elif not st.session_state["screener_criteria"]:
+        st.warning("Add at least one filter criterion.")
+    else:
+        _screener_criteria_tuple = tuple(
+            ScreenCriterion(metric=c["metric"], operator=c["operator"], threshold=float(c["threshold"]))
+            for c in st.session_state["screener_criteria"]
+        )
+        with st.spinner(f"Screening {len(_screener_universe)} ticker(s)..."):
+            _screener_results = run_screen(tuple(_screener_universe), _screener_criteria_tuple)
+        st.session_state["screener_results_state"] = {"results": _screener_results, "criteria": _screener_criteria_tuple}
+        log_event(logger, logging.INFO, "user.screener_run", universe_size=len(_screener_universe), criteria_count=len(_screener_criteria_tuple))
+
+_screener_state = st.session_state.get("screener_results_state")
+if _screener_state:
+    _screener_results = _screener_state["results"]
+    _screener_criteria = _screener_state["criteria"]
+
+    _screener_pass_count = sum(1 for r in _screener_results if r.passed_all)
+    _screener_insufficient_count = sum(1 for r in _screener_results if r.status == "insufficient_data")
+    _screener_error_count = sum(1 for r in _screener_results if r.status == "fetch_error")
+    _screener_summary = f"{_screener_pass_count} of {len(_screener_results)} passed all filters"
+    if _screener_insufficient_count:
+        _screener_summary += f" · {_screener_insufficient_count} with insufficient data"
+    if _screener_error_count:
+        _screener_summary += f" · {_screener_error_count} could not be loaded"
+    st.caption(_screener_summary)
+
+    _screener_rows = []
+    for r in _screener_results:
+        row = {"Ticker": r.ticker}
+        for c in _screener_criteria:
+            spec = SCREENER_METRICS_BY_KEY[c.metric]
+            v = r.values.get(c.metric)
+            row[f"{spec.label} ({c.operator} {c.threshold:g}{spec.unit})"] = round(v, spec.decimals) if v is not None else None
+        if r.status == "fetch_error":
+            row["Result"] = "⚠️ Could Not Load"
+        elif r.status == "insufficient_data":
+            row["Result"] = "⚠️ Insufficient Data"
+        elif r.passed_all:
+            row["Result"] = "✅ Pass"
+        else:
+            row["Result"] = "❌ Fail"
+        row["Detail"] = r.detail
+        _screener_rows.append(row)
+
+    _screener_results_df = pd.DataFrame(_screener_rows)
+    _screener_event = st.dataframe(
+        _screener_results_df, width="stretch", hide_index=True,
+        on_select="rerun", selection_mode="single-row", key="screener_results_table",
+    )
+
+    _screener_selected_rows = _screener_event.selection.rows if _screener_event and _screener_event.selection else []
+    if _screener_selected_rows:
+        _screener_selected_ticker = _screener_results_df.iloc[_screener_selected_rows[0]]["Ticker"]
+        if st.button(f"📈 Open full analysis for {_screener_selected_ticker} →"):
+            st.session_state["ticker_input"] = _screener_selected_ticker
+            st.rerun()
+
 
 # --- Sidebar Controls ---
 st.sidebar.header("Target Configuration")
-ticker_symbol = st.sidebar.text_input("Stock Ticker", CHART_DEFAULTS.default_ticker).upper()
+# No `value=` here deliberately: this widget is keyed so the Stock Screener's
+# "Open full analysis" click-through can set st.session_state["ticker_input"]
+# before this line runs on the next rerun. Passing both `value=` and a `key=`
+# already present in session_state is a Streamlit anti-pattern (it warns) —
+# so the default is seeded into session_state once, only if absent, instead.
+if "ticker_input" not in st.session_state:
+    st.session_state["ticker_input"] = CHART_DEFAULTS.default_ticker
+ticker_symbol = st.sidebar.text_input("Stock Ticker", key="ticker_input").upper()
 
 today = datetime.date.today()
 one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_days)
