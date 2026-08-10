@@ -30,8 +30,9 @@ ad-hoc extraction and conversion:
 import datetime
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
+import pandas as pd
 import streamlit as st
 
 from data_loader import TickerBundle
@@ -39,6 +40,22 @@ from financial_validation import ValidationReport, get_field, validate_financial
 from logging_setup import get_logger, log_event
 
 logger = get_logger("standardization")
+
+
+def _field_history(df: Optional[pd.DataFrame], aliases: Sequence[str]) -> Tuple[Tuple[datetime.date, float], ...]:
+    """Every (period-end date, value) pair for the first matching alias,
+    oldest first, NaN dropped — the full multi-year row get_field() only
+    ever reduces to its most recent value. yfinance statement columns are
+    most-recent-first, so this reverses them to chronological order."""
+    if df is None or df.empty:
+        return ()
+    for alias in aliases:
+        if alias in df.index:
+            row = df.loc[alias]
+            pairs = [(col, row[col]) for col in df.columns if pd.notna(row[col])]
+            if pairs:
+                return tuple(reversed(pairs))
+    return ()
 
 # A real-world debt/equity ratio is virtually never >= 5. Yahoo has reported
 # this field both as a ratio (e.g. 0.78) and as a percent-like number (e.g.
@@ -138,6 +155,24 @@ class StandardizedFinancials:
 
     # --- Data provenance ---
     data_fallbacks: Tuple[str, ...]  # human-readable notes on every field that fell back to a secondary source; see standardize_financials()
+
+    # --- Multi-year history, for the DCF's revenue/margin trajectory ---
+    # Every other field above is the single most-recent value get_field()
+    # reduces a statement row to; these are the FULL multi-year row instead
+    # (typically ~4-5 fiscal years from yfinance), as (period-end date, value)
+    # pairs, oldest first, NaN dropped. Empty tuple when the statement or
+    # field isn't available — the DCF degrades to a flat-margin assumption
+    # in that case rather than fabricating a trend. Each value is already
+    # signed exactly as the source statement reports it: Capital Expenditure
+    # and Change In Working Capital both come from yfinance already negative
+    # when they're a cash use, so callers add them directly rather than
+    # subtracting a magnitude (confirmed by reconstructing reported Free
+    # Cash Flow = Operating Cash Flow + Capital Expenditure from real data).
+    revenue_history: Tuple[Tuple[datetime.date, float], ...] = ()
+    ebit_history: Tuple[Tuple[datetime.date, float], ...] = ()
+    depreciation_history: Tuple[Tuple[datetime.date, float], ...] = ()
+    capex_history: Tuple[Tuple[datetime.date, float], ...] = ()
+    change_in_working_capital_history: Tuple[Tuple[datetime.date, float], ...] = ()
 
 
 @st.cache_data(ttl=3600)
@@ -291,4 +326,10 @@ def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
         validation=validation,
 
         data_fallbacks=tuple(data_fallbacks),
+
+        revenue_history=_field_history(income_stmt, ("Total Revenue",)),
+        ebit_history=_field_history(income_stmt, ("EBIT", "Operating Income")),
+        depreciation_history=_field_history(cash_flow, ("Depreciation And Amortization", "Depreciation Amortization Depletion")),
+        capex_history=_field_history(cash_flow, ("Capital Expenditure",)),
+        change_in_working_capital_history=_field_history(cash_flow, ("Change In Working Capital",)),
     )

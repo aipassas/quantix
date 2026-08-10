@@ -677,17 +677,103 @@ class FundamentalAnalysisEngine:
 
         return (mcap / (mcap + debt)) * cost_of_equity + (debt / (mcap + debt)) * cost_of_debt
 
+    def normalized_ebit_margin(self) -> Optional[float]:
+        """Historical average EBIT margin across every fiscal year where both
+        revenue and EBIT are reported (typically ~4-5 years from yfinance) —
+        the level the projected margin fades TOWARD in intrinsic_price(), so
+        a single unusually strong or weak current year doesn't get
+        extrapolated forever. None when there's no revenue/EBIT history to
+        average — never a fabricated industry benchmark standing in for it.
+        """
+        s = self.std
+        revenue_by_date = dict(s.revenue_history)
+        ebit_by_date = dict(s.ebit_history)
+        common_dates = [d for d in revenue_by_date if d in ebit_by_date and revenue_by_date[d]]
+        if not common_dates:
+            return None
+        margins = [ebit_by_date[d] / revenue_by_date[d] for d in common_dates]
+        return sum(margins) / len(margins)
+
+    def reinvestment_ratios(self) -> Tuple[float, float, float]:
+        """Average (D&A, Capex, ΔWorking Capital) as a fraction of revenue,
+        across every fiscal year where both that line and revenue are
+        reported. These scale the projection's reinvestment need with
+        projected revenue rather than attempting a full driver-based
+        build (no per-asset capex schedule, no explicit NWC turnover
+        model) — a standard simplification when only historical financial
+        statements are available, not a hidden shortcut.
+
+        Capex and ΔWorking Capital are used exactly as yfinance reports
+        them (already negative when they're a cash use — confirmed by
+        reconstructing reported Free Cash Flow = Operating Cash Flow +
+        Capital Expenditure from real statement data), so all three ratios
+        are simply ADDED in intrinsic_price(), never subtracted. Each
+        ratio independently defaults to 0.0 (no effect) when that specific
+        statement line isn't available for this ticker, rather than
+        blocking the whole DCF over one missing line.
+        """
+        s = self.std
+        revenue_by_date = dict(s.revenue_history)
+
+        def _avg_ratio(history: Tuple[Tuple[object, float], ...]) -> float:
+            by_date = dict(history)
+            common = [d for d in by_date if d in revenue_by_date and revenue_by_date[d]]
+            if not common:
+                return 0.0
+            return sum(by_date[d] / revenue_by_date[d] for d in common) / len(common)
+
+        return (
+            _avg_ratio(s.depreciation_history),
+            _avg_ratio(s.capex_history),
+            _avg_ratio(s.change_in_working_capital_history),
+        )
+
     def intrinsic_price(self, growth_rate: float, discount_rate: float) -> float:
         """2-stage DCF intrinsic value per share at the given growth/discount rates.
+
+        Revenue is projected forward at `growth_rate` (the user's slider —
+        this model doesn't override that with a historical growth rate).
+        EBIT margin is projected as a linear fade from this year's margin
+        to normalized_ebit_margin() over DCF.projection_years — a company
+        already at its historical average margin gets a flat projection;
+        one currently above or below it gets pulled toward that average
+        rather than extrapolating an unusually good or bad year forever.
+        Linear fade is a deliberate simplifying choice (the standard
+        approach in practitioner multi-stage DCF templates absent a
+        driver-based margin forecast), not a fabricated growth path.
+
+        FCF per projected year = NOPAT + D&A + Capex + ΔWorking Capital,
+        with the latter three scaled by revenue via reinvestment_ratios()'s
+        historical average ratios (Capex/ΔNWC already negative-signed, see
+        that method's docstring) — replacing the old single-FCF-observation
+        compounding this function used before this task.
 
         Exposed publicly so the sensitivity analysis can re-run it across a
         grid without duplicating the model.
         """
-        fcf = self.std.free_cash_flow
-        shares = self.std.shares_outstanding
-        projections = [fcf * (1 + growth_rate) ** i for i in range(1, DCF.projection_years + 1)]
-        pv_projections = sum(cf / (1 + discount_rate) ** (i + 1) for i, cf in enumerate(projections))
-        terminal = (projections[-1] * (1 + DCF.terminal_growth_rate)) / (discount_rate - DCF.terminal_growth_rate)
+        s = self.std
+        shares = s.shares_outstanding
+        revenue = s.total_revenue
+        current_margin = (s.ebit / revenue) if (s.ebit is not None and revenue) else None
+        normalized_margin = self.normalized_ebit_margin()
+        if current_margin is None:
+            current_margin = normalized_margin
+        if normalized_margin is None:
+            normalized_margin = current_margin
+        da_ratio, capex_ratio, nwc_ratio = self.reinvestment_ratios()
+
+        fcf_projections = []
+        for year in range(1, DCF.projection_years + 1):
+            revenue = revenue * (1 + growth_rate)
+            fade = year / DCF.projection_years
+            margin = current_margin + (normalized_margin - current_margin) * fade
+            ebit = revenue * margin
+            nopat = ebit * (1 - DCF.tax_rate)
+            fcf = nopat + revenue * da_ratio + revenue * capex_ratio + revenue * nwc_ratio
+            fcf_projections.append(fcf)
+
+        pv_projections = sum(cf / (1 + discount_rate) ** i for i, cf in enumerate(fcf_projections, start=1))
+        terminal = (fcf_projections[-1] * (1 + DCF.terminal_growth_rate)) / (discount_rate - DCF.terminal_growth_rate)
         pv_terminal = terminal / (1 + discount_rate) ** DCF.projection_years
         return (pv_projections + pv_terminal) / shares
 
@@ -698,11 +784,20 @@ class FundamentalAnalysisEngine:
         shares = s.shares_outstanding or 0
         price = s.current_price if s.current_price is not None else fallback_price
         mcap = s.market_cap
+        normalized_margin = self.normalized_ebit_margin()
+        current_margin = (s.ebit / s.total_revenue) if (s.ebit is not None and s.total_revenue) else None
+        anchor_margin = normalized_margin if normalized_margin is not None else current_margin
 
         if not mcap:
             reason = "missing market cap"
-        elif s.free_cash_flow is None or s.free_cash_flow <= 0 or shares <= 0:
-            reason = "non-positive FCF or missing shares"
+        elif shares <= 0:
+            reason = "missing shares outstanding"
+        elif s.total_revenue is None or s.total_revenue <= 0:
+            reason = "missing or non-positive revenue"
+        elif anchor_margin is None:
+            reason = "no EBIT history available to model a margin trajectory"
+        elif anchor_margin <= 0:
+            reason = "structurally negative average EBIT margin — not a meaningful DCF candidate"
         else:
             reason = None
 
@@ -710,7 +805,7 @@ class FundamentalAnalysisEngine:
             log_event(
                 logger, logging.WARNING, "calc.skipped", section="dcf_engine",
                 ticker=s.ticker, reason=reason, market_cap=mcap,
-                fcf=s.free_cash_flow, shares=shares,
+                revenue=s.total_revenue, ebit=s.ebit, shares=shares,
             )
             return DCFResult(ok=False, reason=reason, current_price=price)
 
