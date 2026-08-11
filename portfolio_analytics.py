@@ -20,10 +20,11 @@ aren't wrong, just noisy) — `sufficient_data` flags this so the caller can
 decide whether to warn rather than this module silently deciding for it.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize
 
 from config import RISK
 from risk_analytics import compute_log_returns
@@ -291,4 +292,186 @@ def compute_portfolio_diversification(
         weighted_average_volatility=weighted_avg_vol,
         diversification_benefit=weighted_avg_vol - portfolio_vol,
         diversification_ratio=diversification_ratio,
+    )
+
+
+# --- Markowitz mean-variance optimization -----------------------------------
+#
+# Same aligned-returns basket and annualized covariance matrix
+# compute_portfolio_diversification() above already uses (w^T Σ w) — these
+# functions solve FOR the weights instead of evaluating one fixed
+# (equal-weight) set. scipy.optimize.minimize with SLSQP is the standard
+# constrained-QP approach for this: it natively supports the equality
+# constraint (weights sum to 1) and, for the long-only default, simple
+# per-asset bounds (0 <= w <= 1) — no new dependency, scipy is already used
+# elsewhere in this app (Altman Z, VaR).
+
+@dataclass
+class PortfolioWeights:
+    """One portfolio's weights and its resulting annualized stats."""
+    weights: Dict[str, float]
+    expected_return: float
+    volatility: float
+    sharpe_ratio: Optional[float]
+
+
+@dataclass
+class EfficientFrontierResult:
+    frontier_returns: Tuple[float, ...]        # annualized, ascending
+    frontier_volatilities: Tuple[float, ...]   # annualized, paired index-for-index with frontier_returns
+    max_sharpe: PortfolioWeights
+    min_variance: PortfolioWeights
+    equal_weighted: PortfolioWeights           # the SAME equal-weighted portfolio compute_portfolio_diversification() evaluates, for direct comparison
+
+
+def _portfolio_return_and_vol(weights: np.ndarray, mean_returns: np.ndarray, cov_matrix: np.ndarray) -> Tuple[float, float]:
+    port_return = float(weights @ mean_returns)
+    port_vol = float(np.sqrt(max(weights @ cov_matrix @ weights, 0.0)))
+    return port_return, port_vol
+
+
+def _to_portfolio_weights(weights, tickers, mean_returns, cov_matrix, risk_free_rate) -> PortfolioWeights:
+    port_return, port_vol = _portfolio_return_and_vol(weights, mean_returns, cov_matrix)
+    sharpe = (port_return - risk_free_rate) / port_vol if port_vol > 1e-9 else None
+    return PortfolioWeights(
+        weights=dict(zip(tickers, (float(w) for w in weights))),
+        expected_return=port_return, volatility=port_vol, sharpe_ratio=sharpe,
+    )
+
+
+def compute_min_variance_portfolio(
+    returns: pd.DataFrame,
+    trading_days_per_year: Optional[int] = None,
+    risk_free_rate: Optional[float] = None,
+    allow_short: bool = False,
+) -> Optional[PortfolioWeights]:
+    """The weights-sum-to-1 portfolio with the lowest possible annualized
+    volatility across this basket. Long-only by default (0 <= w <= 1 per
+    asset) — matching this app's framing everywhere else (Kelly sizing,
+    DCF, ATR stop-loss all assume going long, never shorting);
+    allow_short=True drops the per-asset bounds entirely, keeping only the
+    weights-sum-to-1 constraint.
+
+    Returns None for fewer than 2 tickers or if the optimizer fails to
+    converge — never a fabricated result.
+    """
+    if returns.empty or returns.shape[1] < 2:
+        return None
+    trading_days_per_year = trading_days_per_year or RISK.trading_days_per_year
+    risk_free_rate = risk_free_rate if risk_free_rate is not None else RISK.risk_free_rate
+    tickers = list(returns.columns)
+    n = len(tickers)
+    mean_returns = returns.mean().to_numpy() * trading_days_per_year
+    cov_matrix = compute_covariance_matrix(returns, trading_days_per_year).to_numpy()
+
+    bounds = None if allow_short else tuple((0.0, 1.0) for _ in range(n))
+    constraints = ({"type": "eq", "fun": lambda w: np.sum(w) - 1.0},)
+    x0 = np.full(n, 1.0 / n)
+
+    result = minimize(lambda w: w @ cov_matrix @ w, x0, method="SLSQP", bounds=bounds, constraints=constraints)
+    if not result.success:
+        return None
+    return _to_portfolio_weights(result.x, tickers, mean_returns, cov_matrix, risk_free_rate)
+
+
+def compute_max_sharpe_portfolio(
+    returns: pd.DataFrame,
+    trading_days_per_year: Optional[int] = None,
+    risk_free_rate: Optional[float] = None,
+    allow_short: bool = False,
+) -> Optional[PortfolioWeights]:
+    """The weights-sum-to-1 portfolio with the highest annualized Sharpe
+    ratio across this basket — same long-only-by-default constraints as
+    compute_min_variance_portfolio(), maximizing Sharpe (minimizing its
+    negative) instead of minimizing variance.
+    """
+    if returns.empty or returns.shape[1] < 2:
+        return None
+    trading_days_per_year = trading_days_per_year or RISK.trading_days_per_year
+    risk_free_rate = risk_free_rate if risk_free_rate is not None else RISK.risk_free_rate
+    tickers = list(returns.columns)
+    n = len(tickers)
+    mean_returns = returns.mean().to_numpy() * trading_days_per_year
+    cov_matrix = compute_covariance_matrix(returns, trading_days_per_year).to_numpy()
+
+    def neg_sharpe(w):
+        port_return, port_vol = _portfolio_return_and_vol(w, mean_returns, cov_matrix)
+        if port_vol < 1e-9:
+            return 0.0
+        return -(port_return - risk_free_rate) / port_vol
+
+    bounds = None if allow_short else tuple((0.0, 1.0) for _ in range(n))
+    constraints = ({"type": "eq", "fun": lambda w: np.sum(w) - 1.0},)
+    x0 = np.full(n, 1.0 / n)
+
+    result = minimize(neg_sharpe, x0, method="SLSQP", bounds=bounds, constraints=constraints)
+    if not result.success:
+        return None
+    return _to_portfolio_weights(result.x, tickers, mean_returns, cov_matrix, risk_free_rate)
+
+
+def compute_efficient_frontier(
+    returns: pd.DataFrame,
+    num_points: int = 25,
+    trading_days_per_year: Optional[int] = None,
+    risk_free_rate: Optional[float] = None,
+    allow_short: bool = False,
+) -> Optional[EfficientFrontierResult]:
+    """Traces the efficient frontier for this basket: for `num_points`
+    target returns spanning from the min-variance portfolio's own return up
+    to the single best-performing asset's return, solves for the
+    minimum-variance weights that hit exactly that target (same
+    long-only-by-default, weights-sum-to-1 constraints throughout). Also
+    surfaces the max-Sharpe, min-variance, and equal-weighted portfolios'
+    own (return, volatility) points — the equal-weighted one is the SAME
+    portfolio compute_portfolio_diversification() evaluates (same aligned
+    returns, same annualized covariance matrix), so its position on the
+    frontier is directly comparable to that section's own numbers.
+
+    Returns None for fewer than 2 tickers, or if the anchor optimizations
+    (min-variance, max-Sharpe) themselves fail to converge.
+    """
+    if returns.empty or returns.shape[1] < 2:
+        return None
+
+    trading_days_per_year = trading_days_per_year or RISK.trading_days_per_year
+    risk_free_rate = risk_free_rate if risk_free_rate is not None else RISK.risk_free_rate
+    tickers = list(returns.columns)
+    n = len(tickers)
+    mean_returns = returns.mean().to_numpy() * trading_days_per_year
+    cov_matrix = compute_covariance_matrix(returns, trading_days_per_year).to_numpy()
+
+    min_variance = compute_min_variance_portfolio(returns, trading_days_per_year, risk_free_rate, allow_short)
+    max_sharpe = compute_max_sharpe_portfolio(returns, trading_days_per_year, risk_free_rate, allow_short)
+    if min_variance is None or max_sharpe is None:
+        return None
+
+    bounds = None if allow_short else tuple((0.0, 1.0) for _ in range(n))
+    x0 = np.full(n, 1.0 / n)
+
+    target_returns = np.linspace(min_variance.expected_return, mean_returns.max(), num_points)
+    frontier_returns: List[float] = []
+    frontier_volatilities: List[float] = []
+    for target in target_returns:
+        constraints = (
+            {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
+            {"type": "eq", "fun": lambda w, target=target: float(w @ mean_returns) - target},
+        )
+        result = minimize(lambda w: w @ cov_matrix @ w, x0, method="SLSQP", bounds=bounds, constraints=constraints)
+        if result.success:
+            frontier_returns.append(float(target))
+            frontier_volatilities.append(float(np.sqrt(max(result.fun, 0.0))))
+
+    if len(frontier_returns) < 2:
+        return None
+
+    equal_weights = np.full(n, 1.0 / n)
+    equal_weighted = _to_portfolio_weights(equal_weights, tickers, mean_returns, cov_matrix, risk_free_rate)
+
+    return EfficientFrontierResult(
+        frontier_returns=tuple(frontier_returns),
+        frontier_volatilities=tuple(frontier_volatilities),
+        max_sharpe=max_sharpe,
+        min_variance=min_variance,
+        equal_weighted=equal_weighted,
     )

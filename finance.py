@@ -12,7 +12,7 @@ from financial_standardization import standardize_financials
 from price_processing import process_price_data
 from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss, compute_stochastic, detect_stochastic_crossovers, compute_anchored_vwap, compute_adx, compute_ichimoku, compute_obv
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score, compute_hurst_exponent
-from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution
+from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST
@@ -2571,6 +2571,57 @@ else:
                 d3.metric("Diversification Benefit", f"{diversification.diversification_benefit * 100:.2f}pp", help="Weighted-Average minus Portfolio Volatility — the risk reduction this basket actually gets from not being perfectly correlated.")
                 if diversification.diversification_ratio is not None:
                     st.caption(f"Diversification ratio: {diversification.diversification_ratio:.2f}× — a basket with zero correlation benefit would read 1.00×; this basket's correlation structure lowers portfolio risk to {1 / diversification.diversification_ratio:.0%} of what the un-diversified weighted average would be.")
+
+            st.markdown("##")
+            st.subheader("Efficient Frontier")
+            st.caption(
+                "Markowitz mean-variance optimization over the same basket above: each point on the curve is the "
+                "lowest possible volatility achievable for that target return, long-only with weights summing to "
+                "100%. The white diamond is this basket's current equal-weighted portfolio — the exact same one "
+                "the Diversification metrics above evaluate — for direct reference against what's actually optimal."
+            )
+            frontier = compute_efficient_frontier(alignment.returns)
+            if frontier is None:
+                st.info("Not enough data to compute the efficient frontier for this basket (the optimizer didn't converge).")
+            else:
+                fig_frontier = go.Figure()
+                fig_frontier.add_trace(go.Scatter(
+                    x=[v * 100 for v in frontier.frontier_volatilities], y=[r * 100 for r in frontier.frontier_returns],
+                    mode='lines', name='Efficient Frontier', line=dict(color='cyan', width=2),
+                ))
+                fig_frontier.add_trace(go.Scatter(
+                    x=[frontier.equal_weighted.volatility * 100], y=[frontier.equal_weighted.expected_return * 100],
+                    mode='markers', name='Equal-Weighted (current basket)', marker=dict(color='white', size=13, symbol='diamond'),
+                ))
+                fig_frontier.add_trace(go.Scatter(
+                    x=[frontier.max_sharpe.volatility * 100], y=[frontier.max_sharpe.expected_return * 100],
+                    mode='markers', name='Max Sharpe', marker=dict(color='lime', size=13, symbol='star'),
+                ))
+                fig_frontier.add_trace(go.Scatter(
+                    x=[frontier.min_variance.volatility * 100], y=[frontier.min_variance.expected_return * 100],
+                    mode='markers', name='Min Variance', marker=dict(color='orange', size=13, symbol='square'),
+                ))
+                fig_frontier.update_layout(
+                    xaxis_title="Annualized Volatility (%)", yaxis_title="Annualized Return (%)",
+                    height=450, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    hovermode="closest",
+                )
+                st.plotly_chart(fig_frontier, width="stretch")
+
+                w1, w2 = st.columns(2)
+                with w1:
+                    sharpe_label = f"{frontier.max_sharpe.sharpe_ratio:.2f}" if frontier.max_sharpe.sharpe_ratio is not None else "N/A"
+                    st.markdown(f"**Max-Sharpe Portfolio** — Return {frontier.max_sharpe.expected_return*100:.2f}% · Vol {frontier.max_sharpe.volatility*100:.2f}% · Sharpe {sharpe_label}")
+                    st.dataframe(
+                        pd.DataFrame({"Weight": [f"{w*100:.1f}%" for w in frontier.max_sharpe.weights.values()]}, index=list(frontier.max_sharpe.weights.keys())),
+                        width="stretch",
+                    )
+                with w2:
+                    st.markdown(f"**Min-Variance Portfolio** — Return {frontier.min_variance.expected_return*100:.2f}% · Vol {frontier.min_variance.volatility*100:.2f}%")
+                    st.dataframe(
+                        pd.DataFrame({"Weight": [f"{w*100:.1f}%" for w in frontier.min_variance.weights.values()]}, index=list(frontier.min_variance.weights.keys())),
+                        width="stretch",
+                    )
 
     # ==========================================
     # PRINTABLE TEAR SHEET (HTML/CSS)
