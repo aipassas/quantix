@@ -278,6 +278,39 @@ class MLPipelineConfig:
 
 
 @dataclass(frozen=True)
+class ScenarioModelingConfig:
+    """Default shocks for the three required scenario types (Dividend Cut,
+    Recession, Sector Multiple Compression) — starting points a user edits
+    before running, not forced assumptions. Every shock is expressed
+    ENTIRELY through parameters the existing DCF/risk engines already
+    accept (growth_rate, discount_rate, and a shock to the historical
+    return series for VaR/CVaR/Sharpe/Max Drawdown) — see
+    scenario_modeling.py's module docstring for why Dividend Cut in
+    particular needed real thought: this app's DCF is unlevered-FCF-based,
+    which is dividend-policy-invariant by the Modigliani-Miller theorem,
+    so a dividend cut has no direct, non-fabricated DCF lever the way a
+    growth or discount-rate shock does."""
+    default_growth_rate_delta_recession: float = -0.06     # -6pp off the DCF's revenue growth assumption
+    default_discount_rate_delta_recession: float = 0.02    # +2pp WACC, a widened equity risk premium
+    default_volatility_multiplier_recession: float = 1.6
+    default_mean_return_shift_recession: float = -0.0015   # per-day log-return shift
+
+    default_discount_rate_delta_sector_shift: float = 0.025  # +2.5pp WACC — the direct DCF equivalent of a lower market-clearing multiple
+    default_volatility_multiplier_sector_shift: float = 1.2
+
+    default_dividend_cut_pct: float = 50.0
+    # Optional, off by default: an ADDITIONAL WACC add-on representing
+    # hypothesized market repricing of perceived risk after a cut
+    # announcement — a disclosed assumption the user opts into, never
+    # applied automatically, since it isn't derived from the cut itself.
+    default_discount_rate_delta_dividend_cut: float = 0.0
+
+    store_filename: str = "scenario_store.json"
+    max_saved_scenarios: int = 30
+    default_investment_amount: float = 10_000.0  # illustrative-only dollar base for the "portfolio value impact" figure
+
+
+@dataclass(frozen=True)
 class WalkForwardConfig:
     """Defaults for the Backtest section's optional walk-forward mode.
     Trading days, not calendar months, to match how every other lookback
@@ -551,6 +584,7 @@ BACKTEST_COST = BacktestCostConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
+SCENARIO_MODELING = ScenarioModelingConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

@@ -10,3 +10,5 @@ alert_rules_store.tmp
 ml_momentum_model.joblib
 ml_training_history.json
 ml_training_history.tmp
+scenario_store.json
+scenario_store.tmp

@@ -15,7 +15,7 @@ from risk_analytics import compute_rolling_volatility, compute_annualized_volati
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
@@ -28,6 +28,18 @@ from ml_pipeline import (
     save_model as save_ml_model,
     train_momentum_model,
     training_universe,
+)
+from scenario_modeling import (
+    SCENARIO_TYPE_LABELS,
+    SCENARIO_TYPES,
+    ScenarioDefinition,
+    apply_risk_scenario,
+    default_scenario,
+    delete_scenario,
+    dividend_cut_impact,
+    load_scenarios,
+    run_scenario,
+    save_scenario,
 )
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
@@ -2348,6 +2360,148 @@ else:
                 log_exception(logger, "calc.error", section="dcf_engine", ticker=ticker_symbol)
                 st.error(f"Unexpected DCF Engine error: {type(e).__name__}: {e}")
                 intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
+
+        # ==========================================
+        # SCENARIO MODELING
+        # ==========================================
+        # Wires hypothetical shocks into the SAME DCF/risk functions above
+        # — engine.intrinsic_price() (the identical call the sensitivity
+        # heatmap uses) and the unchanged risk_analytics VaR/CVaR/Sharpe/
+        # Max Drawdown functions — never a second valuation or risk model.
+        st.markdown("---")
+        st.header("Scenario Modeling")
+        st.caption(
+            "Define a hypothetical event and see its before/after impact on THIS ticker's DCF valuation and risk "
+            "metrics, computed by re-running the exact same engines above at shocked inputs — not a separate model. "
+            "Dividend Cut is deliberately the odd one out: this app's DCF is built on unlevered free cash flow, "
+            "which by the Modigliani-Miller theorem doesn't mechanically change with dividend POLICY — so a "
+            "dividend cut's real, non-fabricated effect shown below is the lost cash income per share, not an "
+            "invented DCF impact, unless you explicitly opt into a discount-rate add-on for it."
+        )
+
+        if "scenario_saved" not in st.session_state:
+            st.session_state["scenario_saved"] = load_scenarios()
+
+        sc_type = st.radio(
+            "Scenario Type", SCENARIO_TYPES, format_func=lambda t: SCENARIO_TYPE_LABELS[t],
+            horizontal=True, key="scenario_type_radio",
+        )
+
+        # Re-seeded only when the TYPE actually changes (not on every rerun)
+        # — same pattern realtime_alerts.py's fundamental-threshold field
+        # established, so editing a parameter sticks across reruns instead
+        # of being silently reset back to the type's default every time.
+        if st.session_state.get("_scenario_seeded_for_type") != sc_type:
+            _seed = default_scenario(sc_type)
+            st.session_state["scenario_growth_delta"] = _seed.growth_rate_delta * 100
+            st.session_state["scenario_discount_delta"] = _seed.discount_rate_delta * 100
+            st.session_state["scenario_vol_multiplier"] = _seed.volatility_multiplier
+            st.session_state["scenario_mean_shift"] = _seed.mean_return_shift * 100
+            st.session_state["scenario_dividend_cut_pct"] = _seed.dividend_cut_pct
+            st.session_state["_scenario_seeded_for_type"] = sc_type
+
+        sc_c1, sc_c2, sc_c3 = st.columns(3)
+        with sc_c1:
+            sc_growth_delta = st.number_input("Growth Rate Shock (pp)", key="scenario_growth_delta", step=0.5, help="Added to the DCF's current growth-rate slider (in percentage points).") / 100
+            sc_discount_delta = st.number_input("Discount Rate Shock (pp)", key="scenario_discount_delta", step=0.25, help="Added to the DCF's calculated WACC (in percentage points).") / 100
+        with sc_c2:
+            sc_vol_multiplier = st.number_input("Volatility Multiplier", key="scenario_vol_multiplier", min_value=0.1, step=0.1, help="Scales daily returns before recomputing VaR/CVaR/Sharpe/Max Drawdown. 1.0 = no change.")
+            sc_mean_shift = st.number_input("Daily Return Shift (pp)", key="scenario_mean_shift", step=0.05, help="Added to every daily log-return before recomputing risk metrics (in percentage points per day).") / 100
+        with sc_c3:
+            sc_dividend_cut = st.number_input("Dividend Cut (%)", key="scenario_dividend_cut_pct", min_value=0.0, max_value=100.0, step=5.0, disabled=(sc_type != "dividend_cut"), help="Only used for the Dividend Cut scenario type.")
+            sc_investment = st.number_input("Illustrative Investment ($)", value=SCENARIO_MODELING.default_investment_amount, step=1000.0, key="scenario_investment", help="Applies the DCF's intrinsic-value % change to this dollar amount — illustrative only, not a price forecast.")
+
+        sc_run_col, sc_save_col = st.columns([1, 1])
+        with sc_run_col:
+            sc_run_clicked = st.button("Run Scenario", type="primary", key="scenario_run_btn")
+        with sc_save_col:
+            sc_save_clicked = st.button("Save This Scenario", key="scenario_save_btn")
+
+        _sc_definition = ScenarioDefinition(
+            name=f"{SCENARIO_TYPE_LABELS[sc_type]} ({ticker_symbol})", scenario_type=sc_type,
+            growth_rate_delta=sc_growth_delta, discount_rate_delta=sc_discount_delta,
+            volatility_multiplier=sc_vol_multiplier, mean_return_shift=sc_mean_shift,
+            dividend_cut_pct=sc_dividend_cut, created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        )
+
+        if sc_save_clicked:
+            st.session_state["scenario_saved"] = save_scenario(_sc_definition)
+            st.success(f"Saved \"{_sc_definition.name}\".")
+
+        if sc_run_clicked:
+            _sc_result, _sc_risk, _sc_dividend = None, None, None
+            if dcf_result is not None and dcf_result.ok:
+                _sc_result = run_scenario(
+                    fundamentals_engine, df, ticker_bundle.info, dcf_growth, dcf_result.wacc,
+                    _sc_definition, confidence_level=var_confidence, lookback=var_lookback, investment_amount=sc_investment,
+                )
+            else:
+                # DCF unavailable: still run the risk/dividend legs by
+                # calling the same functions directly rather than routing
+                # through run_scenario(), which requires a base discount
+                # rate to also attempt the DCF leg.
+                st.caption("DCF is unavailable for this ticker (see the DCF section above) — showing risk/dividend impact only.")
+                _sc_risk = apply_risk_scenario(df, _sc_definition, var_confidence, var_lookback)
+                _sc_dividend = dividend_cut_impact(ticker_bundle.info, standardized.current_price, sc_dividend_cut) if sc_type == "dividend_cut" else None
+
+            log_event(logger, logging.INFO, "user.scenario_run", ticker=ticker_symbol, scenario_type=sc_type)
+
+            if _sc_result is not None:
+                if _sc_result.dcf.ok:
+                    st.markdown("**DCF Impact**")
+                    dc1, dc2, dc3 = st.columns(3)
+                    dc1.metric("Base Intrinsic Value", f"${_sc_result.dcf.base_intrinsic_price:.2f}")
+                    dc2.metric("Shocked Intrinsic Value", f"${_sc_result.dcf.shocked_intrinsic_price:.2f}", delta=f"{_sc_result.dcf.pct_change:+.2f}%")
+                    if _sc_result.implied_portfolio_value_change is not None:
+                        dc3.metric(f"Illustrative Impact on ${sc_investment:,.0f}", f"${_sc_result.implied_portfolio_value_change:+,.2f}", help="Applies the intrinsic-value % change to your investment amount — assumes eventual price convergence to intrinsic value, not a forecast.")
+                else:
+                    st.warning(f"DCF impact not available: {_sc_result.dcf.reason}")
+
+                if _sc_result.risk.ok:
+                    st.markdown("**Risk Impact**")
+                    _sc_risk_rows = pd.DataFrame({
+                        "Base": [f"{_sc_result.risk.base_var_pct:.2f}%", f"{_sc_result.risk.base_cvar_pct:.2f}%", f"{_sc_result.risk.base_sharpe:.2f}" if _sc_result.risk.base_sharpe is not None else "N/A", f"{_sc_result.risk.base_max_drawdown_pct:.2f}%"],
+                        "Shocked": [f"{_sc_result.risk.shocked_var_pct:.2f}%", f"{_sc_result.risk.shocked_cvar_pct:.2f}%", f"{_sc_result.risk.shocked_sharpe:.2f}" if _sc_result.risk.shocked_sharpe is not None else "N/A", f"{_sc_result.risk.shocked_max_drawdown_pct:.2f}%"],
+                    }, index=[f"1-Day VaR ({var_confidence:.0%})", "Expected Shortfall (CVaR)", "Sharpe Ratio", "Max Drawdown"])
+                    st.table(_sc_risk_rows)
+
+                if _sc_result.dividend.applicable:
+                    st.markdown("**Dividend Impact**")
+                    dv1, dv2, dv3 = st.columns(3)
+                    dv1.metric("Annual Dividend / Share", f"${_sc_result.dividend.current_annual_dividend:.2f} → ${_sc_result.dividend.shocked_annual_dividend:.2f}")
+                    dv2.metric("Dividend Yield", f"{_sc_result.dividend.current_yield_pct:.2f}% → {_sc_result.dividend.shocked_yield_pct:.2f}%")
+                    dv3.metric("Lost Income / Share", f"${_sc_result.dividend.lost_annual_income_per_share:.2f}")
+                elif sc_type == "dividend_cut":
+                    st.caption(f"Dividend impact not available: {_sc_result.dividend.detail}")
+            elif _sc_risk is not None:
+                if _sc_risk.ok:
+                    st.markdown("**Risk Impact**")
+                    _sc_risk_rows = pd.DataFrame({
+                        "Base": [f"{_sc_risk.base_var_pct:.2f}%", f"{_sc_risk.base_cvar_pct:.2f}%", f"{_sc_risk.base_sharpe:.2f}" if _sc_risk.base_sharpe is not None else "N/A", f"{_sc_risk.base_max_drawdown_pct:.2f}%"],
+                        "Shocked": [f"{_sc_risk.shocked_var_pct:.2f}%", f"{_sc_risk.shocked_cvar_pct:.2f}%", f"{_sc_risk.shocked_sharpe:.2f}" if _sc_risk.shocked_sharpe is not None else "N/A", f"{_sc_risk.shocked_max_drawdown_pct:.2f}%"],
+                    }, index=[f"1-Day VaR ({var_confidence:.0%})", "Expected Shortfall (CVaR)", "Sharpe Ratio", "Max Drawdown"])
+                    st.table(_sc_risk_rows)
+                if _sc_dividend is not None and _sc_dividend.applicable:
+                    st.markdown("**Dividend Impact**")
+                    dv1, dv2, dv3 = st.columns(3)
+                    dv1.metric("Annual Dividend / Share", f"${_sc_dividend.current_annual_dividend:.2f} → ${_sc_dividend.shocked_annual_dividend:.2f}")
+                    dv2.metric("Dividend Yield", f"{_sc_dividend.current_yield_pct:.2f}% → {_sc_dividend.shocked_yield_pct:.2f}%")
+                    dv3.metric("Lost Income / Share", f"${_sc_dividend.lost_annual_income_per_share:.2f}")
+
+        if st.session_state["scenario_saved"]:
+            with st.expander(f"Saved scenarios ({len(st.session_state['scenario_saved'])})", expanded=False):
+                for _saved in st.session_state["scenario_saved"]:
+                    _sv_c1, _sv_c2 = st.columns([5, 1])
+                    with _sv_c1:
+                        st.caption(
+                            f"**{_saved.name}** ({SCENARIO_TYPE_LABELS[_saved.scenario_type]}) — "
+                            f"growth {_saved.growth_rate_delta*100:+.1f}pp, discount {_saved.discount_rate_delta*100:+.1f}pp, "
+                            f"vol ×{_saved.volatility_multiplier:.1f}, saved {_saved.created_at}"
+                        )
+                    with _sv_c2:
+                        if st.button("✕", key=f"scenario_delete_{_saved.name}", help="Delete this saved scenario"):
+                            st.session_state["scenario_saved"] = delete_scenario(_saved.name)
+                            st.rerun()
 
     # ==========================================
     # EXECUTIVE DIGEST (fill) — every source signal this synthesizes
