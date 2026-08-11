@@ -1,6 +1,13 @@
-"""Quick-switch watchlist panel — a small, user-maintained list of tickers
-with a live quote line for each, rendered in the sidebar so it stays
-visible alongside whichever analysis panel is open.
+"""Symbol navigation aids — the two ways to change the analyzed ticker
+without retyping it.
+
+1. The sidebar watchlist: a small, user-maintained list of tickers with a
+   live quote line for each, rendered so it stays visible alongside
+   whichever analysis panel is open.
+2. The recently-viewed strip (record_recent below): an automatic
+   most-recently-used list of symbols visited this session, rendered as
+   chips under the symbol header. Curated by the user in the first case,
+   accumulated by simply navigating in the second.
 
 Deliberately reuses data_loader.load_ticker_bundle(deep=False), the exact
 same shallow (info-only) fetch the Institutional Watchlist scan and the
@@ -94,6 +101,26 @@ def add_ticker(current: Tuple[str, ...], raw: str, max_tickers: int) -> Tuple[Tu
 
 def remove_ticker(current: Tuple[str, ...], ticker: str) -> Tuple[str, ...]:
     return tuple(t for t in current if t != ticker)
+
+
+def record_recent(current: Tuple[str, ...], ticker: str, max_recent: int) -> Tuple[str, ...]:
+    """Most-recently-used list with `ticker` moved to the front.
+
+    Idempotent by design: Streamlit re-runs the whole script on every
+    widget interaction (a slider nudge, a tab click), so this is called
+    constantly with the SAME ticker. Re-recording the current symbol must
+    therefore be a no-op rather than duplicating it or churning the order
+    — which is why this moves-to-front and dedupes instead of appending.
+
+    Returns `current` unchanged for an empty ticker, and an empty tuple
+    for a non-positive `max_recent`, rather than raising.
+    """
+    if max_recent <= 0:
+        return ()
+    if not ticker:
+        return current
+    rest = tuple(t for t in current if t != ticker)
+    return (ticker,) + rest[:max_recent - 1]
 
 
 @st.cache_data(ttl=300, show_spinner=False)

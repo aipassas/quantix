@@ -24,7 +24,7 @@ from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_perc
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 from executive_digest import collect_flags
 from monte_carlo import simulate_gbm_paths, simulate_bootstrap_paths, terminal_stats
-from watchlist_panel import add_ticker, load_quote_snapshots, remove_ticker
+from watchlist_panel import add_ticker, load_quote_snapshots, record_recent, remove_ticker
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -787,22 +787,37 @@ with st.spinner(f"Running deep audit on {ticker_symbol} & loading Macro Data..."
 # knowing WHICH symbol failed to load is exactly when the header matters.
 # ==========================================
 with symbol_header_container:
-    _hdr_price = standardized.current_price
-    _hdr_prev = standardized.previous_close
+    # Price/day-change come from the LIVE QUOTE (the same load_quote_snapshots
+    # the sidebar watchlist uses), NOT from standardized.current_price.
+    # That distinction is load-bearing, not incidental: standardized's price
+    # is the last bar of the fetched price HISTORY, and that history lags the
+    # live quote by a session — during market hours (and before the daily bar
+    # lands) its "latest" close is yesterday's. Deriving a day change from it
+    # therefore reports the PREVIOUS session's move as if it were today's,
+    # and disagrees with the watchlist row for the same symbol. Observed
+    # directly: history's last two bars gave AAPL -1.53% (Aug 7 -> Aug 10)
+    # while the live quote gave -0.37% (Aug 10 close -> now).
+    #
+    # The analysis below deliberately still runs on the price history — the
+    # DCF's "Market Price", ATR stop, and every chart are all built on that
+    # one validated dataset. So this bar is the live quote and those are the
+    # dataset's close; they can differ by a fraction of a percent intraday,
+    # which is correct for what each is measuring.
+    _hdr_quote = load_quote_snapshots((ticker_symbol,))[0]
     _hdr_name = standardized.long_name or ""
 
-    if _hdr_price is not None and _hdr_prev:
-        _hdr_change = _hdr_price - _hdr_prev
-        _hdr_change_pct = (_hdr_change / _hdr_prev) * 100
+    if _hdr_quote.status == "ok":
+        _hdr_change = _hdr_quote.price - _hdr_quote.previous_close
         _hdr_class = "qsh-up" if _hdr_change > 0 else ("qsh-down" if _hdr_change < 0 else "qsh-flat")
-        _hdr_price_html = f'<span class="qsh-price">${_hdr_price:,.2f}</span>'
+        _hdr_price_html = f'<span class="qsh-price">${_hdr_quote.price:,.2f}</span>'
         _hdr_change_html = (
-            f'<span class="qsh-change {_hdr_class}">{_hdr_change:+,.2f} ({_hdr_change_pct:+.2f}%)</span>'
+            f'<span class="qsh-change {_hdr_class}">{_hdr_change:+,.2f} ({_hdr_quote.change_pct:+.2f}%)</span>'
         )
-    elif _hdr_price is not None:
-        # Price known but no prior close to compare against — show the
-        # price and say the change is unavailable rather than implying 0.00%.
-        _hdr_price_html = f'<span class="qsh-price">${_hdr_price:,.2f}</span>'
+    elif _hdr_quote.price is not None or standardized.current_price is not None:
+        # A price is known but there's no usable prior close to compare it
+        # against — show the price and say so, rather than implying 0.00%.
+        _hdr_fallback_price = _hdr_quote.price if _hdr_quote.price is not None else standardized.current_price
+        _hdr_price_html = f'<span class="qsh-price">${_hdr_fallback_price:,.2f}</span>'
         _hdr_change_html = '<span class="qsh-change qsh-flat">day change unavailable</span>'
     else:
         _hdr_price_html = '<span class="qsh-price">—</span>'
@@ -819,6 +834,42 @@ with symbol_header_container:
         f'</div>',
         unsafe_allow_html=True,
     )
+
+    # --- Recently viewed: one-click switching between symbols visited
+    # this session. Rendered INSIDE symbol_header_container so it's part
+    # of the same sticky block as the header above — the symbol you're on
+    # and the symbols you can jump to stay together and stay on screen.
+    #
+    # Recorded here rather than at the sidebar input so it captures the
+    # ticker actually analysed on this run, however it was chosen (typed,
+    # watchlist click, screener click-through, or one of these chips).
+    # record_recent() is idempotent, which matters because Streamlit
+    # re-runs this whole script on every widget interaction.
+    st.session_state["recent_tickers"] = record_recent(
+        st.session_state.get("recent_tickers", ()), ticker_symbol,
+        WATCHLIST_PANEL.max_recent_tickers,
+    )
+    _recents = st.session_state["recent_tickers"]
+
+    if len(_recents) > 1:
+        # Fixed-width chips: the columns list is padded to the configured
+        # maximum with a trailing spacer, so a chip is the same size
+        # whether two symbols have been visited or eight — rather than
+        # two chips stretching across the whole page.
+        _chip_cols = st.columns(
+            [1] * len(_recents) + [max(1, WATCHLIST_PANEL.max_recent_tickers - len(_recents) + 1)]
+        )
+        for _chip_col, _recent in zip(_chip_cols, _recents):
+            with _chip_col:
+                _is_current = _recent == ticker_symbol
+                if st.button(
+                    _recent, key=f"recent_{_recent}", width="stretch",
+                    type="primary" if _is_current else "secondary",
+                    help="Currently analysed" if _is_current else f"Switch analysis to {_recent}",
+                ):
+                    st.session_state["_pending_ticker"] = _recent
+                    log_event(logger, logging.INFO, "user.recent_switch", ticker=_recent)
+                    st.rerun()
 
 if df.empty:
     detail = " ".join(ticker_bundle.errors) if ticker_bundle.errors else "No data returned by Yahoo Finance."

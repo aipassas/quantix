@@ -223,6 +223,12 @@ class WatchlistPanelConfig:
     default_tickers: Tuple[str, ...] = ("AAPL", "MSFT", "NVDA", "GOOGL")
     max_tickers: int = 10
 
+    # Recently-viewed strip (chips under the symbol header). Separate cap
+    # from max_tickers: this list is accumulated automatically by
+    # navigating, not curated, so it's kept shorter to stay a single
+    # scannable row rather than a wall of chips.
+    max_recent_tickers: int = 8
+
 
 @dataclass(frozen=True)
 class WalkForwardConfig:

@@ -13,6 +13,7 @@ from watchlist_panel import (
     QuoteSnapshot,
     add_ticker,
     parse_tickers,
+    record_recent,
     remove_ticker,
 )
 
@@ -175,3 +176,40 @@ def test_load_quote_never_raises_on_unexpected_error(monkeypatch):
     q = _uncached_load_quote("TEST")
     assert q.status == "unavailable"
     assert q.detail
+
+
+# --- record_recent (recently-viewed strip) ----------------------------------
+
+def test_record_recent_puts_new_ticker_at_front():
+    assert record_recent(("MSFT", "NVDA"), "AAPL", max_recent=8) == ("AAPL", "MSFT", "NVDA")
+
+
+def test_record_recent_is_idempotent_for_the_current_ticker():
+    """Streamlit re-runs the script on every widget interaction, so this is
+    called repeatedly with the same ticker — it must not duplicate or churn."""
+    seq = ("AAPL", "MSFT")
+    once = record_recent(seq, "AAPL", max_recent=8)
+    twice = record_recent(once, "AAPL", max_recent=8)
+    assert once == twice == ("AAPL", "MSFT")
+
+
+def test_record_recent_moves_an_existing_ticker_to_front_without_duplicating():
+    assert record_recent(("AAPL", "MSFT", "NVDA"), "NVDA", max_recent=8) == ("NVDA", "AAPL", "MSFT")
+
+
+def test_record_recent_caps_length_dropping_the_oldest():
+    result = record_recent(("B", "C", "D"), "A", max_recent=3)
+    assert result == ("A", "B", "C")  # "D", the least recent, falls off
+
+
+def test_record_recent_cap_of_one_keeps_only_current():
+    assert record_recent(("B", "C"), "A", max_recent=1) == ("A",)
+
+
+def test_record_recent_empty_ticker_leaves_list_untouched():
+    current = ("AAPL",)
+    assert record_recent(current, "", max_recent=8) == current
+
+
+def test_record_recent_non_positive_cap_yields_empty():
+    assert record_recent(("AAPL",), "MSFT", max_recent=0) == ()
