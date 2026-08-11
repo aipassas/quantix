@@ -19,6 +19,7 @@ from risk_analytics import (
     compute_drawdown_series, compute_max_drawdown,
     compute_calmar_ratio, interpret_calmar_ratio,
     compute_risk_score,
+    compute_hurst_exponent,
 )
 
 
@@ -272,3 +273,100 @@ def test_risk_score_all_missing_is_zero_no_crash():
     result = compute_risk_score(None, None, None, None, None, None, None, None)
     assert result.score == 0.0
     assert len(result.excluded_factors) == 8
+
+
+# --- Hurst Exponent (classical R/S analysis) --------------------------------
+
+def _price_df_from_returns(log_returns):
+    """A minimal Close-only DataFrame from a log-return series — all
+    compute_hurst_exponent() reads is df['Close'], via compute_log_returns()."""
+    close = 100 * np.exp(np.cumsum(log_returns))
+    return pd.DataFrame({"Close": close})
+
+
+def test_hurst_random_walk_reads_near_half():
+    """A pure random walk's returns are i.i.d. — no memory to detect.
+    Averaged over several seeds since any one sample is noisy; the
+    classical R/S statistic has a known small positive bias at finite
+    sample sizes, so the tolerance band is centered slightly above 0.5,
+    not exactly on it (documented in compute_hurst_exponent()'s docstring)."""
+    values = []
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        returns = rng.normal(0, 1, 250)
+        h = compute_hurst_exponent(_price_df_from_returns(returns))
+        assert h is not None
+        values.append(h)
+    assert 0.45 < np.mean(values) < 0.65
+
+
+def test_hurst_trending_series_reads_notably_above_random_walk():
+    """AR(1) with a strong positive coefficient (phi=0.6) injects genuine
+    positive autocorrelation — persistent/trending behavior — into the
+    return series. Compared directly against a random walk on the SAME
+    seeds so the comparison isn't confounded by sample noise."""
+    trending, random_walk = [], []
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        noise = rng.normal(0, 1, 250)
+        ar_returns = np.zeros(250)
+        for t in range(1, 250):
+            ar_returns[t] = 0.6 * ar_returns[t - 1] + noise[t]
+        trending.append(compute_hurst_exponent(_price_df_from_returns(ar_returns)))
+        random_walk.append(compute_hurst_exponent(_price_df_from_returns(noise)))
+    assert np.mean(trending) > np.mean(random_walk) + 0.1
+    assert np.mean(trending) > 0.6
+
+
+def test_hurst_mean_reverting_series_reads_notably_below_random_walk():
+    """AR(1) with a strong negative coefficient (phi=-0.5) injects genuine
+    anti-persistence — mean-reverting behavior."""
+    mean_reverting, random_walk = [], []
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        noise = rng.normal(0, 1, 250)
+        ar_returns = np.zeros(250)
+        for t in range(1, 250):
+            ar_returns[t] = -0.5 * ar_returns[t - 1] + noise[t]
+        mean_reverting.append(compute_hurst_exponent(_price_df_from_returns(ar_returns)))
+        random_walk.append(compute_hurst_exponent(_price_df_from_returns(noise)))
+    assert np.mean(mean_reverting) < np.mean(random_walk) - 0.05
+    assert np.mean(mean_reverting) < 0.5
+
+
+def test_hurst_operates_on_returns_not_raw_price_levels():
+    """A random-walk PRICE series is itself a cumulative sum (non-stationary)
+    — running R/S directly on price levels would read H near 1.0, not the
+    expected ~0.5, for a genuinely memoryless process. This is the specific
+    pitfall the implementation must avoid."""
+    rng = np.random.default_rng(7)
+    returns = rng.normal(0, 1, 500)
+    df = _price_df_from_returns(returns)
+    h = compute_hurst_exponent(df)
+    assert h < 0.75, "H should reflect the memoryless RETURN process (~0.5), not the price level's own random-walk integration (~1.0)"
+
+
+def test_hurst_none_on_insufficient_history():
+    df = _price_df_from_returns(np.random.default_rng(1).normal(0, 1, 15))
+    assert compute_hurst_exponent(df, min_window=10) is None
+
+
+def test_hurst_invariant_to_constant_price_rescaling():
+    """Log returns (and therefore H) are exactly invariant under a constant
+    multiplicative rescaling of price: log(k*P_t / k*P_{t-1}) == log(P_t /
+    P_{t-1}) — the k cancels. A precise, deterministic cross-check that
+    doesn't depend on statistical sampling."""
+    rng = np.random.default_rng(11)
+    returns = rng.normal(0, 1, 200)
+    df = _price_df_from_returns(returns)
+    rescaled_df = df.copy()
+    rescaled_df["Close"] = df["Close"] * 37.5
+
+    h_original = compute_hurst_exponent(df)
+    h_rescaled = compute_hurst_exponent(rescaled_df)
+    assert h_original == pytest.approx(h_rescaled, abs=1e-9)
+
+
+def test_hurst_deterministic_for_identical_input():
+    df = _price_df_from_returns(np.random.default_rng(5).normal(0, 1, 150))
+    assert compute_hurst_exponent(df) == compute_hurst_exponent(df.copy())

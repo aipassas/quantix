@@ -11,7 +11,7 @@ from data_loader import load_ticker_bundle, load_macro_bundle, load_seasonality_
 from financial_standardization import standardize_financials
 from price_processing import process_price_data
 from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss, compute_stochastic, detect_stochastic_crossovers, compute_anchored_vwap, compute_adx, compute_ichimoku, compute_obv
-from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score
+from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score, compute_hurst_exponent
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
@@ -1397,23 +1397,14 @@ else:
     # same column.
     df['Z_Score'] = (df['Close'] - df['Mean']) / df['Std']
 
-    def calculate_hurst(price_series):
-        lags = range(2, 20)
-        tau = [np.sqrt(np.std(np.subtract(price_series[lag:], price_series[:-lag]))) for lag in lags]
-        poly = np.polyfit(np.log(lags), np.log(tau), 1)
-        return poly[0] * 2.0
-
-    try:
-        hurst_exponent = calculate_hurst(df['Close'].values)
-    except (ValueError, np.linalg.LinAlgError) as e:
-        # np.polyfit raises ValueError on NaN/Inf input and LinAlgError when the
-        # least-squares fit doesn't converge — typically a very short or flat
-        # price history for this date range.
-        st.warning(f"Could not calculate Hurst Exponent (insufficient or degenerate price history for this date range), defaulting to 0.5 (Random Walk): {e}")
-        hurst_exponent = 0.5
-    except Exception as e:
-        log_exception(logger, "calc.error", section="hurst_exponent", ticker=ticker_symbol)
-        st.warning(f"Unexpected error calculating Hurst Exponent, defaulting to 0.5 (Random Walk): {type(e).__name__}: {e}")
+    # Classical Rescaled Range (R/S) analysis on log returns — see
+    # risk_analytics.compute_hurst_exponent()'s docstring for the method
+    # and its cross-check against synthetic random-walk/trending/
+    # mean-reverting series. Replaces the previous single-scale
+    # sqrt(std(price differences)) approximation.
+    hurst_exponent = compute_hurst_exponent(df)
+    if hurst_exponent is None:
+        st.warning("Could not calculate Hurst Exponent (insufficient price history for this date range to form multiple R/S window sizes), defaulting to 0.5 (Random Walk).")
         hurst_exponent = 0.5
 
     # Altman Z-Score is calculated by the engine (it's pure statement math);
