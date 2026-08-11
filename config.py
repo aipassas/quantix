@@ -245,6 +245,20 @@ class RealtimeAlertsConfig:
 
 
 @dataclass(frozen=True)
+class PortfolioBacktestConfig:
+    """Defaults for the Portfolio Backtester — the multi-ticker, weighted,
+    rebalanced counterpart to the single-ticker Algorithmic Backtesting
+    Simulator. Runs the SAME strategy already configured there across a
+    basket, rather than exposing a second, separate strategy definition."""
+    # UI/fetch bound, not a Yahoo limit: each basket ticker costs its own
+    # deep fetch + indicator computation, so this keeps a run tractable and
+    # the per-ticker contribution table scannable.
+    max_tickers: int = 8
+    default_rebalance_frequency: str = "monthly"   # one of REBALANCE_FREQUENCIES in portfolio_backtester.py
+    default_rebalance_threshold_pct: float = 5.0    # only consulted when threshold-based rebalancing is enabled
+
+
+@dataclass(frozen=True)
 class WalkForwardConfig:
     """Defaults for the Backtest section's optional walk-forward mode.
     Trading days, not calendar months, to match how every other lookback
@@ -516,6 +530,7 @@ WALK_FORWARD = WalkForwardConfig()
 WATCHLIST_PANEL = WatchlistPanelConfig()
 BACKTEST_COST = BacktestCostConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
+PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()
