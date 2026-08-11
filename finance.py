@@ -15,12 +15,20 @@ from risk_analytics import compute_rolling_volatility, compute_annualized_volati
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
+from ml_pipeline import (
+    load_history as load_ml_history,
+    load_model as load_ml_model,
+    predict_latest,
+    save_model as save_ml_model,
+    train_momentum_model,
+    training_universe,
+)
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 from realtime_alerts import (
@@ -3360,6 +3368,97 @@ else:
                             pd.DataFrame({"Weight": [f"{w*100:.1f}%" for w in frontier.min_variance.weights.values()]}, index=list(frontier.min_variance.weights.keys())),
                             width="stretch",
                         )
+
+        # ==========================================
+        # MACHINE LEARNING PIPELINE: MOMENTUM CONTINUATION SIGNAL
+        # ==========================================
+        # The one PREDICTIVE section in an otherwise entirely descriptive,
+        # rule-based app. Kept visually and textually distinct from every
+        # section above it for exactly that reason.
+        st.markdown("---")
+        st.header("Momentum Continuation Signal (Experimental)")
+        st.caption(
+            f"A baseline Logistic Regression trained on this app's own technical/risk features (RSI, MACD, SMA "
+            f"structure, trailing returns, volatility, volume), estimating the probability {ticker_symbol}'s price "
+            f"is higher {ML_PIPELINE.label_horizon_days} trading days from now. This is a backtested statistical "
+            f"estimate from one specific, disclosed model — not investment advice, and not a claim of a proven "
+            f"edge. Predicting price direction from public technical data alone is a genuinely hard problem; every "
+            f"result below is shown next to the naive \"always guess the majority class\" baseline so you can "
+            f"judge whether the model is actually adding anything."
+        )
+
+        ml_model = load_ml_model()
+        ml_history = load_ml_history()
+
+        if st.button("Train / Retrain Model", key="ml_train_button"):
+            with st.spinner(f"Training on {len(training_universe())} ticker(s) — fetching history, engineering features, fitting..."):
+                trained_model, training_result = train_momentum_model()
+                if training_result.error:
+                    st.error(f"Training did not produce a usable model: {training_result.error}")
+                else:
+                    save_ml_model(trained_model, training_result)
+                    log_event(logger, logging.INFO, "user.ml_model_trained", test_accuracy=round(training_result.test_accuracy, 4), tickers=len(training_result.tickers_used))
+                    st.rerun()
+
+        if ml_model is None:
+            st.info("No model has been trained yet. Click \"Train / Retrain Model\" above to train the first one.")
+        else:
+            _ml_latest = ml_history[-1] if ml_history else None
+            if _ml_latest:
+                _ml_beats_baseline = _ml_latest["test_accuracy"] > _ml_latest["majority_class_baseline_accuracy"]
+                ml_c1, ml_c2, ml_c3 = st.columns(3)
+                ml_c1.metric(
+                    "Model Test Accuracy", f"{_ml_latest['test_accuracy']*100:.1f}%",
+                    delta=f"{(_ml_latest['test_accuracy'] - _ml_latest['majority_class_baseline_accuracy'])*100:+.1f}pp vs naive baseline",
+                    # "normal" (not "inverse"): a POSITIVE delta means the
+                    # model beats the baseline (good, green) and a NEGATIVE
+                    # delta means it underperforms (bad, red) — exactly
+                    # st.metric's default semantics. Caught live: an
+                    # earlier "inverse" here painted a -3.0pp
+                    # underperformance GREEN, directly contradicting the
+                    # warning text right below it.
+                )
+                ml_c2.metric("Naive Majority-Class Baseline", f"{_ml_latest['majority_class_baseline_accuracy']*100:.1f}%", help="Accuracy from simply always predicting whichever label (up/down) was more common in the test period — the bar a model has to clear to be adding anything at all.")
+                ml_c3.metric("Test ROC-AUC", f"{_ml_latest['test_roc_auc']:.3f}" if _ml_latest.get('test_roc_auc') is not None else "N/A", help="0.5 = no better than random ranking; 1.0 = perfect. Shown alongside accuracy since accuracy alone can be misleading on imbalanced labels.")
+
+                if not _ml_beats_baseline:
+                    st.warning(
+                        "This model's out-of-sample accuracy does NOT currently exceed the naive majority-class "
+                        "baseline — on the most recent training run, it is not demonstrating a measurable edge. "
+                        "The prediction below is shown anyway for transparency, not as a signal to act on."
+                    )
+
+                st.caption(
+                    f"Last trained {_ml_latest['trained_at']} on {_ml_latest['train_rows']:,} rows "
+                    f"({_ml_latest['train_start']} → {_ml_latest['train_end']}), tested on {_ml_latest['test_rows']:,} rows "
+                    f"({_ml_latest['test_start']} → {_ml_latest['test_end']}) across {len(_ml_latest['tickers_used'])} ticker(s)."
+                )
+
+            _ml_prediction = predict_latest(ticker_symbol, df, ml_model)
+            if _ml_prediction.status == "ok":
+                _ml_prob_pct = _ml_prediction.probability_up * 100
+                st.metric(
+                    f"{ticker_symbol}: Probability Higher in {ML_PIPELINE.label_horizon_days} Trading Days",
+                    f"{_ml_prob_pct:.1f}%",
+                    help="As of the most recent complete bar. 50% means the model sees no directional lean either way for this specific ticker right now.",
+                )
+                with st.expander("Feature values behind this prediction", expanded=False):
+                    st.table(pd.DataFrame({"Value": _ml_prediction.feature_values}))
+            elif _ml_prediction.status == "insufficient_data":
+                st.caption(f"No prediction for {ticker_symbol}: {_ml_prediction.detail}")
+
+            if ml_history:
+                with st.expander(f"Training history ({len(ml_history)} run(s))", expanded=False):
+                    _ml_hist_rows = [
+                        {
+                            "Trained": h["trained_at"], "Test Accuracy": f"{h['test_accuracy']*100:.1f}%",
+                            "Baseline": f"{h['majority_class_baseline_accuracy']*100:.1f}%",
+                            "ROC-AUC": f"{h['test_roc_auc']:.3f}" if h.get("test_roc_auc") is not None else "N/A",
+                            "Train Rows": h["train_rows"], "Test Rows": h["test_rows"], "Tickers": len(h["tickers_used"]),
+                        }
+                        for h in reversed(ml_history)
+                    ]
+                    st.dataframe(pd.DataFrame(_ml_hist_rows), hide_index=True, width="stretch")
 
     with tab_tearsheet:
         # ==========================================

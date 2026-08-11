@@ -259,6 +259,25 @@ class PortfolioBacktestConfig:
 
 
 @dataclass(frozen=True)
+class MLPipelineConfig:
+    """The Momentum Continuation classifier — a BASELINE model by design
+    (the originating task's own wording), not an ensemble or deep model:
+    a single, interpretable Logistic Regression trained on features this
+    app already computes elsewhere (RSI, MACD, SMA structure, trailing
+    returns, rolling volatility, volume) rather than new indicator math.
+    See ml_pipeline.py's module docstring for the full design reasoning,
+    including why predicting stock direction is a genuinely hard problem
+    this app is careful not to overclaim skill at."""
+    label_horizon_days: int = 10        # forward window the label looks ahead over — distinct from the trailing feature windows
+    train_lookback_days: int = 1500     # ~6 years of daily bars per training ticker
+    test_fraction: float = 0.2          # most-recent slice of the COMBINED timeline held out — never a random shuffle, which would leak future information into training
+    min_training_rows: int = 200        # below this, training is refused rather than fit on too little data to mean anything
+    model_filename: str = "ml_momentum_model.joblib"
+    history_filename: str = "ml_training_history.json"
+    max_history: int = 50               # trimmed on every save so the history file can't grow unbounded
+
+
+@dataclass(frozen=True)
 class WalkForwardConfig:
     """Defaults for the Backtest section's optional walk-forward mode.
     Trading days, not calendar months, to match how every other lookback
@@ -531,6 +550,7 @@ WATCHLIST_PANEL = WatchlistPanelConfig()
 BACKTEST_COST = BacktestCostConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
+ML_PIPELINE = MLPipelineConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

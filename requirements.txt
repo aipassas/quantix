@@ -4,4 +4,5 @@ pandas>=2.0
 numpy>=1.26
 plotly>=6.0
 scipy>=1.11
+scikit-learn>=1.4
 weasyprint>=69.0
