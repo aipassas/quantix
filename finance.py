@@ -479,49 +479,34 @@ one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_d
 start_date = st.sidebar.date_input("Start Date", one_year_ago)
 end_date = st.sidebar.date_input("End Date", today)
 
-tab_valuation, tab_chart, tab_risk, tab_portfolio, tab_system = st.sidebar.tabs(
-    ["💰 Valuation", "📊 Chart", "⚠️ Risk", "📁 Portfolio", "⚙️ System"]
+# `side_`-prefixed so these never shadow the main-page panel variables of
+# the same concern (tab_risk) defined further down — the two are different
+# containers and mixing them up would render a control into the wrong place.
+# NOTE: there is deliberately no "Chart" tab here — every chart indicator
+# control now lives in the Chart Workspace panel itself, directly above the
+# chart it configures (see the "Chart Indicators & Overlays" expander), so
+# the controls and their effect are in one place instead of split across
+# the sidebar and the page.
+side_valuation, side_risk, side_portfolio, side_system = st.sidebar.tabs(
+    ["💰 Valuation", "⚠️ Risk", "📁 Portfolio", "⚙️ System"]
 )
 
-with tab_valuation:
+with side_valuation:
     benchmark_symbol = st.text_input("Market Benchmark", CHART_DEFAULTS.default_benchmark).upper()
     dcf_growth = st.slider("Expected FCF Growth (%)", min_value=CHART_DEFAULTS.dcf_growth_range_pct[0], max_value=CHART_DEFAULTS.dcf_growth_range_pct[1], value=CHART_DEFAULTS.dcf_growth_default_pct) / 100
     dcf_wacc = st.slider("Discount Rate / WACC (%)", min_value=CHART_DEFAULTS.dcf_wacc_range_pct[0], max_value=CHART_DEFAULTS.dcf_wacc_range_pct[1], value=CHART_DEFAULTS.dcf_wacc_default_pct) / 100
 
-with tab_chart:
-    st.caption("Core Indicators")
-    sma_length = st.slider("SMA Length", min_value=CHART_DEFAULTS.sma_range[0], max_value=CHART_DEFAULTS.sma_range[1], value=CHART_DEFAULTS.sma_default)
-    show_sma_trio = st.checkbox(f"Show {'/'.join(str(p) for p in TECHNICAL.sma_trio_periods)}-day SMA Trio", value=True)
-    show_bollinger_bands = st.checkbox(f"Show Bollinger Bands ({TECHNICAL.bollinger_num_std:.0f}σ, {sma_length}-period)", value=True)
-    rsi_length = st.slider("RSI Length", min_value=CHART_DEFAULTS.rsi_range[0], max_value=CHART_DEFAULTS.rsi_range[1], value=CHART_DEFAULTS.rsi_default)
-    show_rsi_panel = st.checkbox("Show RSI Panel", value=True)
-    atr_length = st.slider("ATR Length", min_value=CHART_DEFAULTS.atr_range[0], max_value=CHART_DEFAULTS.atr_range[1], value=CHART_DEFAULTS.atr_default)
-    show_macd_panel = st.checkbox("Show MACD Panel", value=True)
-
-    st.markdown("---")
-    st.caption("Additional Indicators")
-    stochastic_k_length = st.slider("Stochastic %K Length", min_value=CHART_DEFAULTS.stochastic_k_range[0], max_value=CHART_DEFAULTS.stochastic_k_range[1], value=TECHNICAL.stochastic_k_period)
-    show_stochastic_panel = st.checkbox("Show Stochastic Panel", value=False)
-    show_vwap = st.checkbox("Show Anchored VWAP", value=False, help="Cumulative Volume-Weighted Average Price from a chosen anchor date. Quantix only has daily bars, so this is an anchored VWAP rather than an intraday session VWAP.")
-    vwap_anchor_date = None
-    if show_vwap:
-        vwap_anchor_date = st.date_input("VWAP Anchor Date", value=None, help="Defaults to the start of the loaded price history if left blank.")
-    show_ichimoku = st.checkbox("Show Ichimoku Cloud", value=False, help=f"Tenkan {TECHNICAL.ichimoku_tenkan_period} / Kijun {TECHNICAL.ichimoku_kijun_period} / Senkou B {TECHNICAL.ichimoku_senkou_b_period} — fixed periods, includes a real forward-projected cloud.")
-    adx_length = st.slider("ADX Length", min_value=CHART_DEFAULTS.adx_range[0], max_value=CHART_DEFAULTS.adx_range[1], value=TECHNICAL.adx_period)
-    show_adx_panel = st.checkbox("Show ADX Panel", value=False)
-    show_obv_panel = st.checkbox("Show OBV Panel", value=False)
-
-with tab_risk:
+with side_risk:
     vol_window = st.slider("Volatility Window (days)", min_value=CHART_DEFAULTS.vol_window_range[0], max_value=CHART_DEFAULTS.vol_window_range[1], value=CHART_DEFAULTS.vol_window_default)
     var_confidence = st.selectbox("VaR Confidence Level", options=RISK.var_confidence_levels, index=list(RISK.var_confidence_levels).index(RISK.var_confidence_default), format_func=lambda c: f"{c:.0%}")
     var_lookback = st.slider("VaR Lookback (days)", min_value=CHART_DEFAULTS.var_lookback_range[0], max_value=CHART_DEFAULTS.var_lookback_range[1], value=CHART_DEFAULTS.var_lookback_default)
     risk_free_rate = st.slider("Risk-Free Rate (%)", min_value=CHART_DEFAULTS.risk_free_rate_range_pct[0], max_value=CHART_DEFAULTS.risk_free_rate_range_pct[1], value=RISK.risk_free_rate * 100, step=0.25, help="Feeds the Sharpe/Sortino ratios below. The DCF's CAPM cost of equity uses its own fixed risk-free-rate assumption (RISK.risk_free_rate), unaffected by this slider.") / 100
 
-with tab_portfolio:
+with side_portfolio:
     portfolio_basket_input = st.text_input("Correlation Basket (comma-separated)", value=CHART_DEFAULTS.portfolio_default_basket, help="Tickers to include in the Portfolio Correlation & Diversification section further down the page. The main Stock Ticker above is always included automatically.")
     portfolio_lookback = st.slider("Portfolio Lookback (days)", min_value=CHART_DEFAULTS.portfolio_lookback_range[0], max_value=CHART_DEFAULTS.portfolio_lookback_range[1], value=CHART_DEFAULTS.portfolio_lookback_default)
 
-with tab_system:
+with side_system:
     st.caption("Diagnostics")
     # Rendered BEFORE the Force Refresh button below on purpose. Streamlit
     # discards the session_state entry for any keyed widget that isn't rendered
@@ -598,8 +583,11 @@ else:
     # trick executive_digest_container (right below) already uses: a tab
     # is a valid `with` context manager, so a block written later in the
     # script can still target a tab defined earlier, same as containers.
-    tab_overview, tab_fundamentals, tab_risk, tab_simulation, tab_smart_money, tab_tearsheet = st.tabs([
-        "🏠 Overview", "💰 Fundamentals & Valuation", "⚠️ Risk & Technicals",
+    # Chart Workspace sits second, right after Overview: it's the primary
+    # charting surface, so it gets a prominent position rather than being
+    # buried mid-list among the analysis panels.
+    tab_overview, tab_chart_workspace, tab_fundamentals, tab_risk, tab_simulation, tab_smart_money, tab_tearsheet = st.tabs([
+        "🏠 Overview", "📈 Chart Workspace", "💰 Fundamentals & Valuation", "⚠️ Risk & Technicals",
         "🎲 Monte Carlo & Seasonality", "🕵️ Smart Money & Peers", "📋 CIO Tear Sheet",
     ])
 
@@ -1072,12 +1060,45 @@ else:
                 " — Yahoo doesn't report an equivalent field (FCF Yield), doesn't report one for this company (PEG, EV/EBITDA), or a required input (EBIT, Net Income, Market Cap) is missing."
             )
 
-    with tab_risk:
+    with tab_chart_workspace:
         # ==========================================
         # CHARTS & INDICATORS
         # ==========================================
-        st.markdown("---")
         st.header("Interactive Price & Technicals", anchor="technicals")
+
+        # Indicator controls live HERE, directly above the chart they
+        # configure, rather than in the sidebar — one place to look instead
+        # of two. Collapsed by default so the chart itself stays the
+        # prominent thing in this panel; every widget keeps the exact
+        # label/range/default/help it had in the old sidebar Chart tab, and
+        # every one of these variables is first CONSUMED further down this
+        # same block (sma_periods onward), so defining them here keeps the
+        # original define-before-use order intact.
+        with st.expander("⚙️ Chart Indicators & Overlays", expanded=False):
+            _ind_core, _ind_momentum, _ind_extra = st.columns(3)
+            with _ind_core:
+                st.caption("**Trend**")
+                sma_length = st.slider("SMA Length", min_value=CHART_DEFAULTS.sma_range[0], max_value=CHART_DEFAULTS.sma_range[1], value=CHART_DEFAULTS.sma_default)
+                show_sma_trio = st.checkbox(f"Show {'/'.join(str(p) for p in TECHNICAL.sma_trio_periods)}-day SMA Trio", value=True)
+                show_bollinger_bands = st.checkbox(f"Show Bollinger Bands ({TECHNICAL.bollinger_num_std:.0f}σ, {sma_length}-period)", value=True)
+                show_ichimoku = st.checkbox("Show Ichimoku Cloud", value=False, help=f"Tenkan {TECHNICAL.ichimoku_tenkan_period} / Kijun {TECHNICAL.ichimoku_kijun_period} / Senkou B {TECHNICAL.ichimoku_senkou_b_period} — fixed periods, includes a real forward-projected cloud.")
+            with _ind_momentum:
+                st.caption("**Momentum & Volatility**")
+                rsi_length = st.slider("RSI Length", min_value=CHART_DEFAULTS.rsi_range[0], max_value=CHART_DEFAULTS.rsi_range[1], value=CHART_DEFAULTS.rsi_default)
+                show_rsi_panel = st.checkbox("Show RSI Panel", value=True)
+                show_macd_panel = st.checkbox("Show MACD Panel", value=True)
+                atr_length = st.slider("ATR Length", min_value=CHART_DEFAULTS.atr_range[0], max_value=CHART_DEFAULTS.atr_range[1], value=CHART_DEFAULTS.atr_default)
+                stochastic_k_length = st.slider("Stochastic %K Length", min_value=CHART_DEFAULTS.stochastic_k_range[0], max_value=CHART_DEFAULTS.stochastic_k_range[1], value=TECHNICAL.stochastic_k_period)
+                show_stochastic_panel = st.checkbox("Show Stochastic Panel", value=False)
+            with _ind_extra:
+                st.caption("**Volume & Strength**")
+                show_vwap = st.checkbox("Show Anchored VWAP", value=False, help="Cumulative Volume-Weighted Average Price from a chosen anchor date. Quantix only has daily bars, so this is an anchored VWAP rather than an intraday session VWAP.")
+                vwap_anchor_date = None
+                if show_vwap:
+                    vwap_anchor_date = st.date_input("VWAP Anchor Date", value=None, help="Defaults to the start of the loaded price history if left blank.")
+                adx_length = st.slider("ADX Length", min_value=CHART_DEFAULTS.adx_range[0], max_value=CHART_DEFAULTS.adx_range[1], value=TECHNICAL.adx_period)
+                show_adx_panel = st.checkbox("Show ADX Panel", value=False)
+                show_obv_panel = st.checkbox("Show OBV Panel", value=False)
 
         # Every indicator below reads from the processed, validated frame (see
         # price_processing.py) — this note is purely informational: it's rare
@@ -1275,7 +1296,11 @@ else:
             fig.add_trace(go.Scatter(x=df.index, y=df['OBV'], line=dict(color='#a78bfa', width=1.5), name='OBV'), row=obv_row, col=1)
         fig.update_layout(
         xaxis_rangeslider_visible=False,
-        height=400 + 200 * (num_rows - 1),
+        # Taller than the old mid-page chart (was 400 + 200/extra row): this
+        # is now a dedicated workspace panel with the whole viewport to
+        # itself, so the price panel gets the room a primary charting
+        # surface warrants. Still scales with the number of oscillator rows.
+        height=620 + 220 * (num_rows - 1),
         dragmode='zoom',
         template="plotly_dark",
         paper_bgcolor='rgba(0,0,0,0)',
@@ -1419,6 +1444,7 @@ else:
             p2.metric("Systematic (Market Beta)", f"{attribution.systematic_pct:.2f}%", help="beta × the benchmark's excess return — the portion of return explained by simply being exposed to the market at this beta.")
             p3.metric("Selection (Residual)", f"{attribution.selection_pct:.2f}%", help="Total excess return minus the systematic component — the portion attributable to this specific stock, not market exposure.")
 
+    with tab_risk:
         # --- QUANTITATIVE CALCULATIONS ---
         df['Returns'] = df['Close'].pct_change()
 
@@ -1869,7 +1895,7 @@ else:
             "scorecard": "💰 Fundamentals & Valuation",
             "quality-classification": "💰 Fundamentals & Valuation",
             "dcf": "💰 Fundamentals & Valuation",
-            "technicals": "⚠️ Risk & Technicals",
+            "technicals": "📈 Chart Workspace",
             "risk-dashboard": "⚠️ Risk & Technicals",
             # "macro-regime" deliberately absent — it's in this same
             # Overview tab as the Executive Digest, so the plain anchor
