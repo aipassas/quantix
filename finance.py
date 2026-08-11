@@ -15,7 +15,7 @@ from risk_analytics import compute_rolling_volatility, compute_annualized_volati
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
@@ -24,6 +24,7 @@ from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_perc
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 from executive_digest import collect_flags
 from monte_carlo import simulate_gbm_paths, simulate_bootstrap_paths, terminal_stats
+from watchlist_panel import add_ticker, load_quote_snapshots, remove_ticker
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -530,12 +531,100 @@ st.sidebar.header("Target Configuration")
 # so the default is seeded into session_state once, only if absent, instead.
 if "ticker_input" not in st.session_state:
     st.session_state["ticker_input"] = CHART_DEFAULTS.default_ticker
+
+# Deferred ticker switch. Streamlit forbids assigning to a widget's
+# session_state key AFTER that widget has been instantiated this run, so
+# the sidebar Watchlist (rendered below this line) can't set
+# "ticker_input" directly the way the Stock Screener can — the Screener
+# sits ABOVE this line in script order, the Watchlist necessarily doesn't.
+# The Watchlist instead parks its choice in "_pending_ticker" and reruns;
+# this applies it on the next run, before the widget exists.
+_pending_ticker = st.session_state.pop("_pending_ticker", None)
+if _pending_ticker:
+    st.session_state["ticker_input"] = _pending_ticker
+
 ticker_symbol = st.sidebar.text_input("Stock Ticker", key="ticker_input").upper()
 
 today = datetime.date.today()
 one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_days)
 start_date = st.sidebar.date_input("Start Date", one_year_ago)
 end_date = st.sidebar.date_input("End Date", today)
+
+# ==========================================
+# WATCHLIST (quick symbol switching)
+# ==========================================
+# Deliberately OUTSIDE the control tabs below: this is navigation, not
+# configuration, and it stays visible no matter which analysis panel or
+# control tab is open — the "persistent" part of the panel.
+#
+# Scope note: "persistent" here means across reruns within a session
+# (st.session_state), which is what this app has — Quantix is a stateless
+# Streamlit process with no user accounts or backing store, so the list
+# resets on a fresh session. Real cross-session persistence would need
+# storage this app doesn't have, same honest limitation the Smart
+# Risk-Aware Alerts section already documents for itself.
+st.sidebar.markdown("---")
+st.sidebar.subheader("Watchlist")
+
+if "watchlist_tickers" not in st.session_state:
+    st.session_state["watchlist_tickers"] = tuple(WATCHLIST_PANEL.default_tickers)
+
+_wl_add_col, _wl_btn_col = st.sidebar.columns([3, 1])
+with _wl_add_col:
+    _wl_new = st.text_input(
+        "Add ticker", key="watchlist_add_input", label_visibility="collapsed",
+        placeholder="Add ticker",
+    )
+with _wl_btn_col:
+    _wl_add_clicked = st.button("Add", width="stretch")
+
+if _wl_add_clicked:
+    _wl_updated, _wl_error = add_ticker(
+        st.session_state["watchlist_tickers"], _wl_new, WATCHLIST_PANEL.max_tickers,
+    )
+    if _wl_error:
+        st.sidebar.warning(_wl_error)
+    else:
+        st.session_state["watchlist_tickers"] = _wl_updated
+        log_event(logger, logging.INFO, "user.watchlist_add", tickers=_wl_new)
+        st.rerun()
+
+_wl_tickers = st.session_state["watchlist_tickers"]
+if not _wl_tickers:
+    st.sidebar.caption("No tickers yet — add one above to build a quick-switch list.")
+else:
+    _wl_snapshots = load_quote_snapshots(_wl_tickers)
+    for _wl_snap in _wl_snapshots:
+        _wl_row, _wl_remove = st.sidebar.columns([5, 1])
+        _wl_is_active = _wl_snap.ticker == ticker_symbol
+        with _wl_row:
+            if _wl_snap.status == "ok":
+                _wl_label = f"{_wl_snap.direction_icon} {_wl_snap.ticker} · {_wl_snap.change_pct:+.2f}%"
+            else:
+                _wl_label = f"{_wl_snap.direction_icon} {_wl_snap.ticker} · n/a"
+            # The active ticker gets the accent style so it's obvious which
+            # row you're looking at. Deliberately NOT disabled: a disabled
+            # primary button renders as a washed-out pill that reads as
+            # broken, and clicking your own current ticker is a harmless
+            # no-op rerun anyway.
+            if st.button(
+                _wl_label, key=f"wl_go_{_wl_snap.ticker}", width="stretch",
+                type="primary" if _wl_is_active else "secondary",
+                help=None if _wl_snap.status == "ok" else _wl_snap.detail,
+            ):
+                st.session_state["_pending_ticker"] = _wl_snap.ticker
+                log_event(logger, logging.INFO, "user.watchlist_switch", ticker=_wl_snap.ticker)
+                st.rerun()
+        with _wl_remove:
+            if st.button("✕", key=f"wl_rm_{_wl_snap.ticker}", help=f"Remove {_wl_snap.ticker}"):
+                st.session_state["watchlist_tickers"] = remove_ticker(_wl_tickers, _wl_snap.ticker)
+                st.rerun()
+        _wl_current = " · current" if _wl_is_active else ""
+        if _wl_snap.status == "ok":
+            _wl_pe = f"P/E {_wl_snap.pe_ratio:.1f}" if _wl_snap.pe_ratio else "P/E n/a"
+            st.sidebar.caption(f"${_wl_snap.price:,.2f} · {_wl_pe}{_wl_current}")
+        else:
+            st.sidebar.caption(f"Quote unavailable{_wl_current}")
 
 # `side_`-prefixed so these never shadow the main-page panel variables of
 # the same concern (tab_risk) defined further down — the two are different

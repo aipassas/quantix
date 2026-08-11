@@ -208,6 +208,23 @@ class MonteCarloConfig:
 
 
 @dataclass(frozen=True)
+class WatchlistPanelConfig:
+    """The sidebar's quick-switch watchlist — a user-maintained list, not
+    the fixed Institutional Watchlist baskets above (which are a scoring
+    universe, not a personal tracking list). `default_tickers` only seeds
+    the list on first load; after that it lives in session state and the
+    user's own edits win.
+
+    max_tickers is a UI bound, not a data one: every row costs a (cached)
+    quote lookup and two lines of sidebar height, so the cap keeps the
+    panel scannable and the fetch cheap rather than reflecting any Yahoo
+    limit.
+    """
+    default_tickers: Tuple[str, ...] = ("AAPL", "MSFT", "NVDA", "GOOGL")
+    max_tickers: int = 10
+
+
+@dataclass(frozen=True)
 class WalkForwardConfig:
     """Defaults for the Backtest section's optional walk-forward mode.
     Trading days, not calendar months, to match how every other lookback
@@ -476,6 +493,7 @@ DCF = DCFAssumptions()
 RISK = RiskConfig()
 MONTE_CARLO = MonteCarloConfig()
 WALK_FORWARD = WalkForwardConfig()
+WATCHLIST_PANEL = WatchlistPanelConfig()
 BACKTEST_COST = BacktestCostConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
