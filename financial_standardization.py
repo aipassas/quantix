@@ -174,6 +174,16 @@ class StandardizedFinancials:
     capex_history: Tuple[Tuple[datetime.date, float], ...] = ()
     change_in_working_capital_history: Tuple[Tuple[datetime.date, float], ...] = ()
 
+    # Prior session's close, sourced the same way current_price is (price
+    # history first, Yahoo's quote field as fallback) so a day-change
+    # computed from the pair never mixes a price-history leg with a
+    # quote-feed leg. None when there's only one bar of history and Yahoo
+    # doesn't report a previous close — a day change genuinely can't be
+    # derived then, and is reported as unavailable rather than as 0.00%.
+    # Declared here, with the other defaulted fields, because a dataclass
+    # field with a default can't precede one without.
+    previous_close: Optional[float] = None
+
 
 @st.cache_data(ttl=3600)
 def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
@@ -204,6 +214,17 @@ def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
     elif info.get('currentPrice'):
         current_price = info.get('currentPrice')
         data_fallbacks.append("Current Price: sourced from Yahoo's quote (info['currentPrice']) because price history was unavailable")
+
+    # Prior close, kept on the SAME source as current_price above so a
+    # day-change derived from the two never straddles the price-history
+    # and quote-feed views of "latest price" (they agree in practice, but
+    # can drift intraday while the current session's bar is still forming).
+    previous_close = None
+    if len(bundle.price_history) >= 2:
+        previous_close = bundle.price_history['Close'].iloc[-2]
+    elif info.get('previousClose'):
+        previous_close = info.get('previousClose')
+        data_fallbacks.append("Previous Close: sourced from Yahoo's quote (info['previousClose']) because price history didn't cover two sessions")
 
     # Total Debt and Interest Expense each have two possible sources in raw
     # Yahoo data (the statement line item and the info-dict summary field),
@@ -316,6 +337,7 @@ def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
         market_cap=info.get('marketCap') or None,
         shares_outstanding=info.get('sharesOutstanding') or None,
         current_price=current_price,
+        previous_close=previous_close,
 
         total_assets=get_field(balance_sheet, ("Total Assets",)),
         current_assets=get_field(balance_sheet, ("Current Assets",)),

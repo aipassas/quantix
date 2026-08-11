@@ -65,6 +65,14 @@ def log_input_changes(**current):
 st.set_page_config(page_title="Quantix", layout="wide", page_icon=None)
 st.title("Quantix: Institutional-Grade Stock Analysis & Simulation Engine")
 
+# Sticky symbol header slot. Reserved HERE, at the very top, so the
+# ticker/price/day-change is on screen the moment the page loads — but it
+# can only be FILLED after the data fetch further down, so it uses the
+# same container-as-placeholder pattern executive_digest_container already
+# uses (content written into a container later still renders at the
+# container's position). See the "SYMBOL HEADER (fill)" block below.
+symbol_header_container = st.container()
+
 # --- Professional UI Injection (OLED Edition) ---
 st.markdown("""
     <style>
@@ -204,6 +212,59 @@ st.markdown("""
     [data-testid="stSidebar"] .stTabs [data-baseweb="tab"] p {
         font-size: 0.86rem !important;
     }
+
+    /* --- Sticky symbol header --------------------------------------
+       Streamlit has no sticky-header primitive. A sticky element can only
+       travel within its PARENT's box, so this has to be applied to the
+       outermost wrapper st.container() produces — the one whose parent is
+       the tall page-level vertical block. Targeting anything further in
+       (the markdown div, or even the stElementContainer) pins it inside a
+       ~48px box, which looks identical to not being sticky at all; that
+       was verified the hard way in-browser before landing on this
+       selector. Also verified that the scroll container is
+       section[data-testid="stMain"] and every ancestor between it and the
+       content is overflow:visible, so sticky resolves against stMain's
+       scrollport as intended.
+
+       Both wrapper test-ids are targeted so a Streamlit version that
+       renames or drops one still leaves a working rule; whichever
+       resolves to a tall-parent element does the sticking, and a nested
+       pair is harmless. */
+    [data-testid="stLayoutWrapper"]:has(.quantix-symbol-header),
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.quantix-symbol-header) {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+    }
+    .quantix-symbol-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px 18px;
+        padding: 10px 18px;
+        margin-bottom: 4px;
+        background: #0a0a0a;
+        border: 1px solid #1f1f1f;
+        border-left: 4px solid #00ea77;
+        border-radius: 8px;
+        /* Opaque background plus a shadow so page content scrolling
+           underneath never shows through or visually collides. */
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.85);
+    }
+    .quantix-symbol-header .qsh-ticker {
+        font-size: 1.5rem; font-weight: 700; color: #ffffff; letter-spacing: 0.5px;
+    }
+    .quantix-symbol-header .qsh-name {
+        font-size: 0.95rem; color: #9ca3af; margin-right: auto;
+    }
+    .quantix-symbol-header .qsh-price {
+        font-size: 1.5rem; font-weight: 700; color: #ffffff;
+    }
+    .quantix-symbol-header .qsh-change { font-size: 1.05rem; font-weight: 600; }
+    .quantix-symbol-header .qsh-up { color: #22c55e; }
+    .quantix-symbol-header .qsh-down { color: #ef4444; }
+    .quantix-symbol-header .qsh-flat { color: #9ca3af; }
+    .quantix-symbol-header .qsh-meta { font-size: 0.85rem; color: #6b7280; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -718,6 +779,46 @@ with st.spinner(f"Running deep audit on {ticker_symbol} & loading Macro Data..."
     # touching raw info/statement fields directly, so units, field names,
     # and missing-value handling are consistent across the whole app.
     standardized = standardize_financials(ticker_bundle)
+
+# ==========================================
+# SYMBOL HEADER (fill) — renders into the sticky slot reserved at the very
+# top of the page, so it's on screen from first paint and stays pinned
+# while scrolling through any panel. Fills even when df is empty, since
+# knowing WHICH symbol failed to load is exactly when the header matters.
+# ==========================================
+with symbol_header_container:
+    _hdr_price = standardized.current_price
+    _hdr_prev = standardized.previous_close
+    _hdr_name = standardized.long_name or ""
+
+    if _hdr_price is not None and _hdr_prev:
+        _hdr_change = _hdr_price - _hdr_prev
+        _hdr_change_pct = (_hdr_change / _hdr_prev) * 100
+        _hdr_class = "qsh-up" if _hdr_change > 0 else ("qsh-down" if _hdr_change < 0 else "qsh-flat")
+        _hdr_price_html = f'<span class="qsh-price">${_hdr_price:,.2f}</span>'
+        _hdr_change_html = (
+            f'<span class="qsh-change {_hdr_class}">{_hdr_change:+,.2f} ({_hdr_change_pct:+.2f}%)</span>'
+        )
+    elif _hdr_price is not None:
+        # Price known but no prior close to compare against — show the
+        # price and say the change is unavailable rather than implying 0.00%.
+        _hdr_price_html = f'<span class="qsh-price">${_hdr_price:,.2f}</span>'
+        _hdr_change_html = '<span class="qsh-change qsh-flat">day change unavailable</span>'
+    else:
+        _hdr_price_html = '<span class="qsh-price">—</span>'
+        _hdr_change_html = '<span class="qsh-change qsh-flat">price unavailable</span>'
+
+    _hdr_meta_bits = [b for b in (standardized.sector, ticker_bundle.info.get("currency")) if b]
+    _hdr_meta = f'<span class="qsh-meta">{" · ".join(_hdr_meta_bits)}</span>' if _hdr_meta_bits else ""
+
+    st.markdown(
+        f'<div class="quantix-symbol-header">'
+        f'<span class="qsh-ticker">{ticker_symbol}</span>'
+        f'<span class="qsh-name">{_hdr_name}</span>'
+        f'{_hdr_price_html}{_hdr_change_html}{_hdr_meta}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 if df.empty:
     detail = " ".join(ticker_bundle.errors) if ticker_bundle.errors else "No data returned by Yahoo Finance."
