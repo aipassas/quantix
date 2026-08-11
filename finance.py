@@ -457,6 +457,13 @@ if _alerts_state:
 
 
 # --- Sidebar Controls ---
+# TradingView-style control rail: only Ticker/Date (used on every
+# interaction) stays always-visible; everything else groups into tabs so
+# the sidebar shows one focused panel at a time instead of one long
+# 8-header scroll. Streamlit keeps every widget's session_state live even
+# while its tab isn't the active one, so this is a pure layout change —
+# every widget below has the identical label/key/default/help it always
+# had, just a different container.
 st.sidebar.header("Target Configuration")
 # No `value=` here deliberately: this widget is keyed so the Stock Screener's
 # "Open full analysis" click-through can set st.session_state["ticker_input"]
@@ -472,70 +479,77 @@ one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_d
 start_date = st.sidebar.date_input("Start Date", one_year_ago)
 end_date = st.sidebar.date_input("End Date", today)
 
-# NEW: DCF and Benchmark inputs
-st.sidebar.header("2. Valuation & Benchmark")
-benchmark_symbol = st.sidebar.text_input("Market Benchmark", CHART_DEFAULTS.default_benchmark).upper()
-dcf_growth = st.sidebar.slider("Expected FCF Growth (%)", min_value=CHART_DEFAULTS.dcf_growth_range_pct[0], max_value=CHART_DEFAULTS.dcf_growth_range_pct[1], value=CHART_DEFAULTS.dcf_growth_default_pct) / 100
-dcf_wacc = st.sidebar.slider("Discount Rate / WACC (%)", min_value=CHART_DEFAULTS.dcf_wacc_range_pct[0], max_value=CHART_DEFAULTS.dcf_wacc_range_pct[1], value=CHART_DEFAULTS.dcf_wacc_default_pct) / 100
-
-st.sidebar.header("3. Chart Indicators")
-sma_length = st.sidebar.slider("SMA Length", min_value=CHART_DEFAULTS.sma_range[0], max_value=CHART_DEFAULTS.sma_range[1], value=CHART_DEFAULTS.sma_default)
-show_sma_trio = st.sidebar.checkbox(f"Show {'/'.join(str(p) for p in TECHNICAL.sma_trio_periods)}-day SMA Trio", value=True)
-show_bollinger_bands = st.sidebar.checkbox(f"Show Bollinger Bands ({TECHNICAL.bollinger_num_std:.0f}σ, {sma_length}-period)", value=True)
-rsi_length = st.sidebar.slider("RSI Length", min_value=CHART_DEFAULTS.rsi_range[0], max_value=CHART_DEFAULTS.rsi_range[1], value=CHART_DEFAULTS.rsi_default)
-show_rsi_panel = st.sidebar.checkbox("Show RSI Panel", value=True)
-atr_length = st.sidebar.slider("ATR Length", min_value=CHART_DEFAULTS.atr_range[0], max_value=CHART_DEFAULTS.atr_range[1], value=CHART_DEFAULTS.atr_default)
-show_macd_panel = st.sidebar.checkbox("Show MACD Panel", value=True)
-
-st.sidebar.header("4. Additional Indicators")
-stochastic_k_length = st.sidebar.slider("Stochastic %K Length", min_value=CHART_DEFAULTS.stochastic_k_range[0], max_value=CHART_DEFAULTS.stochastic_k_range[1], value=TECHNICAL.stochastic_k_period)
-show_stochastic_panel = st.sidebar.checkbox("Show Stochastic Panel", value=False)
-show_vwap = st.sidebar.checkbox("Show Anchored VWAP", value=False, help="Cumulative Volume-Weighted Average Price from a chosen anchor date. Quantix only has daily bars, so this is an anchored VWAP rather than an intraday session VWAP.")
-vwap_anchor_date = None
-if show_vwap:
-    vwap_anchor_date = st.sidebar.date_input("VWAP Anchor Date", value=None, help="Defaults to the start of the loaded price history if left blank.")
-show_ichimoku = st.sidebar.checkbox("Show Ichimoku Cloud", value=False, help=f"Tenkan {TECHNICAL.ichimoku_tenkan_period} / Kijun {TECHNICAL.ichimoku_kijun_period} / Senkou B {TECHNICAL.ichimoku_senkou_b_period} — fixed periods, includes a real forward-projected cloud.")
-adx_length = st.sidebar.slider("ADX Length", min_value=CHART_DEFAULTS.adx_range[0], max_value=CHART_DEFAULTS.adx_range[1], value=TECHNICAL.adx_period)
-show_adx_panel = st.sidebar.checkbox("Show ADX Panel", value=False)
-show_obv_panel = st.sidebar.checkbox("Show OBV Panel", value=False)
-
-st.sidebar.header("5. Risk Analytics")
-vol_window = st.sidebar.slider("Volatility Window (days)", min_value=CHART_DEFAULTS.vol_window_range[0], max_value=CHART_DEFAULTS.vol_window_range[1], value=CHART_DEFAULTS.vol_window_default)
-var_confidence = st.sidebar.selectbox("VaR Confidence Level", options=RISK.var_confidence_levels, index=list(RISK.var_confidence_levels).index(RISK.var_confidence_default), format_func=lambda c: f"{c:.0%}")
-var_lookback = st.sidebar.slider("VaR Lookback (days)", min_value=CHART_DEFAULTS.var_lookback_range[0], max_value=CHART_DEFAULTS.var_lookback_range[1], value=CHART_DEFAULTS.var_lookback_default)
-risk_free_rate = st.sidebar.slider("Risk-Free Rate (%)", min_value=CHART_DEFAULTS.risk_free_rate_range_pct[0], max_value=CHART_DEFAULTS.risk_free_rate_range_pct[1], value=RISK.risk_free_rate * 100, step=0.25, help="Feeds the Sharpe/Sortino ratios below. The DCF's CAPM cost of equity uses its own fixed risk-free-rate assumption (RISK.risk_free_rate), unaffected by this slider.") / 100
-
-st.sidebar.header("6. Portfolio Basket")
-portfolio_basket_input = st.sidebar.text_input("Correlation Basket (comma-separated)", value=CHART_DEFAULTS.portfolio_default_basket, help="Tickers to include in the Portfolio Correlation & Diversification section further down the page. The main Stock Ticker above is always included automatically.")
-portfolio_lookback = st.sidebar.slider("Portfolio Lookback (days)", min_value=CHART_DEFAULTS.portfolio_lookback_range[0], max_value=CHART_DEFAULTS.portfolio_lookback_range[1], value=CHART_DEFAULTS.portfolio_lookback_default)
-
-st.sidebar.header("7. Diagnostics")
-# Rendered BEFORE the Force Refresh button below on purpose. Streamlit
-# discards the session_state entry for any keyed widget that isn't rendered
-# during a run — and Force Refresh calls st.rerun(), which aborts the script
-# immediately. If this checkbox came after it, ticking Debug then hitting
-# Force Refresh would silently reset the toggle back to off.
-debug_mode = st.sidebar.checkbox(
-    "Debug logging", key="debug_mode",
-    help="Raise the log level to DEBUG and show recent log entries in-page.",
+tab_valuation, tab_chart, tab_risk, tab_portfolio, tab_system = st.sidebar.tabs(
+    ["💰 Valuation", "📊 Chart", "⚠️ Risk", "📁 Portfolio", "⚙️ System"]
 )
-st.sidebar.caption(f"Log file: {log_file_path().name}")
 
-# Re-apply the level now that the checkbox's value for THIS run is known. The
-# call at the top of the script runs before this widget exists, so on the run
-# where the box is first ticked it would otherwise still be at INFO. Handler
-# setup is idempotent, so this only adjusts the level — and everything that
-# actually loads data happens below this point.
-setup_logging(logging.DEBUG if debug_mode else logging.INFO)
-log_event(logger, logging.DEBUG, "logging.level",
-          level=logging.getLevelName(get_logger("data_loader").getEffectiveLevel()))
+with tab_valuation:
+    benchmark_symbol = st.text_input("Market Benchmark", CHART_DEFAULTS.default_benchmark).upper()
+    dcf_growth = st.slider("Expected FCF Growth (%)", min_value=CHART_DEFAULTS.dcf_growth_range_pct[0], max_value=CHART_DEFAULTS.dcf_growth_range_pct[1], value=CHART_DEFAULTS.dcf_growth_default_pct) / 100
+    dcf_wacc = st.slider("Discount Rate / WACC (%)", min_value=CHART_DEFAULTS.dcf_wacc_range_pct[0], max_value=CHART_DEFAULTS.dcf_wacc_range_pct[1], value=CHART_DEFAULTS.dcf_wacc_default_pct) / 100
 
-st.sidebar.header("8. Data Cache")
-st.sidebar.caption("Quotes: 30 min · Prices: 1 hr · Statements: 24 hr · Ownership: 12 hr")
-if st.sidebar.button("🔄 Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
-    log_event(logger, logging.INFO, "user.force_refresh", ticker=ticker_symbol)
-    clear_all_caches()
-    st.rerun()
+with tab_chart:
+    st.caption("Core Indicators")
+    sma_length = st.slider("SMA Length", min_value=CHART_DEFAULTS.sma_range[0], max_value=CHART_DEFAULTS.sma_range[1], value=CHART_DEFAULTS.sma_default)
+    show_sma_trio = st.checkbox(f"Show {'/'.join(str(p) for p in TECHNICAL.sma_trio_periods)}-day SMA Trio", value=True)
+    show_bollinger_bands = st.checkbox(f"Show Bollinger Bands ({TECHNICAL.bollinger_num_std:.0f}σ, {sma_length}-period)", value=True)
+    rsi_length = st.slider("RSI Length", min_value=CHART_DEFAULTS.rsi_range[0], max_value=CHART_DEFAULTS.rsi_range[1], value=CHART_DEFAULTS.rsi_default)
+    show_rsi_panel = st.checkbox("Show RSI Panel", value=True)
+    atr_length = st.slider("ATR Length", min_value=CHART_DEFAULTS.atr_range[0], max_value=CHART_DEFAULTS.atr_range[1], value=CHART_DEFAULTS.atr_default)
+    show_macd_panel = st.checkbox("Show MACD Panel", value=True)
+
+    st.markdown("---")
+    st.caption("Additional Indicators")
+    stochastic_k_length = st.slider("Stochastic %K Length", min_value=CHART_DEFAULTS.stochastic_k_range[0], max_value=CHART_DEFAULTS.stochastic_k_range[1], value=TECHNICAL.stochastic_k_period)
+    show_stochastic_panel = st.checkbox("Show Stochastic Panel", value=False)
+    show_vwap = st.checkbox("Show Anchored VWAP", value=False, help="Cumulative Volume-Weighted Average Price from a chosen anchor date. Quantix only has daily bars, so this is an anchored VWAP rather than an intraday session VWAP.")
+    vwap_anchor_date = None
+    if show_vwap:
+        vwap_anchor_date = st.date_input("VWAP Anchor Date", value=None, help="Defaults to the start of the loaded price history if left blank.")
+    show_ichimoku = st.checkbox("Show Ichimoku Cloud", value=False, help=f"Tenkan {TECHNICAL.ichimoku_tenkan_period} / Kijun {TECHNICAL.ichimoku_kijun_period} / Senkou B {TECHNICAL.ichimoku_senkou_b_period} — fixed periods, includes a real forward-projected cloud.")
+    adx_length = st.slider("ADX Length", min_value=CHART_DEFAULTS.adx_range[0], max_value=CHART_DEFAULTS.adx_range[1], value=TECHNICAL.adx_period)
+    show_adx_panel = st.checkbox("Show ADX Panel", value=False)
+    show_obv_panel = st.checkbox("Show OBV Panel", value=False)
+
+with tab_risk:
+    vol_window = st.slider("Volatility Window (days)", min_value=CHART_DEFAULTS.vol_window_range[0], max_value=CHART_DEFAULTS.vol_window_range[1], value=CHART_DEFAULTS.vol_window_default)
+    var_confidence = st.selectbox("VaR Confidence Level", options=RISK.var_confidence_levels, index=list(RISK.var_confidence_levels).index(RISK.var_confidence_default), format_func=lambda c: f"{c:.0%}")
+    var_lookback = st.slider("VaR Lookback (days)", min_value=CHART_DEFAULTS.var_lookback_range[0], max_value=CHART_DEFAULTS.var_lookback_range[1], value=CHART_DEFAULTS.var_lookback_default)
+    risk_free_rate = st.slider("Risk-Free Rate (%)", min_value=CHART_DEFAULTS.risk_free_rate_range_pct[0], max_value=CHART_DEFAULTS.risk_free_rate_range_pct[1], value=RISK.risk_free_rate * 100, step=0.25, help="Feeds the Sharpe/Sortino ratios below. The DCF's CAPM cost of equity uses its own fixed risk-free-rate assumption (RISK.risk_free_rate), unaffected by this slider.") / 100
+
+with tab_portfolio:
+    portfolio_basket_input = st.text_input("Correlation Basket (comma-separated)", value=CHART_DEFAULTS.portfolio_default_basket, help="Tickers to include in the Portfolio Correlation & Diversification section further down the page. The main Stock Ticker above is always included automatically.")
+    portfolio_lookback = st.slider("Portfolio Lookback (days)", min_value=CHART_DEFAULTS.portfolio_lookback_range[0], max_value=CHART_DEFAULTS.portfolio_lookback_range[1], value=CHART_DEFAULTS.portfolio_lookback_default)
+
+with tab_system:
+    st.caption("Diagnostics")
+    # Rendered BEFORE the Force Refresh button below on purpose. Streamlit
+    # discards the session_state entry for any keyed widget that isn't rendered
+    # during a run — and Force Refresh calls st.rerun(), which aborts the script
+    # immediately. If this checkbox came after it, ticking Debug then hitting
+    # Force Refresh would silently reset the toggle back to off.
+    debug_mode = st.checkbox(
+        "Debug logging", key="debug_mode",
+        help="Raise the log level to DEBUG and show recent log entries in-page.",
+    )
+    st.caption(f"Log file: {log_file_path().name}")
+
+    # Re-apply the level now that the checkbox's value for THIS run is known. The
+    # call at the top of the script runs before this widget exists, so on the run
+    # where the box is first ticked it would otherwise still be at INFO. Handler
+    # setup is idempotent, so this only adjusts the level — and everything that
+    # actually loads data happens below this point.
+    setup_logging(logging.DEBUG if debug_mode else logging.INFO)
+    log_event(logger, logging.DEBUG, "logging.level",
+              level=logging.getLevelName(get_logger("data_loader").getEffectiveLevel()))
+
+    st.markdown("---")
+    st.caption("Data Cache")
+    st.caption("Quotes: 30 min · Prices: 1 hr · Statements: 24 hr · Ownership: 12 hr")
+    if st.button("🔄 Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
+        log_event(logger, logging.INFO, "user.force_refresh", ticker=ticker_symbol)
+        clear_all_caches()
+        st.rerun()
 
 # Record meaningful input changes only (see log_input_changes docstring).
 log_input_changes(
