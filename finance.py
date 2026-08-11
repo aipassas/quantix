@@ -15,13 +15,26 @@ from risk_analytics import compute_rolling_volatility, compute_annualized_volati
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
+from realtime_alerts import (
+    ALL_TRIGGER_TYPES as RT_ALL_TRIGGER_TYPES,
+    FUNDAMENTAL_TRIGGER_TYPE as RT_FUNDAMENTAL_TRIGGER_TYPE,
+    PRICE_TRIGGER_TYPES as RT_PRICE_TRIGGER_TYPES,
+    TRIGGER_LABELS as RT_TRIGGER_LABELS,
+    AlertRule as RealtimeAlertRule,
+    TriggerEvent as RealtimeTriggerEvent,
+    detect_new_triggers as rt_detect_new_triggers,
+    evaluate_all as rt_evaluate_all,
+    load_store as rt_load_store,
+    new_rule_id as rt_new_rule_id,
+    save_store as rt_save_store,
+)
 from executive_digest import collect_flags
 from monte_carlo import simulate_gbm_paths, simulate_bootstrap_paths, terminal_stats
 from watchlist_panel import add_ticker, load_quote_snapshots, record_recent, remove_ticker
@@ -574,6 +587,201 @@ if _alerts_state:
         with st.expander("Data issues detail", expanded=False):
             _alert_issue_rows = [{"Ticker": s.ticker, "Status": s.status, "Detail": s.detail} for s in _alert_snapshots if s.status != "ok"]
             st.table(pd.DataFrame(_alert_issue_rows))
+
+# ==========================================
+# REAL-TIME ALERT ENGINE
+# ==========================================
+# See realtime_alerts.py's module docstring for the full reasoning behind
+# each of these three scope decisions (agreed with the user before this
+# was built, not silent simplifications):
+def _rt_md_escape_dollar(text: str) -> str:
+    """AlertRule.label and EvaluationResult.detail are kept as plain text
+    with genuine, unescaped "$" characters (realtime_alerts.py's own
+    trigger-history table renders them as-is, not through markdown). But a
+    label carrying one "$" concatenated with a detail carrying another
+    "$", once both land in the SAME st.markdown/st.caption/st.toast call,
+    form a matched "$...$" pair — and Streamlit's markdown treats that as
+    inline LaTeX math, not literal text. Caught live: a currently-active
+    price rule rendered as a raw, unparsed LaTeX box instead of "$1.00".
+    Every markdown-rendering call site below escapes through this first;
+    the persisted TriggerEvent.detail (st.table, JSON) never does."""
+    return text.replace("$", "\\$")
+
+
+st.markdown("---")
+st.header("Real-Time Alert Engine")
+st.caption(
+    "Per-ticker rules on price, technical crossovers, and fundamental/risk thresholds, rechecked automatically "
+    f"every {REALTIME_ALERTS.poll_interval_seconds}s while this tab stays open. Not a background service: closing "
+    "the tab stops monitoring, same as everything else in this stateless app. Delivery is in-app only (no "
+    "email/SMS/push — this app has no messaging credentials to send them with). Rules and trigger history ARE "
+    "saved to a local file and survive a restart, unlike the rest of this app's session-only state; Quantix has no "
+    "user accounts, so that file is shared by whoever runs this instance rather than private per login."
+)
+
+if "rt_alert_rules" not in st.session_state:
+    _rt_init_rules, _rt_init_history = rt_load_store()
+    st.session_state["rt_alert_rules"] = _rt_init_rules
+    st.session_state["rt_alert_history"] = _rt_init_history
+    st.session_state["rt_alert_prev_active"] = {}
+
+# Every widget below is seeded into session_state ONLY if the key is
+# absent, then constructed with `key=` alone — no `value=` on top of an
+# already-populated key. Passing both is the same anti-pattern the
+# sidebar's own ticker_input comment already documents: on the very next
+# rerun (e.g. the one "+ Add Rule" itself triggers), Streamlit re-applies
+# the stale `value=` over whatever the user just typed, silently reverting
+# a committed ticker back to "" or a threshold back to its default. Caught
+# live: the Ticker field kept resetting to empty between typing it and
+# clicking Add Rule.
+if "rt_new_ticker" not in st.session_state:
+    st.session_state["rt_new_ticker"] = ""
+if "rt_new_price_threshold" not in st.session_state:
+    st.session_state["rt_new_price_threshold"] = 100.0
+
+_rt_r1c1, _rt_r1c2 = st.columns([1, 2])
+with _rt_r1c1:
+    _rt_new_ticker = st.text_input("Ticker", key="rt_new_ticker", placeholder="e.g. AAPL").strip().upper()
+with _rt_r1c2:
+    _rt_new_type = st.selectbox(
+        "Trigger Condition", RT_ALL_TRIGGER_TYPES, format_func=lambda k: RT_TRIGGER_LABELS[k], key="rt_new_type",
+    )
+
+_rt_new_threshold = None
+_rt_new_metric = None
+_rt_new_operator = None
+
+if _rt_new_type in RT_PRICE_TRIGGER_TYPES:
+    _rt_new_threshold = st.number_input("Price ($)", min_value=0.0, key="rt_new_price_threshold")
+elif _rt_new_type == RT_FUNDAMENTAL_TRIGGER_TYPE:
+    _rt_r2c1, _rt_r2c2, _rt_r2c3 = st.columns([2, 1, 1.5])
+    _rt_fund_metric_options = [m.key for m in RISK_ALERT_METRICS]
+    with _rt_r2c1:
+        _rt_new_metric = st.selectbox(
+            "Metric", _rt_fund_metric_options, format_func=lambda k: RISK_ALERT_METRICS_BY_KEY[k].label, key="rt_new_fund_metric",
+        )
+    with _rt_r2c2:
+        _rt_new_operator = st.selectbox("Op", list(RISK_ALERT_OPERATORS.keys()), key="rt_new_fund_operator")
+    with _rt_r2c3:
+        # Re-seeded only when the selected METRIC actually changes (not on
+        # every rerun) — this is what lets the field start at a sensible
+        # per-metric default while still letting the user's own edit stick
+        # across reruns once they've touched it for that metric.
+        if st.session_state.get("_rt_new_fund_threshold_for_metric") != _rt_new_metric:
+            st.session_state["rt_new_fund_threshold"] = float(RISK_ALERT_METRICS_BY_KEY[_rt_new_metric].default_threshold)
+            st.session_state["_rt_new_fund_threshold_for_metric"] = _rt_new_metric
+        _rt_new_threshold = st.number_input("Threshold", key="rt_new_fund_threshold")
+else:
+    st.caption(f'Uses the app\'s existing defaults — see "{RT_TRIGGER_LABELS[_rt_new_type]}" above for the exact levels/periods.')
+
+if st.button("+ Add Rule", key="rt_add_rule_btn"):
+    if not _rt_new_ticker:
+        st.warning("Enter a ticker symbol first.")
+    elif len(st.session_state["rt_alert_rules"]) >= REALTIME_ALERTS.max_rules:
+        st.warning(f"Rule limit reached ({REALTIME_ALERTS.max_rules} max) — remove one below first.")
+    else:
+        _rt_rule = RealtimeAlertRule(
+            id=rt_new_rule_id(), ticker=_rt_new_ticker, trigger_type=_rt_new_type,
+            threshold=_rt_new_threshold, metric=_rt_new_metric, operator=_rt_new_operator,
+            created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        )
+        st.session_state["rt_alert_rules"].append(_rt_rule)
+        rt_save_store(st.session_state["rt_alert_rules"], st.session_state["rt_alert_history"])
+        log_event(logger, logging.INFO, "user.realtime_alert_rule_added", ticker=_rt_new_ticker, trigger_type=_rt_new_type)
+        # Deliberately NOT clearing rt_new_ticker here: Streamlit forbids
+        # writing to a widget's session_state key in the same run that
+        # widget was already instantiated in (raises StreamlitAPIException
+        # — hit this live). Clearing it would need the same deferred
+        # "stash a flag, consume it before the widget renders next run"
+        # trick watchlist_panel's ticker-switch uses; not worth the added
+        # complexity for a convenience the sidebar's own "Add ticker" input
+        # already forgoes (it doesn't clear after adding either).
+        st.rerun()
+
+if st.session_state["rt_alert_rules"]:
+    st.markdown("**Active Rules**")
+    _rt_remove_id = None
+    for _rt_existing_rule in st.session_state["rt_alert_rules"]:
+        _rt_lc1, _rt_lc2 = st.columns([6, 1])
+        with _rt_lc1:
+            st.caption(_rt_md_escape_dollar(_rt_existing_rule.label))
+        with _rt_lc2:
+            if st.button("✕", key=f"rt_remove_{_rt_existing_rule.id}", help="Remove this rule"):
+                _rt_remove_id = _rt_existing_rule.id
+    if _rt_remove_id is not None:
+        st.session_state["rt_alert_rules"] = [r for r in st.session_state["rt_alert_rules"] if r.id != _rt_remove_id]
+        st.session_state["rt_alert_prev_active"].pop(_rt_remove_id, None)
+        rt_save_store(st.session_state["rt_alert_rules"], st.session_state["rt_alert_history"])
+        st.rerun()
+
+
+@st.fragment(run_every=REALTIME_ALERTS.poll_interval_seconds)
+def _render_realtime_alerts_fragment():
+    """Re-evaluates every rule on the configured interval WITHOUT rerunning
+    the rest of the page (st.fragment's whole purpose) — this is the "poll
+    while the tab is open" mechanism itself. Everything this function needs
+    to redraw (the active/cleared banner, the data-issues expander, the
+    "last checked" timestamp) is rendered from inside it so a full page
+    rerun is never required just to reflect a new poll result."""
+    _rt_rules = st.session_state["rt_alert_rules"]
+    if not _rt_rules:
+        st.caption("No active rules — add one above to start monitoring.")
+        return
+
+    _rt_results = rt_evaluate_all(_rt_rules)
+    _rt_active_now = {rid: res.is_met for rid, res in _rt_results.items()}
+    _rt_newly_triggered = rt_detect_new_triggers(_rt_results, st.session_state.get("rt_alert_prev_active", {}))
+
+    if _rt_newly_triggered:
+        _rt_rules_by_id = {r.id: r for r in _rt_rules}
+        _rt_now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+        for _rt_rid in _rt_newly_triggered:
+            _rt_rule = _rt_rules_by_id.get(_rt_rid)
+            if _rt_rule is None:
+                continue
+            _rt_result = _rt_results[_rt_rid]
+            st.toast(_rt_md_escape_dollar(f"{_rt_rule.label} — {_rt_result.detail}"), icon="🔔")
+            st.session_state["rt_alert_history"].append(RealtimeTriggerEvent(
+                rule_id=_rt_rid, ticker=_rt_rule.ticker, trigger_type=_rt_rule.trigger_type,
+                detail=_rt_result.detail, triggered_at=_rt_now_iso,
+            ))
+            log_event(logger, logging.INFO, "user.realtime_alert_triggered", ticker=_rt_rule.ticker, trigger_type=_rt_rule.trigger_type)
+        rt_save_store(st.session_state["rt_alert_rules"], st.session_state["rt_alert_history"])
+
+    st.session_state["rt_alert_prev_active"] = _rt_active_now
+
+    _rt_active_rules = [r for r in _rt_rules if _rt_active_now.get(r.id)]
+    if _rt_active_rules:
+        st.error(f"🔴 {len(_rt_active_rules)} alert(s) currently active")
+        for _rt_r in _rt_active_rules:
+            st.markdown(_rt_md_escape_dollar(f"- **{_rt_r.label}** — {_rt_results[_rt_r.id].detail}"))
+    else:
+        st.success("🟢 No alert conditions currently met.")
+
+    _rt_issue_rules = [r for r in _rt_rules if _rt_results[r.id].status != "ok"]
+    if _rt_issue_rules:
+        with st.expander(f"{len(_rt_issue_rules)} rule(s) with data issues", expanded=False):
+            for _rt_r in _rt_issue_rules:
+                st.caption(_rt_md_escape_dollar(f"{_rt_r.label}: {_rt_results[_rt_r.id].detail}"))
+
+    st.caption(
+        f"Checked {datetime.datetime.now().strftime('%H:%M:%S')} · "
+        f"rechecking every {REALTIME_ALERTS.poll_interval_seconds}s while this tab stays open."
+    )
+
+
+_render_realtime_alerts_fragment()
+
+if st.session_state["rt_alert_history"]:
+    with st.expander(f"Trigger history ({len(st.session_state['rt_alert_history'])})", expanded=False):
+        _rt_hist_rows = [
+            {
+                "When": h.triggered_at, "Ticker": h.ticker,
+                "Trigger": RT_TRIGGER_LABELS.get(h.trigger_type, h.trigger_type), "Detail": h.detail,
+            }
+            for h in reversed(st.session_state["rt_alert_history"])
+        ]
+        st.table(pd.DataFrame(_rt_hist_rows))
 
 
 # --- Sidebar Controls ---

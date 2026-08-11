@@ -231,6 +231,20 @@ class WatchlistPanelConfig:
 
 
 @dataclass(frozen=True)
+class RealtimeAlertsConfig:
+    """Real-Time Alert Engine — in-tab polling, not a background worker;
+    in-app notification only, not email/push; rules and trigger history
+    persisted to a local file, not per-user (Quantix has no accounts).
+    Each of those three is a scope decision made explicitly with the user
+    before this was built, not a silent simplification — see
+    realtime_alerts.py's module docstring for the full reasoning."""
+    poll_interval_seconds: int = 60
+    store_filename: str = "alert_rules_store.json"
+    max_rules: int = 20        # UI bound: keeps the rule list scannable and every poll's fetch count bounded
+    max_history: int = 100     # trimmed on every save so the store file can't grow unbounded
+
+
+@dataclass(frozen=True)
 class WalkForwardConfig:
     """Defaults for the Backtest section's optional walk-forward mode.
     Trading days, not calendar months, to match how every other lookback
@@ -501,6 +515,7 @@ MONTE_CARLO = MonteCarloConfig()
 WALK_FORWARD = WalkForwardConfig()
 WATCHLIST_PANEL = WatchlistPanelConfig()
 BACKTEST_COST = BacktestCostConfig()
+REALTIME_ALERTS = RealtimeAlertsConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

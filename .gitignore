@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 .venv/
 venv/
+alert_rules_store.json
+alert_rules_store.tmp
