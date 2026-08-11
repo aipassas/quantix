@@ -222,6 +222,25 @@ def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
         interest_expense = abs(info.get('interestExpense'))
         data_fallbacks.append("Interest Expense: sourced from Yahoo's info feed because the income statement didn't report it")
 
+    # Total Liabilities: normally one consolidated line ("Total Liabilities
+    # Net Minority Interest"), but some tickers report its two real
+    # components separately without the consolidated total. Verified
+    # against real AAPL data that Current Liabilities + Total Non Current
+    # Liabilities Net Minority Interest sums to exactly the consolidated
+    # figure (checked directly against yfinance's own field-name catalog —
+    # no genuinely different SINGLE label for this concept exists there, so
+    # a derived sum of real components is the fallback, not a guessed
+    # second alias). Gives Total Liabilities the same "don't trip straight
+    # to Insufficient Data over a reporting-format quirk" treatment Total
+    # Debt/Interest Expense already have above.
+    total_liabilities = get_field(balance_sheet, ("Total Liabilities Net Minority Interest",))
+    if total_liabilities is None:
+        current_liabilities_component = get_field(balance_sheet, ("Current Liabilities",))
+        non_current_liabilities_component = get_field(balance_sheet, ("Total Non Current Liabilities Net Minority Interest",))
+        if current_liabilities_component is not None and non_current_liabilities_component is not None:
+            total_liabilities = current_liabilities_component + non_current_liabilities_component
+            data_fallbacks.append("Total Liabilities: derived as Current Liabilities + Total Non-Current Liabilities because the balance sheet didn't report a single consolidated total")
+
     # Debt-to-Equity: computed from statements (Total Debt / Stockholders
     # Equity) is the canonical value everywhere in the app — this avoids
     # relying on Yahoo's debtToEquity field, whose scale (ratio vs percent)
@@ -302,7 +321,7 @@ def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
         current_assets=get_field(balance_sheet, ("Current Assets",)),
         current_liabilities=get_field(balance_sheet, ("Current Liabilities",)),
         stockholders_equity=stockholders_equity,
-        total_liabilities=get_field(balance_sheet, ("Total Liabilities Net Minority Interest",)),
+        total_liabilities=total_liabilities,
         total_debt=resolved_total_debt,
         total_debt_from_statement=total_debt_from_statement,
         retained_earnings=get_field(balance_sheet, ("Retained Earnings",), default=0),
