@@ -12,7 +12,7 @@ from financial_standardization import standardize_financials
 from price_processing import process_price_data
 from technical_indicators import compute_sma_lines, detect_sma_crossovers, compute_rsi, interpret_rsi, compute_macd, detect_macd_crossovers, compute_bollinger_bands, detect_bollinger_breakouts, compute_atr, suggested_stop_loss, compute_stochastic, detect_stochastic_crossovers, compute_anchored_vwap, compute_adx, compute_ichimoku, compute_obv
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score, compute_hurst_exponent
-from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta
+from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST
@@ -1337,6 +1337,12 @@ else:
     # ==========================================
     st.markdown("---")
     st.header("Relative Strength & Alpha Generation")
+
+    # Computed here (not down in the DCF section) so both this section's
+    # Performance Attribution and the DCF's WACC can reuse the same
+    # regression instead of running it twice.
+    beta_regression = compute_capm_beta(df, bench_df) if not bench_df.empty else None
+
     if not bench_df.empty:
         df['CumReturn'] = (df['Close'] / df['Close'].iloc[0]) - 1
         bench_df['CumReturn'] = (bench_df['Close'] / bench_df['Close'].iloc[0]) - 1
@@ -1355,6 +1361,35 @@ else:
         fig_alpha.add_trace(go.Scatter(x=bench_df.index, y=bench_df['CumReturn']*100, name=benchmark_symbol, line=dict(color='gray')))
         fig_alpha.update_layout(xaxis_rangeslider_visible=False, height=400, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
         st.plotly_chart(fig_alpha, width="stretch")
+
+        # --- Performance Attribution: a deeper breakdown of the same Alpha
+        # comparison above, alongside it rather than replacing it — how
+        # much of the excess return came from simply being exposed to the
+        # market (Systematic) vs. this specific stock (Selection).
+        st.subheader("Performance Attribution")
+        attribution_beta, attribution_beta_source = fundamentals_engine.beta_estimate(
+            beta_regression.beta if beta_regression else None
+        )
+        period_days = (df.index[-1] - df.index[0]).days
+        attribution = compute_performance_attribution(
+            ticker_return_pct=ticker_return, benchmark_return_pct=bench_return,
+            beta=attribution_beta, period_days=period_days,
+        )
+        beta_source_labels = {
+            "regressed": f"regressed vs. {benchmark_symbol}",
+            "yahoo_reported": "Yahoo-reported",
+            "market_assumption": "1.0 market assumption",
+        }
+        st.caption(
+            f"Decomposes {ticker_symbol}'s excess return over a {attribution.risk_free_period_pct:.2f}% period "
+            f"risk-free rate into how much came from market exposure (beta × benchmark excess return) vs. "
+            f"stock-specific selection. Beta: {attribution_beta:.2f} ({beta_source_labels[attribution_beta_source]}). "
+            f"Systematic + Selection always reconstructs Total Excess Return exactly, by construction."
+        )
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Total Excess Return", f"{attribution.total_excess_return_pct:.2f}%", help=f"{ticker_symbol}'s period return minus the period risk-free rate.")
+        p2.metric("Systematic (Market Beta)", f"{attribution.systematic_pct:.2f}%", help="beta × the benchmark's excess return — the portion of return explained by simply being exposed to the market at this beta.")
+        p3.metric("Selection (Residual)", f"{attribution.selection_pct:.2f}%", help="Total excess return minus the systematic component — the portion attributable to this specific stock, not market exposure.")
 
     # --- QUANTITATIVE CALCULATIONS ---
     df['Returns'] = df['Close'].pct_change()
@@ -1674,13 +1709,11 @@ else:
     st.markdown("---")
     st.header("Automated DCF Valuation Engine", anchor="dcf")
 
-    # CAPM beta for the DCF's WACC: regressed against the selected benchmark
-    # (df/bench_df are already loaded above for the Alpha section) when
-    # there's enough overlapping history to regress reliably; wacc()/run_dcf()
+    # CAPM beta for the DCF's WACC: reuses the same regression computed
+    # above for the Alpha/Performance Attribution section (against the
+    # selected benchmark) rather than running it twice; wacc()/run_dcf()
     # fall back to Yahoo's reported beta, then a declared 1.0 market
     # assumption, when this comes back None.
-    beta_regression = compute_capm_beta(df, bench_df) if not bench_df.empty else None
-
     dcf_result = None  # stays None if the try block below raises before assignment — the Executive Digest checks this rather than assuming it's always set
     with st.expander("Professional Multi-Stage DCF Valuation", expanded=True):
         try:

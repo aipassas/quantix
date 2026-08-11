@@ -6,8 +6,9 @@ import pytest
 
 from portfolio_analytics import (
     build_aligned_returns, compute_correlation_matrix, compute_covariance_matrix,
-    compute_portfolio_diversification, compute_capm_beta,
+    compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution,
 )
+from config import RISK
 
 
 @pytest.fixture
@@ -170,3 +171,75 @@ def test_beta_handles_tz_naive_vs_tz_aware_index_mismatch(four_ticker_baskets):
     assert result is not None
     naive_result = compute_capm_beta(four_ticker_baskets["A"], four_ticker_baskets["B"], min_observations=20)
     assert result.beta == pytest.approx(naive_result.beta)
+
+
+# --- compute_performance_attribution() --------------------------------------
+
+def test_attribution_systematic_plus_selection_reconstructs_total_excess_return():
+    """The acceptance criterion itself: Systematic + Selection must sum
+    back to Total Excess Return, for arbitrary inputs — guaranteed by
+    construction (Selection is defined as the residual), not approximated."""
+    for ticker_ret, bench_ret, beta, days in [
+        (25.0, 15.0, 1.3, 365), (-10.0, 5.0, 0.7, 90), (0.0, 0.0, 1.0, 30),
+        (50.0, -20.0, -0.5, 730), (8.0, 8.0, 1.0, 180),
+    ]:
+        result = compute_performance_attribution(ticker_ret, bench_ret, beta, days)
+        assert result.systematic_pct + result.selection_pct == pytest.approx(result.total_excess_return_pct, abs=1e-9)
+
+
+def test_attribution_matches_hand_computed_values():
+    result = compute_performance_attribution(
+        ticker_return_pct=30.0, benchmark_return_pct=20.0, beta=1.2,
+        period_days=365, annual_risk_free_rate=0.04,
+    )
+    risk_free_pct = ((1.04) ** 1.0 - 1) * 100  # period_days=365 -> period_years=365/365.25, close to 1.0
+    period_years = 365 / 365.25
+    risk_free_pct = ((1.04) ** period_years - 1) * 100
+
+    expected_total_excess = 30.0 - risk_free_pct
+    expected_systematic = 1.2 * (20.0 - risk_free_pct)
+    expected_selection = expected_total_excess - expected_systematic
+
+    assert result.risk_free_period_pct == pytest.approx(risk_free_pct)
+    assert result.total_excess_return_pct == pytest.approx(expected_total_excess)
+    assert result.systematic_pct == pytest.approx(expected_systematic)
+    assert result.selection_pct == pytest.approx(expected_selection)
+
+
+def test_attribution_zero_beta_means_all_selection():
+    """No market exposure -> the entire excess return is attributed to
+    selection, none to systematic."""
+    result = compute_performance_attribution(20.0, 15.0, beta=0.0, period_days=365)
+    assert result.systematic_pct == pytest.approx(0.0)
+    assert result.selection_pct == pytest.approx(result.total_excess_return_pct)
+
+
+def test_attribution_pure_market_replication_has_zero_selection():
+    """beta=1.0 and the ticker's return exactly equals the benchmark's —
+    textbook 'just tracked the index,' no stock-specific skill -> selection
+    should be exactly zero."""
+    result = compute_performance_attribution(12.0, 12.0, beta=1.0, period_days=180)
+    assert result.selection_pct == pytest.approx(0.0, abs=1e-9)
+
+
+def test_attribution_risk_free_rate_compounds_not_linear():
+    """A 2-year period at a 4% annual rate: compounding (1.04^2 - 1 =
+    8.16%) must differ from naive linear scaling (2 * 4% = 8.00%) — proves
+    the compounding choice is actually being used, not silently reduced to
+    a linear approximation."""
+    result = compute_performance_attribution(0.0, 0.0, beta=1.0, period_days=730, annual_risk_free_rate=0.04)
+    linear_approx_pct = 0.04 * (730 / 365.25) * 100
+    assert result.risk_free_period_pct == pytest.approx(((1.04 ** (730 / 365.25)) - 1) * 100)
+    assert result.risk_free_period_pct != pytest.approx(linear_approx_pct, abs=1e-6)
+
+
+def test_attribution_defaults_to_config_risk_free_rate():
+    result_explicit = compute_performance_attribution(10.0, 5.0, beta=1.0, period_days=365, annual_risk_free_rate=RISK.risk_free_rate)
+    result_default = compute_performance_attribution(10.0, 5.0, beta=1.0, period_days=365)
+    assert result_explicit.risk_free_period_pct == pytest.approx(result_default.risk_free_period_pct)
+
+
+def test_attribution_zero_period_days_gives_zero_risk_free_rate():
+    result = compute_performance_attribution(5.0, 3.0, beta=1.0, period_days=0)
+    assert result.risk_free_period_pct == pytest.approx(0.0)
+    assert result.total_excess_return_pct == pytest.approx(5.0)

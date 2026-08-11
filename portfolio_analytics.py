@@ -167,6 +167,67 @@ def compute_capm_beta(
     return BetaRegressionResult(beta=float(beta), r_squared=float(r_squared), observation_count=len(aligned))
 
 
+@dataclass
+class PerformanceAttributionResult:
+    total_excess_return_pct: float
+    systematic_pct: float
+    selection_pct: float
+    beta_used: float
+    risk_free_period_pct: float
+
+
+def compute_performance_attribution(
+    ticker_return_pct: float,
+    benchmark_return_pct: float,
+    beta: float,
+    period_days: int,
+    annual_risk_free_rate: Optional[float] = None,
+) -> PerformanceAttributionResult:
+    """Decompose a ticker's period return vs. its benchmark into a
+    systematic (market-beta-driven) component and a selection
+    (stock-specific residual) component — the standard Jensen's-alpha-style
+    attribution, one level deeper than the simple `ticker return - benchmark
+    return` alpha the Relative Strength & Alpha Generation section already
+    shows:
+
+        Total Excess Return = Ticker Return - Risk-Free Rate (prorated to the period)
+        Systematic          = beta * (Benchmark Return - Risk-Free Rate)
+        Selection            = Total Excess Return - Systematic
+
+    Selection is DEFINED as the residual, so Systematic + Selection always
+    reconstructs Total Excess Return exactly, by construction — not an
+    approximation that happens to be close.
+
+    `beta` is a plain float rather than this module's own
+    BetaRegressionResult so the caller can pass whichever step of the
+    regressed -> Yahoo-reported -> 1.0 assumption fallback chain
+    (fundamental_analysis.FundamentalAnalysisEngine.beta_estimate()) it
+    actually resolved to, without this function needing to know about that
+    chain itself.
+
+    The annual risk-free rate is compounded to the period length — (1 +
+    r)^(period_days/365.25) - 1 — rather than scaled linearly, matching how
+    this app's DCF/CAPM treat the risk-free rate as an annualized figure
+    everywhere else. Defaults to config.RISK.risk_free_rate when not given.
+    """
+    annual_risk_free_rate = annual_risk_free_rate if annual_risk_free_rate is not None else RISK.risk_free_rate
+    period_years = period_days / 365.25 if period_days > 0 else 0.0
+    risk_free_period_pct = ((1 + annual_risk_free_rate) ** period_years - 1) * 100
+
+    total_excess_return_pct = ticker_return_pct - risk_free_period_pct
+    benchmark_excess_pct = benchmark_return_pct - risk_free_period_pct
+    systematic_pct = beta * benchmark_excess_pct
+    selection_pct = total_excess_return_pct - systematic_pct
+
+    return PerformanceAttributionResult(
+        total_excess_return_pct=total_excess_return_pct,
+        systematic_pct=systematic_pct,
+        selection_pct=selection_pct,
+        beta_used=beta,
+        risk_free_period_pct=risk_free_period_pct,
+    )
+
+
 def compute_covariance_matrix(returns: pd.DataFrame, trading_days_per_year: Optional[int] = None) -> pd.DataFrame:
     """Annualized covariance matrix of aligned log returns."""
     trading_days_per_year = trading_days_per_year or RISK.trading_days_per_year
