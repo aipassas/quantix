@@ -1622,10 +1622,17 @@ else:
         st.info("No drawdown in the selected date range — price has been at or above every prior high throughout.")
 
     # ==========================================
-    # EXECUTION & POSITION SIZING (KELLY CRITERION)
+    # EXECUTION & POSITION SIZING (KELLY-STYLE HEURISTIC)
     # ==========================================
     st.markdown("---")
     st.header("Execution & Position Sizing")
+    st.caption(
+        "A Kelly-STYLE sizing heuristic, not textbook Kelly applied to a validated trading edge. "
+        "\"Win rate\" and \"payoff ratio\" below come from the UNCONDITIONAL fraction of positive-return "
+        "days and the average up-day vs. down-day return over the selected date range — not a specific "
+        "strategy's actual backtested trade-level performance. For an edge tied to a real trading rule, "
+        "see the win rate reported in the Algorithmic Backtesting Simulator further down this page."
+    )
 
     win_returns = df[df['Returns'] > 0]['Returns']
     loss_returns = df[df['Returns'] < 0]['Returns']
@@ -1634,6 +1641,12 @@ else:
     if len(df['Returns'].dropna()) > 0 and len(loss_returns) > 0:
         win_prob = len(win_returns) / len(df['Returns'].dropna())
         win_loss_ratio = win_returns.mean() / abs(loss_returns.mean()) if abs(loss_returns.mean()) > 0 else 0
+        # Kelly's formula (f* = p - (1-p)/b) applied to the UNCONDITIONAL daily
+        # up/down statistics above — a simplification of Kelly's original
+        # formulation, which assumes a discrete bet with a known, validated
+        # edge and probability distribution, not "how often did the stock go
+        # up on an arbitrary day." A declared simplifying heuristic, not a
+        # fabricated number — see the caption above.
         kelly_pct = (win_prob - ((1 - win_prob) / win_loss_ratio)) if win_loss_ratio > 0 else 0
         if kelly_pct > 0:
             # Half-Kelly for risk management; quartered further when the macro risk flag is active
@@ -1641,11 +1654,11 @@ else:
             final_allocation = half_kelly_pct / RISK.kelly_macro_risk_extra_factor if macro_risk_flag else half_kelly_pct
 
         k1, k2, k3 = st.columns(3)
-        k1.metric("Historical Win Rate", f"{win_prob * 100:.1f}%")
-        k2.metric("Win/Loss Ratio", f"{win_loss_ratio:.2f}")
-        k3.metric("Recommended Allocation", f"{final_allocation:.2f}%", help="Half-Kelly position size, penalized further during high VIX regimes.")
+        k1.metric("Daily Win Rate", f"{win_prob * 100:.1f}%", help="Fraction of ALL trading days in the selected range with a positive return — an unconditional statistic, not a specific strategy's trade-level win rate.")
+        k2.metric("Up/Down-Day Payoff Ratio", f"{win_loss_ratio:.2f}", help="Average positive-day return divided by the average magnitude of a negative-day return.")
+        k3.metric("Heuristic Allocation (Half-Kelly)", f"{final_allocation:.2f}%", help="Half-Kelly position size from the simplified daily statistics above, penalized further during high VIX regimes. A rough sizing heuristic, not a rigorous Kelly application to a validated edge.")
     else:
-        st.info("Insufficient return data to calculate the Kelly Criterion.")
+        st.info("Insufficient return data to calculate this sizing heuristic.")
 
     # ATR-based volatility stop-loss — computed by technical_indicators.py,
     # not here (see suggested_stop_loss()). A complementary risk-management
@@ -2617,7 +2630,7 @@ else:
             </div>
             <div class="ts-card">
                 <h4>Execution & Risk</h4>
-                <div class="ts-metric"><span class="ts-label">Kelly Allocation</span> <span class="ts-value">{_kelly:.2f}%</span></div>
+                <div class="ts-metric"><span class="ts-label">Kelly-Style Sizing</span> <span class="ts-value">{_kelly:.2f}%</span></div>
                 <div class="ts-metric"><span class="ts-label">Z-Score (Trend)</span> <span class="ts-value">{current_z_score:.2f}</span></div>
                 <div class="ts-metric"><span class="ts-label">1-Day VaR ({var_confidence:.0%})</span> <span class="ts-value">{f"{historical_var * 100:.2f}%" if historical_var is not None else "N/A"}</span></div>
             </div>
