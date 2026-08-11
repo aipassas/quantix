@@ -32,6 +32,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from data_providers import DataProvider, get_provider_for_ticker
 from logging_setup import get_logger, log_event
 
 logger = get_logger("data_loader")
@@ -226,7 +227,19 @@ def load_ticker_bundle(ticker: str, start=None, end=None, deep: bool = True) -> 
     that's temporarily unreachable or that Yahoo returns garbage for comes
     back as a bundle with `errors`/`warnings` populated instead of raising,
     so a single flaky ticker can't crash the whole app.
+
+    A `ticker` prefixed "crypto:" (e.g. "crypto:bitcoin") is routed to an
+    alternate data_providers.DataProvider instead of Yahoo Finance — see
+    data_providers.py's module docstring for what that covers and why. This
+    branch is checked FIRST and returns via a separate helper specifically
+    so the Yahoo path below it is untouched byte-for-byte: existing callers
+    passing an ordinary ticker get identical behavior to before this layer
+    existed.
     """
+    provider = get_provider_for_ticker(ticker)
+    if provider is not None:
+        return _load_ticker_bundle_from_provider(provider, ticker, start, end, deep)
+
     bundle = TickerBundle(ticker=ticker)
 
     info, info_errors = _load_info(ticker)
@@ -243,6 +256,49 @@ def load_ticker_bundle(ticker: str, start=None, end=None, deep: bool = True) -> 
 
         bundle.institutional_holders, bundle.insider_transactions, ownership_warnings = _load_ownership_data(ticker)
         bundle.warnings.extend(ownership_warnings)
+
+    log_event(
+        logger, logging.ERROR if bundle.errors else logging.INFO, "bundle.loaded",
+        ticker=ticker, deep=deep, valid=bundle.is_valid,
+        errors=len(bundle.errors), warnings=len(bundle.warnings),
+        price_rows=len(bundle.price_history),
+    )
+    for message in bundle.errors:
+        log_event(logger, logging.ERROR, "bundle.error", ticker=ticker, detail=message)
+    for message in bundle.warnings:
+        log_event(logger, logging.WARNING, "bundle.warning", ticker=ticker, detail=message)
+
+    return bundle
+
+
+def _load_ticker_bundle_from_provider(provider: DataProvider, ticker: str, start, end, deep: bool) -> TickerBundle:
+    """The non-Yahoo path, kept as a separate function (not interleaved
+    with the Yahoo path above) precisely so that path stays provably
+    unchanged. Mirrors data_providers.DataProvider's own (value, messages)
+    convention: messages alongside an EMPTY result are required-data-
+    missing (-> bundle.errors); messages alongside a NON-EMPTY result are
+    disclosures (-> bundle.warnings), same distinction TickerBundle.is_valid
+    already relies on.
+
+    Financial statements and ownership data are Yahoo/equity-specific
+    concepts with no analogue for a provider like CoinGecko — left at
+    TickerBundle's own empty defaults with a disclosed reason rather than
+    silently absent with no explanation.
+    """
+    bundle = TickerBundle(ticker=ticker)
+
+    info, info_messages = provider.fetch_info(ticker)
+    bundle.info = info
+    bundle.errors.extend(info_messages)  # a fetch_info failure is always required-data-missing
+
+    if deep:
+        price_history, price_messages = provider.fetch_price_history(ticker, start, end)
+        bundle.price_history = price_history
+        if price_history.empty:
+            bundle.errors.extend(price_messages)
+        else:
+            bundle.warnings.extend(price_messages)
+        bundle.warnings.append(f"{ticker}: financial statements and ownership data are not available through this provider.")
 
     log_event(
         logger, logging.ERROR if bundle.errors else logging.INFO, "bundle.loaded",
@@ -318,7 +374,20 @@ def load_seasonality_history(ticker: str, period: str = "10y", interval: str = "
     routed through this module so it's not an independent yfinance call site.
     Cached for a full day since a decade of monthly bars is effectively
     static within any given day.
+
+    Yahoo-only, deliberately not routed through data_providers.py: a true
+    10-year seasonality view isn't even possible against CoinGecko's free
+    tier (365-day cap, see data_providers.py's module docstring), so this
+    isn't "not yet wired up" so much as genuinely out of reach for that
+    provider. Short-circuits immediately for a non-Yahoo ticker instead of
+    silently falling through to Yahoo and burning 3 retries against a
+    symbol Yahoo was never going to recognize — caught live: without this
+    check, analyzing a crypto ticker cost an extra ~7 real seconds of
+    failed retries before the (already-graceful) empty result appeared.
     """
+    if get_provider_for_ticker(ticker) is not None:
+        return pd.DataFrame()
+
     value, err = _fetch_with_retry(
         lambda: yf.Ticker(ticker).history(period=period, interval=interval, timeout=REQUEST_TIMEOUT),
         label=f"{ticker} seasonality history",
