@@ -61,7 +61,7 @@ def log_input_changes(**current):
 
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Quantix", layout="wide", page_icon="🔬")
+st.set_page_config(page_title="Quantix", layout="wide", page_icon=None)
 st.title("Quantix: Institutional-Grade Stock Analysis & Simulation Engine")
 
 # --- Professional UI Injection (OLED Edition) ---
@@ -144,6 +144,64 @@ st.markdown("""
         background-color: #0a0a0a !important;
         border: 1px solid #1a1a1a !important;
         color: #ffffff !important;
+    }
+
+    /* --- Top-level panel navigation ---------------------------------
+       The main page tabs are the primary navigation for the whole
+       analysis, so they get real presence instead of Streamlit's default
+       small text links: larger type, generous hit area, a visible rail
+       under the strip, and a solid highlight + underline on the active
+       panel. Scoped to .stTabs so it applies to nested tab groups too. */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 6px;
+        border-bottom: 2px solid #1f1f1f;
+        padding-bottom: 0;
+        overflow-x: auto;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 52px;
+        padding: 0 16px;
+        background-color: #0a0a0a;
+        border: 1px solid #1a1a1a;
+        border-bottom: none;
+        border-radius: 8px 8px 0 0;
+        white-space: nowrap;
+    }
+    /* Streamlit's default inactive-tab colour is near-black (#31333F), which
+       is effectively invisible against this theme's black background — set
+       an explicitly readable grey so unselected panels are still legible. */
+    .stTabs [data-baseweb="tab"] p {
+        font-size: 0.98rem !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.2px;
+        color: #9ca3af !important;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: #141414;
+    }
+    .stTabs [data-baseweb="tab"]:hover p {
+        color: #e5e7eb !important;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #161616 !important;
+        border-color: #2a2a2a !important;
+    }
+    .stTabs [aria-selected="true"] p {
+        color: #ffffff !important;
+    }
+    /* Streamlit's own active-tab underline, thickened to match. */
+    .stTabs [data-baseweb="tab-highlight"] {
+        height: 3px;
+    }
+
+    /* The sidebar's control tabs share the strip styling but stay
+       compact — they sit in a much narrower column. */
+    [data-testid="stSidebar"] .stTabs [data-baseweb="tab"] {
+        height: 38px;
+        padding: 0 12px;
+    }
+    [data-testid="stSidebar"] .stTabs [data-baseweb="tab"] p {
+        font-size: 0.86rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -283,7 +341,7 @@ with _screener_btn_col1:
         st.session_state["screener_criteria"].append({"metric": "rsi", "operator": "<", "threshold": 30.0})
         st.rerun()
 with _screener_btn_col2:
-    screener_run_clicked = st.button("🔍 Run Screen", type="primary")
+    screener_run_clicked = st.button("Run Screen", type="primary")
 
 if screener_run_clicked:
     _screener_universe = [t.strip().upper() for t in screener_universe_input.split(",") if t.strip()]
@@ -329,13 +387,13 @@ if _screener_state:
             v = r.values.get(c.metric)
             row[f"{spec.label} ({c.operator} {c.threshold:g}{spec.unit})"] = round(v, spec.decimals) if v is not None else None
         if r.status == "fetch_error":
-            row["Result"] = "⚠️ Could Not Load"
+            row["Result"] = "🟡 Could Not Load"
         elif r.status == "insufficient_data":
-            row["Result"] = "⚠️ Insufficient Data"
+            row["Result"] = "🟡 Insufficient Data"
         elif r.passed_all:
-            row["Result"] = "✅ Pass"
+            row["Result"] = "🟢 Pass"
         else:
-            row["Result"] = "❌ Fail"
+            row["Result"] = "🔴 Fail"
         row["Detail"] = r.detail
         _screener_rows.append(row)
 
@@ -348,7 +406,7 @@ if _screener_state:
     _screener_selected_rows = _screener_event.selection.rows if _screener_event and _screener_event.selection else []
     if _screener_selected_rows:
         _screener_selected_ticker = _screener_results_df.iloc[_screener_selected_rows[0]]["Ticker"]
-        if st.button(f"📈 Open full analysis for {_screener_selected_ticker} →"):
+        if st.button(f"Open full analysis for {_screener_selected_ticker} →"):
             st.session_state["ticker_input"] = _screener_selected_ticker
             st.rerun()
 
@@ -409,7 +467,7 @@ with _alert_btn_col1:
         st.session_state["risk_alert_rules"].append({"metric": "max_drawdown", "operator": "<", "threshold": -0.20})
         st.rerun()
 with _alert_btn_col2:
-    check_alerts_clicked = st.button("🔔 Check Alerts", type="primary")
+    check_alerts_clicked = st.button("Check Alerts", type="primary")
 
 if check_alerts_clicked:
     if not st.session_state["risk_alert_rules"]:
@@ -435,7 +493,7 @@ if _alerts_state:
 
     if _alert_triggered:
         _alert_tickers_hit = sorted({t.ticker for t in _alert_triggered})
-        st.error(f"🔔 {len(_alert_triggered)} alert(s) triggered across {len(_alert_tickers_hit)} ticker(s): {', '.join(_alert_tickers_hit)}")
+        st.error(f"{len(_alert_triggered)} alert(s) triggered across {len(_alert_tickers_hit)} ticker(s): {', '.join(_alert_tickers_hit)}")
         _alert_rows = []
         for t in _alert_triggered:
             spec = RISK_ALERT_METRICS_BY_KEY[t.rule.metric]
@@ -447,7 +505,7 @@ if _alerts_state:
             })
         st.table(pd.DataFrame(_alert_rows))
     else:
-        st.success(f"✅ No alerts triggered across your {len(_alert_snapshots)}-ticker watchlist right now.")
+        st.success(f"🟢 No alerts triggered across your {len(_alert_snapshots)}-ticker watchlist right now.")
 
     if _alert_error_count or _alert_insufficient_count:
         st.caption(f"{_alert_error_count} ticker(s) could not be loaded · {_alert_insufficient_count} had at least one non-computable metric — never silently excluded from the check.")
@@ -488,7 +546,7 @@ end_date = st.sidebar.date_input("End Date", today)
 # the controls and their effect are in one place instead of split across
 # the sidebar and the page.
 side_valuation, side_risk, side_portfolio, side_system = st.sidebar.tabs(
-    ["💰 Valuation", "⚠️ Risk", "📁 Portfolio", "⚙️ System"]
+    ["Valuation", "Risk", "Portfolio", "System"]
 )
 
 with side_valuation:
@@ -531,7 +589,7 @@ with side_system:
     st.markdown("---")
     st.caption("Data Cache")
     st.caption("Quotes: 30 min · Prices: 1 hr · Statements: 24 hr · Ownership: 12 hr")
-    if st.button("🔄 Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
+    if st.button("Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
         log_event(logger, logging.INFO, "user.force_refresh", ticker=ticker_symbol)
         clear_all_caches()
         st.rerun()
@@ -587,8 +645,8 @@ else:
     # charting surface, so it gets a prominent position rather than being
     # buried mid-list among the analysis panels.
     tab_overview, tab_chart_workspace, tab_fundamentals, tab_risk, tab_simulation, tab_smart_money, tab_tearsheet = st.tabs([
-        "🏠 Overview", "📈 Chart Workspace", "💰 Fundamentals & Valuation", "⚠️ Risk & Technicals",
-        "🎲 Monte Carlo & Seasonality", "🕵️ Smart Money & Peers", "📋 CIO Tear Sheet",
+        "Overview", "Chart Workspace", "Fundamentals & Valuation", "Risk & Technicals",
+        "Monte Carlo & Seasonality", "Smart Money & Peers", "CIO Tear Sheet",
     ])
 
 
@@ -628,10 +686,10 @@ else:
         detail_issue_count = len(quality.missing_required_fields) + len(quality.missing_optional_fields) + len(quality.fetch_warnings) + len(quality.fetch_errors)
         with st.expander(f"Data Quality Detail ({detail_issue_count} issue(s))", expanded=quality.grade in ("Poor", "Fair")):
             for stmt in standardized.validation.statements:
-                status = "✅ Complete" if stmt.is_valid else f"❌ {len(stmt.missing_required)} required field(s) missing"
+                status = "🟢 Complete" if stmt.is_valid else f"🔴 {len(stmt.missing_required)} required field(s) missing"
                 st.markdown(f"**{stmt.statement_name}** — {status}")
                 for check in stmt.checks:
-                    icon = "✅" if check.present else ("❌" if check.required else "⚪")
+                    icon = "🟢" if check.present else ("🔴" if check.required else "⚪")
                     label = check.name + (" (required)" if check.required else " (optional)")
                     st.markdown(f"&nbsp;&nbsp;{icon} {label}")
 
@@ -708,7 +766,7 @@ else:
         st.header("Financial Metrics Validation Report")
 
         if mv.is_clean:
-            st.success(f"✅ No issues found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}.")
+            st.success(f"🟢 No issues found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}.")
         else:
             issue_parts = []
             if mv.disagreement_count:
@@ -717,7 +775,7 @@ else:
                 issue_parts.append(f"{mv.outlier_count} exceed a sanity bound")
             if mv.fallback_count:
                 issue_parts.append(f"{mv.fallback_count} used a fallback data source")
-            st.warning(f"⚠️ {mv.total_issues} issue(s) found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}: " + "; ".join(issue_parts) + ".")
+            st.warning(f"{mv.total_issues} issue(s) found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}: " + "; ".join(issue_parts) + ".")
 
         vc1, vc2, vc3, vc4 = st.columns(4)
         vc1.metric("Metrics Evaluated", f"{len(mv.evaluated_checks)} / {len(mv.checks)}")
@@ -726,17 +784,17 @@ else:
         vc4.metric("Incomplete Calculations", mv.fallback_count)
 
         if mv.outliers:
-            with st.expander(f"🚩 {mv.outlier_count} extreme outlier(s)", expanded=True):
+            with st.expander(f"{mv.outlier_count} extreme outlier(s)", expanded=True):
                 for o in mv.outliers:
                     st.error(f"**[{o.category}] {o.label}**: {o.display} — {o.note}")
 
         if mv.fallback_notes:
-            with st.expander(f"🧩 {mv.fallback_count} incomplete calculation(s)", expanded=False):
+            with st.expander(f"{mv.fallback_count} incomplete calculation(s)", expanded=False):
                 for note in mv.fallback_notes:
                     st.info(note)
 
         if mv.disagreements:
-            with st.expander(f"⚠️ {mv.disagreement_count} disagreement(s) with Yahoo's own reported figure", expanded=False):
+            with st.expander(f"{mv.disagreement_count} disagreement(s) with Yahoo's own reported figure", expanded=False):
                 disagreement_data = {
                     "Category": [cat for cat, _ in mv.disagreements],
                     "Metric": [c.label for _, c in mv.disagreements],
@@ -879,7 +937,7 @@ else:
         matrix_df = pd.DataFrame(matrix_data)
         st.table(matrix_df)
         st.download_button(
-            "⬇️ Download Scorecard (CSV)",
+            "Download Scorecard (CSV)",
             data=matrix_df.to_csv(index=False).encode("utf-8"),
             file_name=f"{ticker_symbol}_scorecard_{datetime.date.today().isoformat()}.csv",
             mime="text/csv",
@@ -893,12 +951,12 @@ else:
         # data and cross-checked against Yahoo's own separately-reported ratio
         # for the same concept — the practical substitute here for reconciling
         # against a real annual report (no live 10-K access in this environment).
-        # A ⚠️ does not necessarily mean our formula is wrong: Yahoo's figure is
+        # A 🟡 does not necessarily mean our formula is wrong: Yahoo's figure is
         # often trailing-twelve-month while ours uses the most recent annual
         # period, and that timing difference alone can exceed the tolerance.
         st.markdown("---")
         st.header("Profitability Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
 
         prof_rows = fundamentals.profitability_checks
         profitability_data = {
@@ -912,7 +970,7 @@ else:
 
         disagreements = [c for c in prof_rows if c.agrees is False]
         if disagreements:
-            with st.expander(f"⚠️ {len(disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            with st.expander(f"{len(disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
                 for c in disagreements:
                     st.info(
                         f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
@@ -938,7 +996,7 @@ else:
         # that figure and to surface Quick Ratio, which has no scorecard flag.
         st.markdown("---")
         st.header("Liquidity Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
 
         liq_rows = fundamentals.liquidity_checks
         liquidity_data = {
@@ -952,7 +1010,7 @@ else:
 
         liq_disagreements = [c for c in liq_rows if c.agrees is False]
         if liq_disagreements:
-            with st.expander(f"⚠️ {len(liq_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            with st.expander(f"{len(liq_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
                 for c in liq_disagreements:
                     st.info(
                         f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
@@ -982,7 +1040,7 @@ else:
         # everywhere else.
         st.markdown("---")
         st.header("Leverage Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
 
         lev_rows = fundamentals.leverage_checks
         leverage_data = {
@@ -996,7 +1054,7 @@ else:
 
         lev_disagreements = [c for c in lev_rows if c.agrees is False]
         if lev_disagreements:
-            with st.expander(f"⚠️ {len(lev_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            with st.expander(f"{len(lev_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
                 for c in lev_disagreements:
                     if c.key == "total_debt":
                         st.info(
@@ -1028,7 +1086,7 @@ else:
         # with no prior canonical value in the app.
         st.markdown("---")
         st.header("Valuation Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · ✅ agrees (within 15%) · ⚠️ disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
 
         val_rows = fundamentals.valuation_checks
         valuation_data = {
@@ -1047,7 +1105,7 @@ else:
         }
         val_disagreements = [c for c in val_rows if c.agrees is False]
         if val_disagreements:
-            with st.expander(f"⚠️ {len(val_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+            with st.expander(f"{len(val_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
                 for c in val_disagreements:
                     reason = val_disagreement_reasons.get(c.key, "Likely a timing/basis difference between this figure and Yahoo's own calculation, not necessarily a formula error.")
                     st.info(f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. {reason}")
@@ -1074,7 +1132,7 @@ else:
         # every one of these variables is first CONSUMED further down this
         # same block (sma_periods onward), so defining them here keeps the
         # original define-before-use order intact.
-        with st.expander("⚙️ Chart Indicators & Overlays", expanded=False):
+        with st.expander("Chart Indicators & Overlays", expanded=False):
             _ind_core, _ind_momentum, _ind_extra = st.columns(3)
             with _ind_core:
                 st.caption("**Trend**")
@@ -1106,9 +1164,9 @@ else:
         # caption rather than a prominent report unless something was found.
         ppr = price_processing_result
         if ppr.is_clean:
-            st.caption("✅ Price data validated — no duplicate timestamps, invalid bars, or likely gaps detected.")
+            st.caption("🟢 Price data validated — no duplicate timestamps, invalid bars, or likely gaps detected.")
         else:
-            with st.expander(f"⚠️ Price data required cleaning ({ppr.issue_count} issue(s)) — click for details", expanded=False):
+            with st.expander(f"Price data required cleaning ({ppr.issue_count} issue(s)) — click for details", expanded=False):
                 if ppr.duplicate_rows_removed:
                     st.warning(f"Removed {ppr.duplicate_rows_removed} duplicate timestamp(s).")
                 if ppr.invalid_rows_removed:
@@ -1378,7 +1436,7 @@ else:
                     st.caption(f"Showing the 10 most recent of {len(bb_breakouts)} breakouts in the selected date range.")
 
         st.download_button(
-            "⬇️ Download Price & Indicator Data (CSV)",
+            "Download Price & Indicator Data (CSV)",
             data=df.to_csv().encode("utf-8"),
             file_name=f"{ticker_symbol}_price_indicators_{start_date}_{end_date}.csv",
             mime="text/csv",
@@ -1692,7 +1750,7 @@ else:
                 "Drawdown_Pct": drawdown_series,
             })
             st.download_button(
-                "⬇️ Download Risk Time-Series Data (CSV)",
+                "Download Risk Time-Series Data (CSV)",
                 data=risk_series_df.to_csv().encode("utf-8"),
                 file_name=f"{ticker_symbol}_risk_series_{start_date}_{end_date}.csv",
                 mime="text/csv",
@@ -1892,11 +1950,11 @@ else:
         # (macro-regime) stays a real jump link; every other one names the
         # tab to check rather than pretending to jump there.
         _digest_anchor_tab = {
-            "scorecard": "💰 Fundamentals & Valuation",
-            "quality-classification": "💰 Fundamentals & Valuation",
-            "dcf": "💰 Fundamentals & Valuation",
-            "technicals": "📈 Chart Workspace",
-            "risk-dashboard": "⚠️ Risk & Technicals",
+            "scorecard": "Fundamentals & Valuation",
+            "quality-classification": "Fundamentals & Valuation",
+            "dcf": "Fundamentals & Valuation",
+            "technicals": "Chart Workspace",
+            "risk-dashboard": "Risk & Technicals",
             # "macro-regime" deliberately absent — it's in this same
             # Overview tab as the Executive Digest, so the plain anchor
             # link already works natively.
@@ -2039,7 +2097,7 @@ else:
             # construction.
             _preview_overlap = int((_preview_entries & _preview_exits).sum())
             if _preview_overlap:
-                st.caption(f"⚠️ {_preview_overlap} of those bars satisfy both entry and exit conditions at once — the exit takes precedence on a same-bar conflict, so those specific bars won't open a new position.")
+                st.caption(f"{_preview_overlap} of those bars satisfy both entry and exit conditions at once — the exit takes precedence on a same-bar conflict, so those specific bars won't open a new position.")
 
         cost_bps = st.slider(
             "Transaction Cost (bps per trade leg)", min_value=0.0, max_value=BACKTEST_COST.max_cost_bps,
@@ -2907,7 +2965,7 @@ else:
         """
         st.html(tear_sheet_html)
 
-        if st.button("🖨️ Generate PDF Report"):
+        if st.button("Generate PDF Report"):
             with st.spinner("Rendering PDF..."):
                 pdf_bytes, pdf_error = generate_tear_sheet_pdf(tear_sheet_html)
             if pdf_bytes is not None:
@@ -2919,7 +2977,7 @@ else:
         cached_pdf = st.session_state.get("_tear_sheet_pdf")
         if cached_pdf and cached_pdf["ticker"] == ticker_symbol:
             st.download_button(
-                "⬇️ Download PDF",
+                "Download PDF",
                 data=cached_pdf["bytes"],
                 file_name=f"{ticker_symbol}_tear_sheet_{datetime.date.today().isoformat()}.pdf",
                 mime="application/pdf",
@@ -2934,7 +2992,7 @@ else:
 # so it captures every event emitted during this run.
 if debug_mode:
     st.markdown("---")
-    st.subheader("🐞 Diagnostics — Recent Log")
+    st.subheader("Diagnostics — Recent Log")
     st.caption(f"Newest last · also written to `{log_file_path()}`")
     entries = recent_logs(limit=200)
     if entries:

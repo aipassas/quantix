@@ -167,7 +167,7 @@ class ProfitabilityCheck:
     def status_icon(self) -> str:
         if self.agrees is None:
             return "⚪"
-        return "✅" if self.agrees else "⚠️"
+        return "🟢" if self.agrees else "🟡"
 
 
 @dataclass
@@ -387,8 +387,8 @@ class CompanyQuality:
     @property
     def category_icon(self) -> str:
         return {
-            "Elite Quality": "🏆", "High Quality": "✅", "Average Quality": "🟡",
-            "Below Average": "⚠️", "Weak Quality": "🔴", "Not Ratable": "⚪",
+            "Elite Quality": "🟢", "High Quality": "🟢", "Average Quality": "🟡",
+            "Below Average": "🟠", "Weak Quality": "🔴", "Not Ratable": "⚪",
         }[self.category]
 
 

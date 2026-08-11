@@ -220,7 +220,7 @@ def interpret_sharpe_ratio(value: Optional[float]) -> Optional[SharpeInterpretat
         return SharpeInterpretation("🟢 Good", "A solid risk-adjusted return — widely considered an acceptable-to-good Sharpe by institutional standards.", limitation)
     if value < 3.0:
         return SharpeInterpretation("🟢 Very Good", "A strong risk-adjusted return, notably above typical market benchmarks.", limitation)
-    return SharpeInterpretation("🔵 Exceptional (verify)", "Unusually high for a sustained strategy — worth double-checking the sample period isn't too short or unusually low-volatility, rather than assuming it's simply an outstanding result.", limitation)
+    return SharpeInterpretation("🟢 Exceptional (verify)", "Unusually high for a sustained strategy — worth double-checking the sample period isn't too short or unusually low-volatility, rather than assuming it's simply an outstanding result.", limitation)
 
 
 def compute_downside_deviation(
@@ -516,7 +516,7 @@ def interpret_calmar_ratio(value: Optional[float]) -> Optional[CalmarInterpretat
         return CalmarInterpretation("🟢 Good", "A solid return relative to the worst drawdown experienced — a commonly cited acceptable range for trend-following strategies.")
     if value < 5.0:
         return CalmarInterpretation("🟢 Very Good", "A strong return-to-drawdown profile, notably better than typical benchmarks.")
-    return CalmarInterpretation("🔵 Excellent (verify)", "Unusually high — often a sign the selected date range happened to avoid a deep drawdown rather than proof the strategy is resilient to one. Check Max Drawdown's own recovery period before relying on this.")
+    return CalmarInterpretation("🟢 Excellent (verify)", "Unusually high — often a sign the selected date range happened to avoid a deep drawdown rather than proof the strategy is resilient to one. Check Max Drawdown's own recovery period before relying on this.")
 
 
 def _anchored_score(value: Optional[float], anchors: Tuple[float, float]) -> Optional[float]:
