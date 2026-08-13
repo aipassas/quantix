@@ -42,6 +42,7 @@ from scenario_modeling import (
     save_scenario,
 )
 from competitive_benchmarking import METRICS, build_benchmark_rows, build_peer_metrics
+from onboarding import STEPS as ONBOARDING_STEPS, has_completed_onboarding, mark_onboarding_done
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 from realtime_alerts import (
@@ -99,6 +100,52 @@ def log_input_changes(**current):
 # --- Page Configuration ---
 st.set_page_config(page_title="Quantix", layout="wide", page_icon=None)
 st.title("Quantix: Institutional-Grade Stock Analysis & Simulation Engine")
+
+# ==========================================
+# ONBOARDING (first-run walkthrough)
+# ==========================================
+# Rendered before anything ticker-specific, since it doesn't depend on any
+# ticker data at all — a first-time visitor sees it before picking a
+# symbol. See onboarding.py's module docstring for why this is a native
+# step panel (Next/Back/Skip) rather than a spotlight-style tour: a real,
+# already-proven Streamlit constraint in this codebase, not a stylistic
+# choice.
+if "onboarding_active" not in st.session_state:
+    st.session_state["onboarding_active"] = not has_completed_onboarding()
+if "onboarding_step" not in st.session_state:
+    st.session_state["onboarding_step"] = 0
+
+if st.session_state["onboarding_active"]:
+    _ob_step_idx = st.session_state["onboarding_step"]
+    _ob_step = ONBOARDING_STEPS[_ob_step_idx]
+    with st.container(border=True):
+        st.caption(f"Getting Started · Step {_ob_step_idx + 1} of {len(ONBOARDING_STEPS)}")
+        st.subheader(_ob_step.title)
+        st.markdown(_ob_step.body)
+        st.progress((_ob_step_idx + 1) / len(ONBOARDING_STEPS))
+
+        _ob_back_col, _ob_next_col, _ob_skip_col = st.columns([1, 1, 1])
+        with _ob_back_col:
+            if st.button("← Back", key="onboarding_back", disabled=(_ob_step_idx == 0), width="stretch"):
+                st.session_state["onboarding_step"] -= 1
+                st.rerun()
+        with _ob_next_col:
+            _ob_is_last = _ob_step_idx == len(ONBOARDING_STEPS) - 1
+            if st.button("Finish" if _ob_is_last else "Next →", key="onboarding_next", type="primary", width="stretch"):
+                if _ob_is_last:
+                    mark_onboarding_done(skipped=False)
+                    st.session_state["onboarding_active"] = False
+                    log_event(logger, logging.INFO, "user.onboarding_finished")
+                else:
+                    st.session_state["onboarding_step"] += 1
+                st.rerun()
+        with _ob_skip_col:
+            if st.button("Skip Tutorial", key="onboarding_skip", width="stretch"):
+                mark_onboarding_done(skipped=True)
+                st.session_state["onboarding_active"] = False
+                log_event(logger, logging.INFO, "user.onboarding_skipped", at_step=_ob_step_idx)
+                st.rerun()
+    st.markdown("---")
 
 # Sticky symbol header slot. Reserved HERE, at the very top, so the
 # ticker/price/day-change is on screen the moment the page loads — but it
@@ -972,6 +1019,14 @@ with side_system:
     if st.button("Force Refresh Data", help="Bypass all cached data and refetch everything from Yahoo Finance now."):
         log_event(logger, logging.INFO, "user.force_refresh", ticker=ticker_symbol)
         clear_all_caches()
+        st.rerun()
+
+    st.markdown("---")
+    st.caption("Getting Started")
+    if st.button("Replay Tutorial", help="Reopen the first-run walkthrough, starting from step 1."):
+        st.session_state["onboarding_active"] = True
+        st.session_state["onboarding_step"] = 0
+        log_event(logger, logging.INFO, "user.onboarding_replayed")
         st.rerun()
 
 # Record meaningful input changes only (see log_input_changes docstring).

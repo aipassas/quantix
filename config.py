@@ -470,6 +470,24 @@ class CompetitiveBenchmarkingConfig:
 
 
 @dataclass(frozen=True)
+class OnboardingConfig:
+    """The first-run guided walkthrough. "First-time user" here means
+    "onboarding hasn't been completed/skipped on THIS local instance" —
+    a single local flag file, not genuine per-browser/per-visitor
+    detection. Quantix has no accounts and no per-user identity (the same
+    honest limitation realtime_alerts.py, ml_pipeline.py, and
+    scenario_modeling.py already disclose for their own local stores), so
+    once anyone completes or skips it on a given locally-run instance, it
+    won't auto-trigger again for anyone else using that same instance —
+    "Replay Tutorial" in the sidebar's System tab is how it's seen again
+    on purpose. See onboarding.py's module docstring for why this is a
+    native step-by-step panel rather than a spotlight-style overlay tour:
+    a real, already-proven constraint in this codebase, not a stylistic
+    choice."""
+    state_filename: str = "onboarding_state.json"
+
+
+@dataclass(frozen=True)
 class TearSheetConfig:
     """Thresholds for the CIO verdict narrative (STRONG BUY / HOLD / AVOID) and briefing."""
     strong_buy_min_score_pct: float = 75
@@ -601,6 +619,7 @@ PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
 SCENARIO_MODELING = ScenarioModelingConfig()
 COMPETITIVE_BENCHMARKING = CompetitiveBenchmarkingConfig()
+ONBOARDING = OnboardingConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

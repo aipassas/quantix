@@ -12,3 +12,5 @@ ml_training_history.json
 ml_training_history.tmp
 scenario_store.json
 scenario_store.tmp
+onboarding_state.json
+onboarding_state.tmp
