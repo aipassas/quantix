@@ -455,6 +455,21 @@ class PeerDefaults:
 
 
 @dataclass(frozen=True)
+class CompetitiveBenchmarkingConfig:
+    """Outperform/laggard flagging for the Peer Competitor Matrix's
+    per-metric comparison. A peer sitting close to the group average on a
+    metric isn't meaningfully outperforming OR lagging — it's just near
+    the pack — so a flag only fires once a value is at least this many
+    percent away from the group average, in the favorable or unfavorable
+    direction for that metric. Not a statistical significance test (peer
+    groups here are far too small, typically 2-6 names, for one to be
+    meaningful) — a disclosed, simple distance threshold, not a
+    fabricated p-value."""
+    outperform_threshold_pct: float = 10.0
+    max_peers: int = 6
+
+
+@dataclass(frozen=True)
 class TearSheetConfig:
     """Thresholds for the CIO verdict narrative (STRONG BUY / HOLD / AVOID) and briefing."""
     strong_buy_min_score_pct: float = 75
@@ -585,6 +600,7 @@ REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
 SCENARIO_MODELING = ScenarioModelingConfig()
+COMPETITIVE_BENCHMARKING = CompetitiveBenchmarkingConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

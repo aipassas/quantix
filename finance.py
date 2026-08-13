@@ -15,7 +15,7 @@ from risk_analytics import compute_rolling_volatility, compute_annualized_volati
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
@@ -41,6 +41,7 @@ from scenario_modeling import (
     run_scenario,
     save_scenario,
 )
+from competitive_benchmarking import METRICS, build_benchmark_rows, build_peer_metrics
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
 from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
 from realtime_alerts import (
@@ -3222,14 +3223,21 @@ else:
         # ==========================================
         # PATH 5: PEER COMPETITOR MATRIX (RELATIVE VALUE)
         # ==========================================
+        # Also serves the Competitive Benchmarking task: rather than build a
+        # second, parallel comparison view answering the same question with
+        # possibly different numbers, that task's two still-missing pieces
+        # (growth/momentum metrics, outperform/laggard flagging — this
+        # section already had custom peer selection and dynamic recompute)
+        # are added directly here. See competitive_benchmarking.py's module
+        # docstring for the full reasoning.
         st.markdown("---")
         st.header("Path 5: Peer Competitor Matrix")
-        st.markdown("Comparing relative valuation and fundamental health against top industry competitors.")
+        st.markdown("Comparing relative valuation, growth, and momentum against a peer group you define.")
 
         # Smart default peers based on common targets to make testing feel seamless
         default_peers = PEER_DEFAULTS.for_ticker(ticker_symbol)
 
-        peer_input = st.text_input("Enter up to 3 Competitor Tickers (comma-separated):", default_peers)
+        peer_input = st.text_input(f"Enter up to {COMPETITIVE_BENCHMARKING.max_peers} Competitor Tickers (comma-separated):", default_peers)
 
         def _competitor_row(t, std):
             return {
@@ -3239,26 +3247,48 @@ else:
                 "Price/Book": std.price_to_book if std.price_to_book is not None else np.nan,
                 "ROE (%)": (std.return_on_equity * 100) if std.return_on_equity is not None else np.nan,
                 "Net Margin (%)": (std.net_margin * 100) if std.net_margin is not None else np.nan,
-                "Debt/Equity": std.debt_to_equity if std.debt_to_equity is not None else np.nan
+                "Debt/Equity": std.debt_to_equity if std.debt_to_equity is not None else np.nan,
+                "Earnings Growth (%)": (std.earnings_growth * 100) if std.earnings_growth is not None else np.nan,
             }
 
+        def _momentum_pct(price_history: pd.DataFrame):
+            """Identical calculation to the Chart Workspace's own Relative
+            Strength headline return (Close[-1]/Close[0] - 1) over the
+            SAME user-selected date range — not a separately-invented
+            lookback window, so a peer's momentum number means the same
+            thing the main ticker's own return number means elsewhere on
+            this page."""
+            if price_history.empty or len(price_history) < 2:
+                return None
+            return (price_history["Close"].iloc[-1] / price_history["Close"].iloc[0] - 1) * 100
+
         @st.cache_data(ttl=3600)
-        def fetch_competitor_data(target, target_std, peer_string):
-            peers = [p.strip().upper() for p in peer_string.split(',')][:3] # Limit to top 3 peers
+        def fetch_competitor_data(target, target_std, peer_string, range_start, range_end):
+            peers = [p.strip().upper() for p in peer_string.split(',')][:COMPETITIVE_BENCHMARKING.max_peers]
 
             # Target ticker's data was already standardized above, so reuse it here
-            # instead of re-fetching it from Yahoo Finance a second time.
+            # instead of re-fetching it from Yahoo Finance a second time. Its price
+            # history for momentum is likewise the already-loaded/cleaned `df`.
+            target_momentum = _momentum_pct(df)
             metrics = [_competitor_row(target, target_std)]
+            peer_rows = [build_peer_metrics(target, target_std, is_target=True, momentum_pct=target_momentum)]
+
             for t in peers:
+                if t == target:
+                    continue  # already the target row above — don't double-count it as its own peer
                 peer_bundle = load_ticker_bundle(t, deep=False)
                 if not peer_bundle.is_valid:
                     st.warning(f"Could not fetch competitor data for '{t}': {'; '.join(peer_bundle.errors)}")
                     continue
-                metrics.append(_competitor_row(t, standardize_financials(peer_bundle)))
-            return pd.DataFrame(metrics)
+                peer_std = standardize_financials(peer_bundle)
+                metrics.append(_competitor_row(t, peer_std))
+                peer_price_history, _ = load_price_history_only(t, range_start, range_end)
+                peer_rows.append(build_peer_metrics(t, peer_std, is_target=False, momentum_pct=_momentum_pct(peer_price_history)))
+
+            return pd.DataFrame(metrics), peer_rows
 
         with st.spinner("Analyzing sector peers and building relative valuation matrix..."):
-            comp_df = fetch_competitor_data(ticker_symbol, standardized, peer_input)
+            comp_df, peer_metrics_rows = fetch_competitor_data(ticker_symbol, standardized, peer_input, start_date, end_date)
 
             if not comp_df.empty and len(comp_df) > 1:
                 # Drop rows where critical data is totally missing
@@ -3273,7 +3303,7 @@ else:
                 radar_df = radar_df.fillna(radar_df.mean()) # Fill missing with average to prevent chart crashes
 
                 # Define which metrics are "Higher is Better" vs "Lower is Better"
-                higher_better = ['ROE (%)', 'Net Margin (%)']
+                higher_better = ['ROE (%)', 'Net Margin (%)', 'Earnings Growth (%)']
 
                 normalized_df = pd.DataFrame(index=radar_df.index)
 
@@ -3329,6 +3359,51 @@ else:
                 )
 
                 st.plotly_chart(fig_radar, width="stretch")
+
+                # --- 4. Relative Performance: outperform/laggard flagging ---
+                # Reuses the SAME peer_metrics_rows the matrix/radar above were
+                # built from — one comparison, two views of it, never a second
+                # independently-fetched dataset that could silently disagree.
+                st.subheader("Relative Performance")
+                st.caption(
+                    f"Each metric is flagged against the GROUP AVERAGE (every ticker below, target included) — 🟢 "
+                    f"outperform / 🔴 laggard once a value sits at least {COMPETITIVE_BENCHMARKING.outperform_threshold_pct:.0f}% "
+                    f"away from that average in the favorable direction for that metric, ⚪ in-line or not available. "
+                    f"This is a distance threshold, not a statistical test — a peer group this size (2-6 names) is too "
+                    f"small for one to mean anything."
+                )
+                _benchmark_rows = build_benchmark_rows(peer_metrics_rows)
+                _bench_table_rows = []
+                for _br in _benchmark_rows:
+                    _row_dict = {"Ticker": f"{_br.ticker} (Target)" if _br.metrics.is_target else _br.ticker, "Verdict": f"{_br.overall_icon} {_br.overall_verdict}"}
+                    for _m in METRICS:
+                        _flag = _br.flags[_m.key]
+                        if _flag.value is None:
+                            _row_dict[_m.label] = f"{_flag.icon} N/A"
+                        else:
+                            _row_dict[_m.label] = f"{_flag.icon} {_flag.value:.{_m.decimals}f}{_m.unit}"
+                    _bench_table_rows.append(_row_dict)
+                st.dataframe(pd.DataFrame(_bench_table_rows), hide_index=True, width="stretch")
+
+                # Switch benchmark: reuses the SAME deferred-ticker-switch
+                # mechanism the sidebar Watchlist and recent-tickers strip
+                # already use (session_state["_pending_ticker"] + st.rerun()),
+                # so clicking a peer here is identical to typing it into the
+                # sidebar — satisfies "support switching the benchmark stock
+                # within the comparison" without a second switching mechanism.
+                st.caption("Make a peer the new primary analysis:")
+                _switch_cols = st.columns(len(_benchmark_rows))
+                for _sw_col, _br in zip(_switch_cols, _benchmark_rows):
+                    with _sw_col:
+                        if st.button(
+                            _br.ticker, key=f"peer_switch_{_br.ticker}", width="stretch",
+                            type="primary" if _br.metrics.is_target else "secondary",
+                            disabled=_br.metrics.is_target,
+                            help="Currently analyzed" if _br.metrics.is_target else f"Switch analysis to {_br.ticker}",
+                        ):
+                            st.session_state["_pending_ticker"] = _br.ticker
+                            log_event(logger, logging.INFO, "user.peer_switch", ticker=_br.ticker)
+                            st.rerun()
 
             else:
                 st.warning("Could not fetch sufficient competitor data. Please check the tickers and try again.")
