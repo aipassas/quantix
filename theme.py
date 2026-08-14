@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import THEME
+from local_store import atomic_write_text
 from logging_setup import get_logger, log_exception
 
 logger = get_logger("theme")
@@ -142,6 +143,4 @@ def save_theme(name: str, path: Optional[Path] = None) -> None:
     """Atomic write (temp file + rename), same pattern as every other
     local store in this app."""
     path = path or _state_path()
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"theme": name}, indent=2))
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps({"theme": name}, indent=2))

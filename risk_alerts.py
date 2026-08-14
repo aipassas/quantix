@@ -38,6 +38,7 @@ from config import CHART_DEFAULTS, RISK, WATCHLIST
 from data_loader import load_ticker_bundle
 from financial_standardization import standardize_financials
 from fundamental_analysis import FundamentalAnalysisEngine
+from local_store import atomic_write_text
 from logging_setup import get_logger, log_event, log_exception
 from price_processing import process_price_data
 from risk_analytics import (
@@ -144,9 +145,7 @@ def save_rules(rules: List[dict], path: Optional[Path] = None) -> None:
     """Atomic write (temp file + rename), same pattern as every other
     local store in this app."""
     path = path or _rules_store_path()
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(rules, indent=2))
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(rules, indent=2))
 
 
 def watchlist_tickers() -> Tuple[str, ...]:

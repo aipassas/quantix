@@ -63,6 +63,7 @@ from sklearn.preprocessing import StandardScaler
 
 from config import CHART_DEFAULTS, ML_PIPELINE, RISK, WATCHLIST
 from data_loader import load_price_history_only
+from local_store import atomic_write_text
 from logging_setup import get_logger, log_event, log_exception
 from price_processing import process_price_data
 from risk_analytics import compute_rolling_volatility
@@ -343,9 +344,7 @@ def save_model(model: Pipeline, result: TrainingResult, model_path: Optional[Pat
     history.append(result.__dict__)
     history = history[-ML_PIPELINE.max_history:]
 
-    tmp = history_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(history, indent=2, default=str))
-    tmp.replace(history_path)
+    atomic_write_text(history_path, json.dumps(history, indent=2, default=str))
 
 
 def load_history(history_path: Optional[Path] = None) -> List[dict]:

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from config import ONBOARDING
+from local_store import atomic_write_text
 from logging_setup import get_logger, log_exception
 
 logger = get_logger("onboarding")
@@ -138,9 +139,7 @@ def mark_onboarding_done(skipped: bool, path: Optional[Path] = None) -> None:
         "completed": True, "skipped": skipped,
         "completed_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 def has_completed_onboarding(path: Optional[Path] = None) -> bool:

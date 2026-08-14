@@ -65,6 +65,7 @@ import streamlit as st
 
 from config import CHART_DEFAULTS, REALTIME_ALERTS, TECHNICAL
 from data_loader import load_ticker_bundle
+from local_store import atomic_write_text
 from logging_setup import get_logger, log_event, log_exception
 from price_processing import process_price_data
 from risk_alerts import (
@@ -191,9 +192,7 @@ def save_store(rules: List[AlertRule], history: List[TriggerEvent], path: Option
         "rules": [asdict(r) for r in rules],
         "history": [asdict(h) for h in history[-REALTIME_ALERTS.max_history:]],
     }
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 # --- Evaluation ----------------------------------------------------------

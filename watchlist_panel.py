@@ -49,6 +49,7 @@ import streamlit as st
 
 from config import WATCHLIST_PANEL
 from data_loader import load_ticker_bundle
+from local_store import atomic_write_text
 from logging_setup import get_logger, log_event, log_exception
 
 logger = get_logger("watchlist_panel")
@@ -196,9 +197,7 @@ def save_watchlist_store(store: WatchlistStore, path: Optional[Path] = None) -> 
         "active": store.active,
         "lists": {name: {"name": wl.name, "tickers": list(wl.tickers), "created_at": wl.created_at} for name, wl in store.lists.items()},
     }
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 def create_watchlist(store: WatchlistStore, name: str) -> Tuple[WatchlistStore, Optional[str]]:

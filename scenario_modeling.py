@@ -63,6 +63,7 @@ import numpy as np
 import pandas as pd
 
 from config import DCF, SCENARIO_MODELING
+from local_store import atomic_write_text
 from logging_setup import get_logger, log_event, log_exception
 from risk_analytics import (
     compute_expected_shortfall,
@@ -378,9 +379,7 @@ def save_scenarios(scenarios: List[ScenarioDefinition], path: Optional[Path] = N
     path = path or _store_path()
     trimmed = scenarios[-SCENARIO_MODELING.max_saved_scenarios:]
     payload = [asdict(s) for s in trimmed]
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 def save_scenario(scenario: ScenarioDefinition, path: Optional[Path] = None) -> List[ScenarioDefinition]:
