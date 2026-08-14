@@ -1,13 +1,22 @@
 """Symbol navigation aids — the two ways to change the analyzed ticker
 without retyping it.
 
-1. The sidebar watchlist: a small, user-maintained list of tickers with a
-   live quote line for each, rendered so it stays visible alongside
-   whichever analysis panel is open.
+1. The sidebar watchlist: one or more NAMED, user-maintained lists of
+   tickers (create/rename/delete, one "active" at a time), each with a
+   live quote line per ticker, rendered so it stays visible alongside
+   whichever analysis panel is open. Persisted to a local JSON file —
+   the same atomic-write, gitignored-local-file pattern every other
+   piece of cross-restart state in this app already uses (see
+   realtime_alerts.py / ml_pipeline.py / scenario_modeling.py /
+   onboarding.py) — so lists and which one you were looking at survive
+   an app restart. Quantix has no accounts, so this is a single shared
+   store for whoever runs this instance, not per-user.
 2. The recently-viewed strip (record_recent below): an automatic
-   most-recently-used list of symbols visited this session, rendered as
-   chips under the symbol header. Curated by the user in the first case,
-   accumulated by simply navigating in the second.
+   most-recently-used list of symbols visited THIS SESSION, rendered as
+   chips under the symbol header. Deliberately session-only, not
+   persisted — it's a byproduct of navigating, not a curated list the
+   user asked to keep, so treating it as durable state would be
+   surprising ("why do old tickers I glanced at keep coming back").
 
 Deliberately reuses data_loader.load_ticker_bundle(deep=False), the exact
 same shallow (info-only) fetch the Institutional Watchlist scan and the
@@ -29,14 +38,18 @@ either price leg, comes back with status != "ok" and None values, and the
 panel renders it as an explicit unavailable row — never silently dropped
 and never shown with a made-up 0.00.
 """
+import datetime
+import json
 import logging
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 
+from config import WATCHLIST_PANEL
 from data_loader import load_ticker_bundle
-from logging_setup import get_logger, log_event
+from logging_setup import get_logger, log_event, log_exception
 
 logger = get_logger("watchlist_panel")
 
@@ -121,6 +134,135 @@ def record_recent(current: Tuple[str, ...], ticker: str, max_recent: int) -> Tup
         return current
     rest = tuple(t for t in current if t != ticker)
     return (ticker,) + rest[:max_recent - 1]
+
+
+# --- Multiple saved, named watchlists (persisted) -----------------------------
+
+@dataclass(frozen=True)
+class SavedWatchlist:
+    name: str
+    tickers: Tuple[str, ...] = ()
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class WatchlistStore:
+    """`active` names whichever list is currently shown/quick-switchable
+    in the sidebar — persisted alongside the lists themselves, so which
+    watchlist you were looking at survives a restart too, not just the
+    lists' contents."""
+    active: str
+    lists: Dict[str, SavedWatchlist] = field(default_factory=dict)
+
+
+def _watchlist_store_path() -> Path:
+    return Path(__file__).resolve().parent / WATCHLIST_PANEL.store_filename
+
+
+def _seed_default_store() -> WatchlistStore:
+    """The FIRST-EVER store, when no save file exists yet — one named
+    list seeded from WATCHLIST_PANEL.default_tickers, preserving exactly
+    what a fresh install showed before this task added persistence."""
+    name = WATCHLIST_PANEL.default_watchlist_name
+    return WatchlistStore(active=name, lists={
+        name: SavedWatchlist(name=name, tickers=tuple(WATCHLIST_PANEL.default_tickers), created_at=datetime.datetime.now().isoformat(timespec="seconds")),
+    })
+
+
+def load_watchlist_store(path: Optional[Path] = None) -> WatchlistStore:
+    """Never raises: a missing file seeds the default store (a fresh
+    install); a corrupt one degrades to the same default rather than
+    crashing the app on load."""
+    path = path or _watchlist_store_path()
+    if not path.exists():
+        return _seed_default_store()
+    try:
+        raw = json.loads(path.read_text())
+        lists = {name: SavedWatchlist(name=v["name"], tickers=tuple(v["tickers"]), created_at=v.get("created_at", "")) for name, v in raw["lists"].items()}
+        active = raw["active"] if raw.get("active") in lists else next(iter(lists), None)
+        if active is None:
+            return _seed_default_store()
+        return WatchlistStore(active=active, lists=lists)
+    except Exception:
+        log_exception(logger, "watchlist_store.corrupt", section="watchlist_panel")
+        return _seed_default_store()
+
+
+def save_watchlist_store(store: WatchlistStore, path: Optional[Path] = None) -> None:
+    """Atomic write (temp file + rename), same pattern as every other
+    local store in this app."""
+    path = path or _watchlist_store_path()
+    payload = {
+        "active": store.active,
+        "lists": {name: {"name": wl.name, "tickers": list(wl.tickers), "created_at": wl.created_at} for name, wl in store.lists.items()},
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.replace(path)
+
+
+def create_watchlist(store: WatchlistStore, name: str) -> Tuple[WatchlistStore, Optional[str]]:
+    """Returns (store, reason) UNCHANGED with a stated reason for an
+    empty/duplicate name or the max-lists cap — the caller surfaces that
+    message rather than the click silently doing nothing. The new list
+    becomes active immediately (matches create_watchlist's obvious intent
+    — you just made it to look at it)."""
+    name = name.strip()
+    if not name:
+        return store, "Enter a name first."
+    if name in store.lists:
+        return store, f'A watchlist named "{name}" already exists.'
+    if len(store.lists) >= WATCHLIST_PANEL.max_watchlists:
+        return store, f"Watchlist limit reached ({WATCHLIST_PANEL.max_watchlists} max) — delete one first."
+    new_lists = dict(store.lists)
+    new_lists[name] = SavedWatchlist(name=name, tickers=(), created_at=datetime.datetime.now().isoformat(timespec="seconds"))
+    return WatchlistStore(active=name, lists=new_lists), None
+
+
+def rename_watchlist(store: WatchlistStore, old_name: str, new_name: str) -> Tuple[WatchlistStore, Optional[str]]:
+    new_name = new_name.strip()
+    if not new_name:
+        return store, "Enter a name first."
+    if old_name not in store.lists:
+        return store, f'"{old_name}" does not exist.'
+    if new_name != old_name and new_name in store.lists:
+        return store, f'A watchlist named "{new_name}" already exists.'
+    new_lists = {}
+    for key, wl in store.lists.items():
+        if key == old_name:
+            new_lists[new_name] = replace(wl, name=new_name)
+        else:
+            new_lists[key] = wl
+    new_active = new_name if store.active == old_name else store.active
+    return WatchlistStore(active=new_active, lists=new_lists), None
+
+
+def delete_watchlist(store: WatchlistStore, name: str) -> Tuple[WatchlistStore, Optional[str]]:
+    """Refuses to delete the LAST remaining watchlist — there must always
+    be at least one to be "active," and silently recreating a default one
+    afterward would be a confusing surprise."""
+    if name not in store.lists:
+        return store, f'"{name}" does not exist.'
+    if len(store.lists) <= 1:
+        return store, "Can't delete your last watchlist."
+    new_lists = {k: v for k, v in store.lists.items() if k != name}
+    new_active = store.active if store.active != name else next(iter(new_lists))
+    return WatchlistStore(active=new_active, lists=new_lists), None
+
+
+def set_active_watchlist(store: WatchlistStore, name: str) -> Tuple[WatchlistStore, Optional[str]]:
+    if name not in store.lists:
+        return store, f'"{name}" does not exist.'
+    return WatchlistStore(active=name, lists=store.lists), None
+
+
+def update_active_tickers(store: WatchlistStore, tickers: Tuple[str, ...]) -> WatchlistStore:
+    """Writes a new ticker tuple back into whichever list is currently
+    active — used after add_ticker()/remove_ticker() mutate it."""
+    active_wl = store.lists[store.active]
+    new_lists = dict(store.lists)
+    new_lists[store.active] = replace(active_wl, tickers=tickers)
+    return WatchlistStore(active=store.active, lists=new_lists)
 
 
 @st.cache_data(ttl=300, show_spinner=False)

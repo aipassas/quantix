@@ -44,7 +44,7 @@ from scenario_modeling import (
 from competitive_benchmarking import METRICS, build_benchmark_rows, build_peer_metrics
 from onboarding import STEPS as ONBOARDING_STEPS, has_completed_onboarding, mark_onboarding_done
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
-from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, watchlist_tickers
+from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, load_rules, save_rules, watchlist_tickers
 from realtime_alerts import (
     ALL_TRIGGER_TYPES as RT_ALL_TRIGGER_TYPES,
     FUNDAMENTAL_TRIGGER_TYPE as RT_FUNDAMENTAL_TRIGGER_TYPE,
@@ -60,7 +60,20 @@ from realtime_alerts import (
 )
 from executive_digest import collect_flags
 from monte_carlo import simulate_gbm_paths, simulate_bootstrap_paths, terminal_stats
-from watchlist_panel import add_ticker, load_quote_snapshots, parse_tickers, record_recent, remove_ticker
+from watchlist_panel import (
+    add_ticker,
+    create_watchlist,
+    delete_watchlist,
+    load_quote_snapshots,
+    load_watchlist_store,
+    parse_tickers,
+    record_recent,
+    remove_ticker,
+    rename_watchlist,
+    save_watchlist_store,
+    set_active_watchlist,
+    update_active_tickers,
+)
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -568,10 +581,15 @@ st.caption(
 )
 
 if "risk_alert_rules" not in st.session_state:
-    st.session_state["risk_alert_rules"] = [
-        {"metric": "risk_score", "operator": "<", "threshold": 50.0},
-        {"metric": "altman_z", "operator": "<", "threshold": RISK.altman_grey_zone},
-    ]
+    _persisted_alert_rules = load_rules()
+    if _persisted_alert_rules is not None:
+        st.session_state["risk_alert_rules"] = _persisted_alert_rules
+    else:
+        st.session_state["risk_alert_rules"] = [
+            {"metric": "risk_score", "operator": "<", "threshold": 50.0},
+            {"metric": "altman_z", "operator": "<", "threshold": RISK.altman_grey_zone},
+        ]
+        save_rules(st.session_state["risk_alert_rules"])
 
 _alert_metric_options = [m.key for m in RISK_ALERT_METRICS]
 _alert_operator_options = list(RISK_ALERT_OPERATORS.keys())
@@ -601,14 +619,18 @@ for _ai, _rule in enumerate(st.session_state["risk_alert_rules"]):
         if st.button("✕", key=f"alert_remove_{_ai}", help="Remove this alert rule"):
             _alert_remove_index = _ai
 
+save_rules(st.session_state["risk_alert_rules"])
+
 if _alert_remove_index is not None:
     st.session_state["risk_alert_rules"].pop(_alert_remove_index)
+    save_rules(st.session_state["risk_alert_rules"])
     st.rerun()
 
 _alert_btn_col1, _alert_btn_col2 = st.columns([1, 1])
 with _alert_btn_col1:
     if st.button("+ Add Alert Rule"):
         st.session_state["risk_alert_rules"].append({"metric": "max_drawdown", "operator": "<", "threshold": -0.20})
+        save_rules(st.session_state["risk_alert_rules"])
         st.rerun()
 with _alert_btn_col2:
     check_alerts_clicked = st.button("Check Alerts", type="primary")
@@ -889,23 +911,77 @@ start_date = st.sidebar.date_input("Start Date", one_year_ago)
 end_date = st.sidebar.date_input("End Date", today)
 
 # ==========================================
-# WATCHLIST (quick symbol switching)
+# WATCHLIST (quick symbol switching) — multiple saved, named lists
 # ==========================================
 # Deliberately OUTSIDE the control tabs below: this is navigation, not
 # configuration, and it stays visible no matter which analysis panel or
 # control tab is open — the "persistent" part of the panel.
 #
-# Scope note: "persistent" here means across reruns within a session
-# (st.session_state), which is what this app has — Quantix is a stateless
-# Streamlit process with no user accounts or backing store, so the list
-# resets on a fresh session. Real cross-session persistence would need
-# storage this app doesn't have, same honest limitation the Smart
-# Risk-Aware Alerts section already documents for itself.
+# Persisted to a local file (atomic write, same pattern as every other
+# cross-restart store in this app) — genuinely survives an app restart,
+# not just reruns within a session. Quantix has no accounts, so this is a
+# single shared store for whoever runs this instance, not per-user.
 st.sidebar.markdown("---")
 st.sidebar.subheader("Watchlist")
 
-if "watchlist_tickers" not in st.session_state:
-    st.session_state["watchlist_tickers"] = tuple(WATCHLIST_PANEL.default_tickers)
+if "watchlist_store" not in st.session_state:
+    st.session_state["watchlist_store"] = load_watchlist_store()
+_wl_store = st.session_state["watchlist_store"]
+
+# No `key=` on this selectbox deliberately: the list of NAMES it offers
+# changes whenever a watchlist is created/renamed/deleted, and a keyed
+# widget whose stored value falls out of its own `options` list on a
+# later rerun raises — the same class of widget-state pitfall already hit
+# (and fixed) elsewhere in this app for text/number inputs. `_wl_store.active`
+# (persisted, not any Streamlit-internal widget state) is the single
+# source of truth instead; the selectbox's return value is only compared
+# against it to detect a user-initiated switch.
+_wl_names = list(_wl_store.lists.keys())
+_wl_selected_name = st.sidebar.selectbox("Active Watchlist", _wl_names, index=_wl_names.index(_wl_store.active))
+if _wl_selected_name != _wl_store.active:
+    _wl_store, _wl_switch_err = set_active_watchlist(_wl_store, _wl_selected_name)
+    st.session_state["watchlist_store"] = _wl_store
+    save_watchlist_store(_wl_store)
+    log_event(logger, logging.INFO, "user.watchlist_active_switch", watchlist=_wl_selected_name)
+    st.rerun()
+
+with st.sidebar.expander("Manage Watchlists", expanded=False):
+    st.caption(f"{len(_wl_store.lists)} of {WATCHLIST_PANEL.max_watchlists} watchlists")
+    _wl_new_name = st.text_input("New watchlist name", key="watchlist_new_name_input", placeholder="e.g. Dividend Payers")
+    if st.button("+ Create", key="watchlist_create_btn"):
+        _wl_store, _wl_create_err = create_watchlist(_wl_store, _wl_new_name)
+        if _wl_create_err:
+            st.warning(_wl_create_err)
+        else:
+            st.session_state["watchlist_store"] = _wl_store
+            save_watchlist_store(_wl_store)
+            log_event(logger, logging.INFO, "user.watchlist_created", watchlist=_wl_new_name)
+            st.rerun()
+
+    st.markdown("---")
+    _wl_rename_input = st.text_input("Rename active watchlist to", key="watchlist_rename_input", placeholder=_wl_store.active)
+    if st.button("Rename", key="watchlist_rename_btn"):
+        _wl_store, _wl_rename_err = rename_watchlist(_wl_store, _wl_store.active, _wl_rename_input)
+        if _wl_rename_err:
+            st.warning(_wl_rename_err)
+        else:
+            st.session_state["watchlist_store"] = _wl_store
+            save_watchlist_store(_wl_store)
+            log_event(logger, logging.INFO, "user.watchlist_renamed", to=_wl_rename_input)
+            st.rerun()
+
+    st.markdown("---")
+    if st.button(f'Delete "{_wl_store.active}"', key="watchlist_delete_btn", disabled=(len(_wl_store.lists) <= 1)):
+        _wl_store, _wl_delete_err = delete_watchlist(_wl_store, _wl_store.active)
+        if _wl_delete_err:
+            st.warning(_wl_delete_err)
+        else:
+            st.session_state["watchlist_store"] = _wl_store
+            save_watchlist_store(_wl_store)
+            log_event(logger, logging.INFO, "user.watchlist_deleted")
+            st.rerun()
+    if len(_wl_store.lists) <= 1:
+        st.caption("Can't delete your last watchlist.")
 
 _wl_add_col, _wl_btn_col = st.sidebar.columns([3, 1])
 with _wl_add_col:
@@ -918,16 +994,18 @@ with _wl_btn_col:
 
 if _wl_add_clicked:
     _wl_updated, _wl_error = add_ticker(
-        st.session_state["watchlist_tickers"], _wl_new, WATCHLIST_PANEL.max_tickers,
+        _wl_store.lists[_wl_store.active].tickers, _wl_new, WATCHLIST_PANEL.max_tickers,
     )
     if _wl_error:
         st.sidebar.warning(_wl_error)
     else:
-        st.session_state["watchlist_tickers"] = _wl_updated
-        log_event(logger, logging.INFO, "user.watchlist_add", tickers=_wl_new)
+        _wl_store = update_active_tickers(_wl_store, _wl_updated)
+        st.session_state["watchlist_store"] = _wl_store
+        save_watchlist_store(_wl_store)
+        log_event(logger, logging.INFO, "user.watchlist_add", tickers=_wl_new, watchlist=_wl_store.active)
         st.rerun()
 
-_wl_tickers = st.session_state["watchlist_tickers"]
+_wl_tickers = _wl_store.lists[_wl_store.active].tickers
 if not _wl_tickers:
     st.sidebar.caption("No tickers yet — add one above to build a quick-switch list.")
 else:
@@ -955,7 +1033,9 @@ else:
                 st.rerun()
         with _wl_remove:
             if st.button("✕", key=f"wl_rm_{_wl_snap.ticker}", help=f"Remove {_wl_snap.ticker}"):
-                st.session_state["watchlist_tickers"] = remove_ticker(_wl_tickers, _wl_snap.ticker)
+                _wl_store = update_active_tickers(_wl_store, remove_ticker(_wl_tickers, _wl_snap.ticker))
+                st.session_state["watchlist_store"] = _wl_store
+                save_watchlist_store(_wl_store)
                 st.rerun()
         _wl_current = " · current" if _wl_is_active else ""
         if _wl_snap.status == "ok":

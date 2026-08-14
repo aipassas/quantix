@@ -19,6 +19,8 @@ from risk_alerts import (
     AlertRule,
     TickerRiskSnapshot,
     evaluate_alerts,
+    load_rules,
+    save_rules,
     watchlist_tickers,
 )
 
@@ -116,3 +118,41 @@ def test_evaluator_matches_independently_recomputed_expectation_on_real_data():
             f"{rule.metric}={snapshot.values[rule.metric]} vs threshold {rule.operator} {rule.threshold}: "
             f"evaluator said triggered={rule.metric in triggered_metrics}, expected {expected_fire}"
         )
+
+
+def test_load_rules_missing_file_returns_none(tmp_path):
+    assert load_rules(tmp_path / "nope.json") is None
+
+
+def test_save_and_load_rules_round_trip(tmp_path):
+    path = tmp_path / "rules.json"
+    rules = [
+        {"metric": "risk_score", "operator": "<", "threshold": 40.0},
+        {"metric": "max_drawdown", "operator": "<", "threshold": -0.25},
+    ]
+    save_rules(rules, path)
+    assert load_rules(path) == rules
+
+
+def test_load_rules_empty_list_is_distinct_from_never_configured(tmp_path):
+    """An empty list is a deliberate configuration (all rules removed),
+    not the same as "never configured" — save_rules([]) must round-trip
+    to [] on load, not fall back to None/the built-in defaults."""
+    path = tmp_path / "rules.json"
+    save_rules([], path)
+    result = load_rules(path)
+    assert result == []
+    assert result is not None
+
+
+def test_load_rules_corrupt_file_degrades_to_none_not_raise(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text("{not valid json")
+    assert load_rules(path) is None
+
+
+def test_save_rules_writes_atomically_no_leftover_tmp_file(tmp_path):
+    path = tmp_path / "rules.json"
+    save_rules([{"metric": "altman_z", "operator": "<", "threshold": 1.8}], path)
+    assert path.exists()
+    assert not path.with_suffix(".tmp").exists()

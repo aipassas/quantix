@@ -212,8 +212,10 @@ class WatchlistPanelConfig:
     """The sidebar's quick-switch watchlist — a user-maintained list, not
     the fixed Institutional Watchlist baskets above (which are a scoring
     universe, not a personal tracking list). `default_tickers` only seeds
-    the list on first load; after that it lives in session state and the
-    user's own edits win.
+    the FIRST-EVER watchlist (named `default_watchlist_name`) the first
+    time this app runs with no saved store file yet; after that, every
+    list's contents and which one is active come from the persisted
+    store, and the user's own edits win.
 
     max_tickers is a UI bound, not a data one: every row costs a (cached)
     quote lookup and two lines of sidebar height, so the cap keeps the
@@ -221,7 +223,10 @@ class WatchlistPanelConfig:
     limit.
     """
     default_tickers: Tuple[str, ...] = ("AAPL", "MSFT", "NVDA", "GOOGL")
+    default_watchlist_name: str = "My Watchlist"
     max_tickers: int = 10
+    max_watchlists: int = 10  # UI bound on the multi-list switcher, not a storage limit
+    store_filename: str = "watchlist_store.json"
 
     # Recently-viewed strip (chips under the symbol header). Separate cap
     # from max_tickers: this list is accumulated automatically by

@@ -14,3 +14,7 @@ scenario_store.json
 scenario_store.tmp
 onboarding_state.json
 onboarding_state.tmp
+watchlist_store.json
+watchlist_store.tmp
+risk_alert_rules_store.json
+risk_alert_rules_store.tmp

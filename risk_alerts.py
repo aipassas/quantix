@@ -12,14 +12,24 @@ Explicitly in-session / check-on-load, not real-time push: Quantix is a
 stateless Streamlit process with no persistent background worker, so
 "triggered" here means "this metric is currently past the threshold" at
 the moment of evaluation — a snapshot check, not a historical
-boundary-crossing event, which would need state persisted across sessions
-this app doesn't have. Real-time push delivery (email/SMS) needs new
+boundary-crossing event. Real-time push delivery (email/SMS) needs new
 infrastructure (a background worker) and is a distinct follow-on task,
-deliberately out of scope here.
+deliberately out of scope here (see realtime_alerts.py for the app's
+actual answer to that — per-ticker auto-polling rules, in-app delivery).
+
+The CONFIGURED RULES (which metrics/thresholds to check) DO persist
+across restarts — see load_rules()/save_rules() below, the same
+atomic-write local-file pattern every other cross-restart store in this
+app uses. What still doesn't persist, deliberately, is any notion of a
+past trigger EVENT: every click of "Check Alerts" is a fresh snapshot
+against current data, never a replay of a historical crossing, so there
+is nothing here resembling realtime_alerts.py's trigger history.
 """
 import datetime
+import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import streamlit as st
@@ -99,6 +109,44 @@ class TriggeredAlert:
     ticker: str
     rule: AlertRule
     value: float
+
+
+_RULES_STORE_FILENAME = "risk_alert_rules_store.json"
+
+
+def _rules_store_path() -> Path:
+    return Path(__file__).resolve().parent / _RULES_STORE_FILENAME
+
+
+def load_rules(path: Optional[Path] = None) -> Optional[List[dict]]:
+    """The configured rule list (plain dicts — {"metric", "operator",
+    "threshold"} — the exact shape finance.py already keeps in
+    st.session_state, so no dataclass conversion is needed on either
+    side). Returns None (not an empty list) when no store file exists
+    yet, so the caller can distinguish "never configured, use the
+    built-in default rules" from "configured down to zero rules on
+    purpose" — an empty list IS a valid, deliberate configuration and
+    must not be silently replaced with the default pair on every reload.
+    A corrupt file also returns None, degrading to the same default
+    rather than crashing the app on load.
+    """
+    path = path or _rules_store_path()
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        log_exception(logger, "risk_alerts.rules_store_corrupt", section="risk_alerts")
+        return None
+
+
+def save_rules(rules: List[dict], path: Optional[Path] = None) -> None:
+    """Atomic write (temp file + rename), same pattern as every other
+    local store in this app."""
+    path = path or _rules_store_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rules, indent=2))
+    tmp.replace(path)
 
 
 def watchlist_tickers() -> Tuple[str, ...]:
