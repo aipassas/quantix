@@ -379,6 +379,56 @@ st.markdown(f"""
     .quantix-symbol-header .qsh-down {{ color: #ef4444; }}
     .quantix-symbol-header .qsh-flat {{ color: {_theme.symbol_header_flat}; }}
     .quantix-symbol-header .qsh-meta {{ font-size: 0.85rem; color: {_theme.symbol_header_meta}; }}
+
+    /* --- Responsive breakpoints (tablet / mobile) --------------------
+       Streamlit already does a lot of this natively for free: the
+       sidebar becomes a full-screen overlay and st.columns() stacks to
+       one-per-row below its own internal ~640px breakpoint, and Plotly
+       figures resize to their container. What's NOT handled natively is
+       the "tablet squeeze" zone — roughly 641-900px, an open (non-overlay)
+       sidebar plus a still-side-by-side st.columns(3/4/5) row leaves each
+       column too narrow for its own content (verified in-browser: a
+       4-column metric row at 768px viewport was squeezed to ~97px per
+       column, narrow enough that "Alignment:" was wrapping mid-word).
+       flex-wrap on the row + a floor on each column's width fixes every
+       such row across the app at once (Institutional Watchlist cards,
+       Risk Dashboard metrics, Data Quality Report fields, alert-rule
+       inputs, etc.) without hand-tuning each one individually.
+
+       Scoped to stMain, not the sidebar: the sidebar's own multi-column
+       rows (e.g. a watchlist ticker pill next to its ✕ button) are
+       intentionally narrow-by-design and already fit their own docked
+       width fine — applying the same 150px floor there was verified
+       in-browser to force the ✕ button onto its own line for no reason,
+       a regression this scoping avoids. */
+    @media (max-width: 900px) {{
+        [data-testid="stMain"] [data-testid="stHorizontalBlock"] {{
+            flex-wrap: wrap !important;
+        }}
+        [data-testid="stMain"] [data-testid="stColumn"] {{
+            min-width: 150px !important;
+            flex: 1 1 150px !important;
+        }}
+        /* The page title is the single biggest offender for "wastes the
+           whole first screen on a phone" — verified in-browser at 375px
+           it spanned six lines before any real content was visible. */
+        h1 {{
+            font-size: 1.9rem !important;
+        }}
+    }}
+    @media (max-width: 640px) {{
+        h1 {{
+            font-size: 1.55rem !important;
+        }}
+        .quantix-symbol-header {{
+            gap: 4px 12px;
+            padding: 8px 12px;
+        }}
+        .quantix-symbol-header .qsh-ticker,
+        .quantix-symbol-header .qsh-price {{
+            font-size: 1.2rem;
+        }}
+    }}
     </style>
     """, unsafe_allow_html=True)
 
