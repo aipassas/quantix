@@ -20,3 +20,4 @@ risk_alert_rules_store.json
 risk_alert_rules_store.tmp
 theme_state.json
 theme_state.tmp
+.streamlit/secrets.toml

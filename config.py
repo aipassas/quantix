@@ -505,6 +505,20 @@ class ThemeConfig:
 
 
 @dataclass(frozen=True)
+class EmailReportConfig:
+    """Non-secret defaults for emailing the CIO Tear Sheet PDF. The SMTP
+    server/credentials themselves are deliberately NOT here — they're
+    read at send time from Streamlit secrets (.streamlit/secrets.toml)
+    or environment variables, never hardcoded or persisted by this app
+    (see email_report.py)."""
+    default_subject_template: str = "Quantix Tear Sheet — {ticker} ({date})"
+    default_body_template: str = (
+        "Attached is the Quantix Institutional Tear Sheet for {ticker}, generated {date}.\n\n"
+        "Algorithmic execution carries inherent risk. Verify all execution parameters via broker."
+    )
+
+
+@dataclass(frozen=True)
 class TearSheetConfig:
     """Thresholds for the CIO verdict narrative (STRONG BUY / HOLD / AVOID) and briefing."""
     strong_buy_min_score_pct: float = 75
@@ -638,6 +652,7 @@ SCENARIO_MODELING = ScenarioModelingConfig()
 COMPETITIVE_BENCHMARKING = CompetitiveBenchmarkingConfig()
 ONBOARDING = OnboardingConfig()
 THEME = ThemeConfig()
+EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

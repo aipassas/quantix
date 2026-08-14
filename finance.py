@@ -14,8 +14,9 @@ from technical_indicators import compute_sma_lines, detect_sma_crossovers, compu
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score, compute_hurst_exponent
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
+from email_report import is_email_configured, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
@@ -4121,12 +4122,39 @@ else:
 
         cached_pdf = st.session_state.get("_tear_sheet_pdf")
         if cached_pdf and cached_pdf["ticker"] == ticker_symbol:
+            _report_filename = f"{ticker_symbol}_tear_sheet_{datetime.date.today().isoformat()}.pdf"
             st.download_button(
                 "Download PDF",
                 data=cached_pdf["bytes"],
-                file_name=f"{ticker_symbol}_tear_sheet_{datetime.date.today().isoformat()}.pdf",
+                file_name=_report_filename,
                 mime="application/pdf",
             )
+
+            st.markdown("---")
+            st.caption("Email this report")
+            if is_email_configured():
+                _report_recipient = st.text_input(
+                    "Recipient email", key="report_email_recipient", placeholder="client@example.com",
+                )
+                if st.button("Send Email"):
+                    _report_date = datetime.date.today().isoformat()
+                    _subject = EMAIL_REPORT.default_subject_template.format(ticker=ticker_symbol, date=_report_date)
+                    _body = EMAIL_REPORT.default_body_template.format(ticker=ticker_symbol, date=_report_date)
+                    with st.spinner(f"Emailing report to {_report_recipient}..."):
+                        _sent, _send_error = send_report_email(
+                            _report_recipient, _subject, _body, cached_pdf["bytes"], _report_filename,
+                        )
+                    if _sent:
+                        st.success(f"Report emailed to {_report_recipient}.")
+                        log_event(logger, logging.INFO, "user.report_emailed", ticker=ticker_symbol)
+                    else:
+                        st.warning(_send_error)
+            else:
+                st.caption(
+                    "Not configured on this instance — set [smtp] host/port/username/password/from_address in "
+                    ".streamlit/secrets.toml (see .streamlit/secrets.toml.example) to enable emailing reports "
+                    "directly from the app. Meanwhile, use Download PDF above and attach it manually."
+                )
 
 
 # ==========================================
