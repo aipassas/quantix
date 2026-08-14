@@ -493,6 +493,18 @@ class OnboardingConfig:
 
 
 @dataclass(frozen=True)
+class ThemeConfig:
+    """Dark/light mode for the app's own chrome (the OLED CSS injection
+    and Plotly chart templates) — NOT the CIO Tear Sheet, which is a
+    deliberately-white printed-report facsimile independent of the app
+    theme (see theme.py). Persisted the same way every other cross-restart
+    preference in this app is: a single local JSON file, not a per-user
+    setting (Quantix has no accounts)."""
+    state_filename: str = "theme_state.json"
+    default_theme: str = "dark"
+
+
+@dataclass(frozen=True)
 class TearSheetConfig:
     """Thresholds for the CIO verdict narrative (STRONG BUY / HOLD / AVOID) and briefing."""
     strong_buy_min_score_pct: float = 75
@@ -625,6 +637,7 @@ ML_PIPELINE = MLPipelineConfig()
 SCENARIO_MODELING = ScenarioModelingConfig()
 COMPETITIVE_BENCHMARKING = CompetitiveBenchmarkingConfig()
 ONBOARDING = OnboardingConfig()
+THEME = ThemeConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
 PEER_DEFAULTS = PeerDefaults()

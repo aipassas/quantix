@@ -74,6 +74,7 @@ from watchlist_panel import (
     set_active_watchlist,
     update_active_tickers,
 )
+from theme import PALETTES, load_theme, save_theme
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -168,13 +169,30 @@ if st.session_state["onboarding_active"]:
 # container's position). See the "SYMBOL HEADER (fill)" block below.
 symbol_header_container = st.container()
 
-# --- Professional UI Injection (OLED Edition) ---
-st.markdown("""
+# --- Theme (dark/light) ---
+# Loaded from the persisted local preference the first time this session
+# touches it; the actual toggle widget lives in the sidebar's System tab,
+# far below this point in the script — but Streamlit keeps a keyed
+# widget's value in session_state across reruns, so seeding it here (the
+# same "read before the widget renders" trick already used for
+# debug_mode / onboarding_active elsewhere in this file) makes the loaded
+# preference available for the CSS injection immediately below, on the
+# very first render of a given session, not just after the widget itself
+# has rendered once.
+if "theme_choice" not in st.session_state:
+    st.session_state["theme_choice"] = load_theme()
+_theme = PALETTES[st.session_state["theme_choice"]]
+_plotly_template = _theme.plotly_template
+_chart_fg = _theme.chart_fg
+_chart_faint_line = _theme.chart_faint_line
+
+# --- Professional UI Injection (OLED Edition, theme-aware) ---
+st.markdown(f"""
     <style>
     /* Hide Streamlit default UI elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+    #MainMenu {{visibility: hidden;}}
+    footer {{visibility: hidden;}}
+    header {{visibility: hidden;}}
 
     /* ...but keep the sidebar re-open button visible. It lives inside the
        header, so hiding the header above would otherwise make collapsing the
@@ -183,72 +201,72 @@ st.markdown("""
        matched so this keeps working across version upgrades. */
     [data-testid="stExpandSidebarButton"],
     [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] {
+    [data-testid="collapsedControl"] {{
         visibility: visible !important;
         z-index: 999999;
-    }
+    }}
     [data-testid="stExpandSidebarButton"] *,
     [data-testid="stSidebarCollapsedControl"] *,
-    [data-testid="collapsedControl"] * {
+    [data-testid="collapsedControl"] * {{
         visibility: visible !important;
-        color: #ffffff !important;
-        fill: #ffffff !important;
-    }
+        color: {_theme.sidebar_icon} !important;
+        fill: {_theme.sidebar_icon} !important;
+    }}
 
-    /* Absolute OLED Black Background */
-    .stApp {
-        background-color: #000000 !important;
-        color: #e2e8f0;
-    }
+    /* App background */
+    .stApp {{
+        background-color: {_theme.app_bg} !important;
+        color: {_theme.app_text};
+    }}
 
-    /* Headers in crisp white */
-    h1, h2, h3, h4, h5, h6 {
-        color: #ffffff !important;
+    /* Headers */
+    h1, h2, h3, h4, h5, h6 {{
+        color: {_theme.header_text} !important;
         font-weight: 600 !important;
-    }
+    }}
 
-    /* OLED Metric Cards - High Contrast */
-    div[data-testid="metric-container"] {
-        background-color: #0a0a0a;
-        border: 1px solid #1a1a1a;
-        border-left: 4px solid #00ea77; /* Neon Green Action Border */
+    /* Metric Cards - High Contrast */
+    div[data-testid="metric-container"] {{
+        background-color: {_theme.card_bg};
+        border: 1px solid {_theme.card_border};
+        border-left: 4px solid {_theme.card_accent}; /* Neon Green Action Border */
         border-radius: 6px;
         padding: 15px 20px;
         transition: border-left-color 0.3s ease, transform 0.2s ease;
-    }
+    }}
 
-    /* Hover state for absolute black theme */
-    div[data-testid="metric-container"]:hover {
-        border-left: 4px solid #ffffff;
+    /* Hover state */
+    div[data-testid="metric-container"]:hover {{
+        border-left: 4px solid {_theme.card_hover_accent};
         transform: scale(1.02);
-    }
+    }}
 
     /* Pop-out values for readability */
-    [data-testid="stMetricValue"] {
+    [data-testid="stMetricValue"] {{
         font-size: 1.85rem;
         font-weight: 700;
-        color: #ffffff;
-    }
+        color: {_theme.metric_value};
+    }}
 
     /* Adjust table styles for high contrast */
-    thead tr th {
-        background-color: #0a0a0a !important;
-        color: #ffffff !important;
-        border-bottom: 2px solid #333333 !important;
-    }
+    thead tr th {{
+        background-color: {_theme.table_head_bg} !important;
+        color: {_theme.table_head_text} !important;
+        border-bottom: 2px solid {_theme.table_head_border} !important;
+    }}
 
-    tbody tr td {
-        background-color: #000000 !important;
-        color: #cccccc !important;
-        border-bottom: 1px solid #1a1a1a !important;
-    }
+    tbody tr td {{
+        background-color: {_theme.table_body_bg} !important;
+        color: {_theme.table_body_text} !important;
+        border-bottom: 1px solid {_theme.table_body_border} !important;
+    }}
 
     /* Ensure expanders remain legible */
-    .streamlit-expanderHeader {
-        background-color: #0a0a0a !important;
-        border: 1px solid #1a1a1a !important;
-        color: #ffffff !important;
-    }
+    .streamlit-expanderHeader {{
+        background-color: {_theme.expander_bg} !important;
+        border: 1px solid {_theme.expander_border} !important;
+        color: {_theme.expander_text} !important;
+    }}
 
     /* --- Top-level panel navigation ---------------------------------
        The main page tabs are the primary navigation for the whole
@@ -256,57 +274,58 @@ st.markdown("""
        small text links: larger type, generous hit area, a visible rail
        under the strip, and a solid highlight + underline on the active
        panel. Scoped to .stTabs so it applies to nested tab groups too. */
-    .stTabs [data-baseweb="tab-list"] {
+    .stTabs [data-baseweb="tab-list"] {{
         gap: 6px;
-        border-bottom: 2px solid #1f1f1f;
+        border-bottom: 2px solid {_theme.tab_rail_border};
         padding-bottom: 0;
         overflow-x: auto;
-    }
-    .stTabs [data-baseweb="tab"] {
+    }}
+    .stTabs [data-baseweb="tab"] {{
         height: 52px;
         padding: 0 16px;
-        background-color: #0a0a0a;
-        border: 1px solid #1a1a1a;
+        background-color: {_theme.tab_bg};
+        border: 1px solid {_theme.tab_border};
         border-bottom: none;
         border-radius: 8px 8px 0 0;
         white-space: nowrap;
-    }
+    }}
     /* Streamlit's default inactive-tab colour is near-black (#31333F), which
-       is effectively invisible against this theme's black background — set
-       an explicitly readable grey so unselected panels are still legible. */
-    .stTabs [data-baseweb="tab"] p {
+       is effectively invisible against a dark background — set an
+       explicitly readable colour so unselected panels stay legible in
+       both themes. */
+    .stTabs [data-baseweb="tab"] p {{
         font-size: 0.98rem !important;
         font-weight: 600 !important;
         letter-spacing: 0.2px;
-        color: #9ca3af !important;
-    }
-    .stTabs [data-baseweb="tab"]:hover {
-        background-color: #141414;
-    }
-    .stTabs [data-baseweb="tab"]:hover p {
-        color: #e5e7eb !important;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #161616 !important;
-        border-color: #2a2a2a !important;
-    }
-    .stTabs [aria-selected="true"] p {
-        color: #ffffff !important;
-    }
+        color: {_theme.tab_inactive_text} !important;
+    }}
+    .stTabs [data-baseweb="tab"]:hover {{
+        background-color: {_theme.tab_hover_bg};
+    }}
+    .stTabs [data-baseweb="tab"]:hover p {{
+        color: {_theme.tab_hover_text} !important;
+    }}
+    .stTabs [aria-selected="true"] {{
+        background-color: {_theme.tab_selected_bg} !important;
+        border-color: {_theme.tab_selected_border} !important;
+    }}
+    .stTabs [aria-selected="true"] p {{
+        color: {_theme.tab_selected_text} !important;
+    }}
     /* Streamlit's own active-tab underline, thickened to match. */
-    .stTabs [data-baseweb="tab-highlight"] {
+    .stTabs [data-baseweb="tab-highlight"] {{
         height: 3px;
-    }
+    }}
 
     /* The sidebar's control tabs share the strip styling but stay
        compact — they sit in a much narrower column. */
-    [data-testid="stSidebar"] .stTabs [data-baseweb="tab"] {
+    [data-testid="stSidebar"] .stTabs [data-baseweb="tab"] {{
         height: 38px;
         padding: 0 12px;
-    }
-    [data-testid="stSidebar"] .stTabs [data-baseweb="tab"] p {
+    }}
+    [data-testid="stSidebar"] .stTabs [data-baseweb="tab"] p {{
         font-size: 0.86rem !important;
-    }
+    }}
 
     /* --- Sticky symbol header --------------------------------------
        Streamlit has no sticky-header primitive. A sticky element can only
@@ -326,40 +345,40 @@ st.markdown("""
        resolves to a tall-parent element does the sticking, and a nested
        pair is harmless. */
     [data-testid="stLayoutWrapper"]:has(.quantix-symbol-header),
-    [data-testid="stVerticalBlockBorderWrapper"]:has(.quantix-symbol-header) {
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.quantix-symbol-header) {{
         position: sticky;
         top: 0;
         z-index: 100;
-    }
-    .quantix-symbol-header {
+    }}
+    .quantix-symbol-header {{
         display: flex;
         flex-wrap: wrap;
         align-items: baseline;
         gap: 8px 18px;
         padding: 10px 18px;
         margin-bottom: 4px;
-        background: #0a0a0a;
-        border: 1px solid #1f1f1f;
-        border-left: 4px solid #00ea77;
+        background: {_theme.symbol_header_bg};
+        border: 1px solid {_theme.symbol_header_border};
+        border-left: 4px solid {_theme.card_accent};
         border-radius: 8px;
         /* Opaque background plus a shadow so page content scrolling
            underneath never shows through or visually collides. */
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.85);
-    }
-    .quantix-symbol-header .qsh-ticker {
-        font-size: 1.5rem; font-weight: 700; color: #ffffff; letter-spacing: 0.5px;
-    }
-    .quantix-symbol-header .qsh-name {
-        font-size: 0.95rem; color: #9ca3af; margin-right: auto;
-    }
-    .quantix-symbol-header .qsh-price {
-        font-size: 1.5rem; font-weight: 700; color: #ffffff;
-    }
-    .quantix-symbol-header .qsh-change { font-size: 1.05rem; font-weight: 600; }
-    .quantix-symbol-header .qsh-up { color: #22c55e; }
-    .quantix-symbol-header .qsh-down { color: #ef4444; }
-    .quantix-symbol-header .qsh-flat { color: #9ca3af; }
-    .quantix-symbol-header .qsh-meta { font-size: 0.85rem; color: #6b7280; }
+        box-shadow: 0 6px 18px {_theme.symbol_header_shadow};
+    }}
+    .quantix-symbol-header .qsh-ticker {{
+        font-size: 1.5rem; font-weight: 700; color: {_theme.header_text}; letter-spacing: 0.5px;
+    }}
+    .quantix-symbol-header .qsh-name {{
+        font-size: 0.95rem; color: {_theme.symbol_header_name}; margin-right: auto;
+    }}
+    .quantix-symbol-header .qsh-price {{
+        font-size: 1.5rem; font-weight: 700; color: {_theme.header_text};
+    }}
+    .quantix-symbol-header .qsh-change {{ font-size: 1.05rem; font-weight: 600; }}
+    .quantix-symbol-header .qsh-up {{ color: #22c55e; }}
+    .quantix-symbol-header .qsh-down {{ color: #ef4444; }}
+    .quantix-symbol-header .qsh-flat {{ color: {_theme.symbol_header_flat}; }}
+    .quantix-symbol-header .qsh-meta {{ font-size: 0.85rem; color: {_theme.symbol_header_meta}; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1072,6 +1091,27 @@ with side_portfolio:
     portfolio_lookback = st.slider("Portfolio Lookback (days)", min_value=CHART_DEFAULTS.portfolio_lookback_range[0], max_value=CHART_DEFAULTS.portfolio_lookback_range[1], value=CHART_DEFAULTS.portfolio_lookback_default)
 
 with side_system:
+    st.caption("Appearance")
+    # No index= alongside key= here: st.session_state["theme_choice"] was
+    # already seeded (from the persisted file, or a prior click on this
+    # same widget) before this widget renders, on the same "pre-seed the
+    # key, let the widget pick it up automatically" pattern debug_mode
+    # uses below — passing both would risk the value=/key= conflict this
+    # codebase has already hit and fixed elsewhere (a widget's `index=`
+    # computed from something other than its own current session_state
+    # value can silently stomp a user's just-made edit back to the old
+    # default on the next rerun).
+    _theme_choice = st.radio(
+        "Theme", list(PALETTES.keys()), key="theme_choice",
+        format_func=lambda name: PALETTES[name].label, horizontal=True,
+        help="Applies to the app's own chrome and charts. The CIO Tear Sheet stays a fixed white printed-report style regardless.",
+    )
+    if _theme_choice != load_theme():
+        save_theme(_theme_choice)
+        log_event(logger, logging.INFO, "user.theme_changed", theme=_theme_choice)
+        st.rerun()
+
+    st.markdown("---")
     st.caption("Diagnostics")
     # Rendered BEFORE the Force Refresh button below on purpose. Streamlit
     # discards the session_state entry for any keyed widget that isn't rendered
@@ -1867,22 +1907,22 @@ else:
                 bb_lower_breaks = [b for b in bb_breakouts if b.kind == "lower"]
                 fig.add_trace(go.Scatter(
                     x=[b.date for b in bb_upper_breaks], y=[b.price for b in bb_upper_breaks], mode='markers', name='BB Upper Breakout',
-                    marker=dict(symbol='star', size=12, color='#ef4444', line=dict(width=1, color='white')),
+                    marker=dict(symbol='star', size=12, color='#ef4444', line=dict(width=1, color=_chart_fg)),
                 ), row=1, col=1)
                 fig.add_trace(go.Scatter(
                     x=[b.date for b in bb_lower_breaks], y=[b.price for b in bb_lower_breaks], mode='markers', name='BB Lower Breakout',
-                    marker=dict(symbol='star', size=12, color='#22c55e', line=dict(width=1, color='white')),
+                    marker=dict(symbol='star', size=12, color='#22c55e', line=dict(width=1, color=_chart_fg)),
                 ), row=1, col=1)
         if sma_signals:
             bullish = [s for s in sma_signals if s.kind == "bullish"]
             bearish = [s for s in sma_signals if s.kind == "bearish"]
             fig.add_trace(go.Scatter(
                 x=[s.date for s in bullish], y=[s.price for s in bullish], mode='markers', name='Bullish Crossover',
-                marker=dict(symbol='triangle-up', size=11, color='#22c55e', line=dict(width=1, color='white')),
+                marker=dict(symbol='triangle-up', size=11, color='#22c55e', line=dict(width=1, color=_chart_fg)),
             ), row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=[s.date for s in bearish], y=[s.price for s in bearish], mode='markers', name='Bearish Crossover',
-                marker=dict(symbol='triangle-down', size=11, color='#ef4444', line=dict(width=1, color='white')),
+                marker=dict(symbol='triangle-down', size=11, color='#ef4444', line=dict(width=1, color=_chart_fg)),
             ), row=1, col=1)
         if show_vwap:
             fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], line=dict(color='#e879f9', width=2, dash='dash'), name='Anchored VWAP'), row=1, col=1)
@@ -1918,17 +1958,17 @@ else:
             fig.add_trace(go.Bar(x=df.index, y=df['MACD_Histogram'], marker_color=hist_colors, name='MACD Histogram', opacity=0.5), row=macd_row, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Line'], line=dict(color='#38bdf8', width=1.5), name='MACD Line'), row=macd_row, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'], line=dict(color='#facc15', width=1.5), name='MACD Signal'), row=macd_row, col=1)
-            fig.add_hline(y=0, line_dash="dot", line_color="rgba(255, 255, 255, 0.3)", row=macd_row, col=1)
+            fig.add_hline(y=0, line_dash="dot", line_color=_chart_faint_line, row=macd_row, col=1)
             if macd_signals:
                 macd_bullish = [s for s in macd_signals if s.kind == "bullish"]
                 macd_bearish = [s for s in macd_signals if s.kind == "bearish"]
                 fig.add_trace(go.Scatter(
                     x=[s.date for s in macd_bullish], y=[s.macd_value for s in macd_bullish], mode='markers', name='MACD Bullish Crossover',
-                    marker=dict(symbol='triangle-up', size=9, color='#22c55e', line=dict(width=1, color='white')),
+                    marker=dict(symbol='triangle-up', size=9, color='#22c55e', line=dict(width=1, color=_chart_fg)),
                 ), row=macd_row, col=1)
                 fig.add_trace(go.Scatter(
                     x=[s.date for s in macd_bearish], y=[s.macd_value for s in macd_bearish], mode='markers', name='MACD Bearish Crossover',
-                    marker=dict(symbol='triangle-down', size=9, color='#ef4444', line=dict(width=1, color='white')),
+                    marker=dict(symbol='triangle-down', size=9, color='#ef4444', line=dict(width=1, color=_chart_fg)),
                 ), row=macd_row, col=1)
         if show_stochastic_panel:
             stoch_row = row_of["stochastic"]
@@ -1943,18 +1983,18 @@ else:
                 stoch_bearish = [s for s in stoch_signals if s.kind == "bearish"]
                 fig.add_trace(go.Scatter(
                     x=[s.date for s in stoch_bullish], y=[s.k_value for s in stoch_bullish], mode='markers', name='Stochastic Bullish Crossover',
-                    marker=dict(symbol='triangle-up', size=9, color='#22c55e', line=dict(width=1, color='white')),
+                    marker=dict(symbol='triangle-up', size=9, color='#22c55e', line=dict(width=1, color=_chart_fg)),
                 ), row=stoch_row, col=1)
                 fig.add_trace(go.Scatter(
                     x=[s.date for s in stoch_bearish], y=[s.k_value for s in stoch_bearish], mode='markers', name='Stochastic Bearish Crossover',
-                    marker=dict(symbol='triangle-down', size=9, color='#ef4444', line=dict(width=1, color='white')),
+                    marker=dict(symbol='triangle-down', size=9, color='#ef4444', line=dict(width=1, color=_chart_fg)),
                 ), row=stoch_row, col=1)
         if show_adx_panel:
             adx_row = row_of["adx"]
-            fig.add_trace(go.Scatter(x=df.index, y=df['ADX'], line=dict(color='white', width=1.5), name='ADX'), row=adx_row, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df['ADX'], line=dict(color=_chart_fg, width=1.5), name='ADX'), row=adx_row, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['Plus_DI'], line=dict(color='#22c55e', width=1), name='+DI'), row=adx_row, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['Minus_DI'], line=dict(color='#ef4444', width=1), name='-DI'), row=adx_row, col=1)
-            fig.add_hline(y=TECHNICAL.adx_trend_threshold, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)", row=adx_row, col=1)
+            fig.add_hline(y=TECHNICAL.adx_trend_threshold, line_dash="dash", line_color=_chart_faint_line, row=adx_row, col=1)
         if show_obv_panel:
             obv_row = row_of["obv"]
             fig.add_trace(go.Scatter(x=df.index, y=df['OBV'], line=dict(color='#a78bfa', width=1.5), name='OBV'), row=obv_row, col=1)
@@ -1966,7 +2006,7 @@ else:
         # surface warrants. Still scales with the number of oscillator rows.
         height=620 + 220 * (num_rows - 1),
         dragmode='zoom',
-        template="plotly_dark",
+        template=_plotly_template,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)'
         )
@@ -2076,7 +2116,7 @@ else:
             fig_alpha = go.Figure()
             fig_alpha.add_trace(go.Scatter(x=df.index, y=df['CumReturn']*100, name=ticker_symbol, line=dict(color='orange')))
             fig_alpha.add_trace(go.Scatter(x=bench_df.index, y=bench_df['CumReturn']*100, name=benchmark_symbol, line=dict(color='gray')))
-            fig_alpha.update_layout(xaxis_rangeslider_visible=False, height=400, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            fig_alpha.update_layout(xaxis_rangeslider_visible=False, height=400, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig_alpha, width="stretch")
 
             # --- Performance Attribution: a deeper breakdown of the same Alpha
@@ -2202,7 +2242,7 @@ else:
                 ],
             },
         ))
-        fig_risk_gauge.update_layout(height=280, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=60, b=20))
+        fig_risk_gauge.update_layout(height=280, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=60, b=20))
         st.plotly_chart(fig_risk_gauge, width="stretch")
         if risk_score_result.excluded_factors:
             st.caption(f"Not computable for {ticker_symbol} and excluded from the composite score (rather than counted as a failure): {', '.join(risk_score_result.excluded_factors)}.")
@@ -2272,7 +2312,7 @@ else:
             if expected_shortfall is not None:
                 fig_var.add_vline(x=expected_shortfall * 100, line_width=2, line_dash="dash", line_color="#ef4444", annotation_text="CVaR", annotation_position="top")
             fig_var.update_layout(
-                height=300, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                height=300, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 xaxis_title="Daily log return (%)", yaxis_title="Frequency", showlegend=False, margin=dict(t=30, b=30),
             )
             st.caption(f"Return distribution over the last {var_lookback} trading days, with VaR and CVaR marked")
@@ -2333,7 +2373,7 @@ else:
             fig_dd.add_trace(go.Scatter(x=drawdown_series.index, y=drawdown_series, fill='tozeroy', line=dict(color='#ef4444'), name='Drawdown'))
             fig_dd.add_trace(go.Scatter(x=[max_dd_result.trough_date], y=[max_dd_result.max_drawdown * 100], mode='markers', marker=dict(color='#f59e0b', size=10, symbol='diamond'), name='Trough'))
             fig_dd.update_layout(
-                height=300, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                height=300, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 yaxis_title="Drawdown (%)", showlegend=False, margin=dict(t=20, b=20),
             )
             st.caption("Underwater chart: % decline from the running peak over time, worst point marked")
@@ -2887,7 +2927,7 @@ else:
             title="Strategy Equity Curve vs Baseline",
             xaxis_rangeslider_visible=False,
             height=450,
-            template="plotly_dark",
+            template=_plotly_template,
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified"
@@ -2941,7 +2981,7 @@ else:
                     title="In-Sample vs. Walk-Forward Out-of-Sample Equity",
                     xaxis_rangeslider_visible=False,
                     height=450,
-                    template="plotly_dark",
+                    template=_plotly_template,
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)',
                     hovermode="x unified",
@@ -3071,7 +3111,7 @@ else:
             fig_pbt.add_trace(go.Scatter(x=pbt_result.df.index, y=pbt_result.df['Cum_Portfolio'], name=f"Rebalanced Portfolio ({REBALANCE_FREQUENCY_LABELS[pbt_result.rebalance_frequency]})", line=dict(color='cyan', width=2)))
             fig_pbt.update_layout(
                 title="Portfolio Equity Curve", xaxis_rangeslider_visible=False, height=420,
-                template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 hovermode="x unified",
             )
             st.plotly_chart(fig_pbt, width="stretch")
@@ -3179,7 +3219,7 @@ else:
                 xaxis_title="Simulation Timeline",
                 yaxis_title="Stock Price ($)",
                 height=500,
-                template="plotly_dark",
+                template=_plotly_template,
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
                 hovermode="x"
@@ -3256,7 +3296,7 @@ else:
                     title=f"{ticker_symbol} Monthly Return Topography (%)",
                     autosize=True,
                     height=600,
-                    template="plotly_dark",
+                    template=_plotly_template,
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)',
                     margin=dict(l=0, r=0, b=0, t=40),
@@ -3487,7 +3527,7 @@ else:
                     ),
                     showlegend=True,
                     height=550,
-                    template="plotly_dark",
+                    template=_plotly_template,
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)',
                     margin=dict(l=40, r=40, t=40, b=40)
@@ -3669,7 +3709,7 @@ else:
                     text=corr_matrix.round(2).values, texttemplate="%{text}",
                     colorbar=dict(title="Correlation"),
                 ))
-                fig_corr.update_layout(height=350 + 20 * len(alignment.included_tickers), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=30, b=30))
+                fig_corr.update_layout(height=350 + 20 * len(alignment.included_tickers), template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=30, b=30))
                 st.caption(f"Pairwise correlation over the last {portfolio_lookback} trading days")
                 st.plotly_chart(fig_corr, width="stretch")
 
@@ -3701,7 +3741,7 @@ else:
                     ))
                     fig_frontier.add_trace(go.Scatter(
                         x=[frontier.equal_weighted.volatility * 100], y=[frontier.equal_weighted.expected_return * 100],
-                        mode='markers', name='Equal-Weighted (current basket)', marker=dict(color='white', size=13, symbol='diamond'),
+                        mode='markers', name='Equal-Weighted (current basket)', marker=dict(color=_chart_fg, size=13, symbol='diamond'),
                     ))
                     fig_frontier.add_trace(go.Scatter(
                         x=[frontier.max_sharpe.volatility * 100], y=[frontier.max_sharpe.expected_return * 100],
@@ -3713,7 +3753,7 @@ else:
                     ))
                     fig_frontier.update_layout(
                         xaxis_title="Annualized Volatility (%)", yaxis_title="Annualized Return (%)",
-                        height=450, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        height=450, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                         hovermode="closest",
                     )
                     st.plotly_chart(fig_frontier, width="stretch")
