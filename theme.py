@@ -47,6 +47,21 @@ class ThemePalette:
     card_accent: str  # kept identical across themes — the brand's neon-green accent
     card_hover_accent: str
     metric_value: str
+    metric_label: str  # st.metric's caption line, above the value
+
+    # Secondary (non-primary) buttons in the MAIN area. These need explicit
+    # colors because Streamlit's own base theme is light: left alone, its
+    # widget chrome keeps a white button face while the app-level `color`
+    # set below cascades near-white text onto it — measured at 1.23:1 in
+    # the browser, i.e. effectively invisible until hovered. Deliberately
+    # NOT applied to the sidebar, which keeps Streamlit's light chrome and
+    # already measures ~11.9:1 there.
+    button_bg: str
+    button_border: str
+    button_text: str
+    button_hover_bg: str
+    button_hover_border: str
+    button_hover_text: str
 
     table_head_bg: str
     table_head_text: str
@@ -85,7 +100,9 @@ DARK = ThemePalette(
     sidebar_icon="#ffffff",
     app_bg="#000000", app_text="#e2e8f0", header_text="#ffffff",
     card_bg="#0a0a0a", card_border="#1a1a1a", card_accent="#00ea77", card_hover_accent="#ffffff",
-    metric_value="#ffffff",
+    metric_value="#ffffff", metric_label="#9ca3af",
+    button_bg="#0a0a0a", button_border="#2a2a2a", button_text="#e2e8f0",
+    button_hover_bg="#1a1a1a", button_hover_border="#00ea77", button_hover_text="#ffffff",
     table_head_bg="#0a0a0a", table_head_text="#ffffff", table_head_border="#333333",
     table_body_bg="#000000", table_body_text="#cccccc", table_body_border="#1a1a1a",
     expander_bg="#0a0a0a", expander_border="#1a1a1a", expander_text="#ffffff",
@@ -103,7 +120,9 @@ LIGHT = ThemePalette(
     sidebar_icon="#0f172a",
     app_bg="#ffffff", app_text="#1e293b", header_text="#0f172a",
     card_bg="#f8fafc", card_border="#e2e8f0", card_accent="#00ea77", card_hover_accent="#0f172a",
-    metric_value="#0f172a",
+    metric_value="#0f172a", metric_label="#475569",
+    button_bg="#ffffff", button_border="#cbd5e1", button_text="#0f172a",
+    button_hover_bg="#f1f5f9", button_hover_border="#0f172a", button_hover_text="#0f172a",
     table_head_bg="#f1f5f9", table_head_text="#0f172a", table_head_border="#cbd5e1",
     table_body_bg="#ffffff", table_body_text="#334155", table_body_border="#e2e8f0",
     expander_bg="#f8fafc", expander_border="#e2e8f0", expander_text="#0f172a",

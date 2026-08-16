@@ -88,6 +88,51 @@ def test_tab_selected_text_meets_wcag_aa_large_text_contrast():
         assert ratio >= WCAG_AA_LARGE_TEXT, f"{palette.name}: tab_selected_text on tab_selected_bg = {ratio:.2f}:1"
 
 
+def test_secondary_button_text_meets_wcag_aa_normal_text_contrast():
+    """Regression test for a real bug seen in the running app: Streamlit's
+    own base theme is light, so main-area secondary buttons kept a WHITE
+    face while the app-level text colour cascaded near-white (#e2e8f0)
+    onto them — measured at 1.23:1 in-browser, i.e. blank-looking boxes
+    that only became readable on hover. Both the resting and hover states
+    must now clear AA."""
+    for palette in (DARK, LIGHT):
+        resting = _contrast_ratio(palette.button_bg, palette.button_text)
+        assert resting >= WCAG_AA_NORMAL_TEXT, f"{palette.name}: button_text on button_bg = {resting:.2f}:1"
+        hover = _contrast_ratio(palette.button_hover_bg, palette.button_hover_text)
+        assert hover >= WCAG_AA_NORMAL_TEXT, f"{palette.name}: button_hover_text on button_hover_bg = {hover:.2f}:1"
+
+
+def test_secondary_button_face_is_distinguishable_from_the_page():
+    """The button has to look like a button. Its face and the surrounding
+    canvas being near-identical would be a different flavour of the same
+    bug — technically readable text on an invisible control."""
+    for palette in (DARK, LIGHT):
+        assert palette.button_bg != palette.app_bg or palette.button_border != palette.app_bg, (
+            f"{palette.name}: button face and border both match the page background"
+        )
+        edge = _contrast_ratio(palette.app_bg, palette.button_border)
+        assert edge >= 1.3, f"{palette.name}: button border barely separates from the page ({edge:.2f}:1)"
+
+
+def test_metric_label_meets_wcag_aa_normal_text_contrast():
+    """The other half of the same bug: st.metric's caption line ("RSI (14)",
+    "Required Fields") kept Streamlit's light-theme label colour and
+    measured 1.68:1 against the black canvas."""
+    for palette in (DARK, LIGHT):
+        ratio = _contrast_ratio(palette.app_bg, palette.metric_label)
+        assert ratio >= WCAG_AA_NORMAL_TEXT, f"{palette.name}: metric_label on app_bg = {ratio:.2f}:1"
+
+
+def test_metric_label_is_dimmer_than_its_value():
+    """Label and value must stay visually ranked — the label is secondary
+    to the number it captions, so fixing its contrast must not flatten the
+    hierarchy by making both equally loud."""
+    for palette in (DARK, LIGHT):
+        label = _contrast_ratio(palette.app_bg, palette.metric_label)
+        value = _contrast_ratio(palette.card_bg, palette.metric_value)
+        assert label < value, f"{palette.name}: metric_label ({label:.2f}) is not dimmer than metric_value ({value:.2f})"
+
+
 def test_chart_fg_meets_wcag_aa_large_text_contrast_against_app_bg():
     """The ADX line / marker outline color — the plot area itself is
     transparent (paper_bgcolor/plot_bgcolor are 'rgba(0,0,0,0)' throughout

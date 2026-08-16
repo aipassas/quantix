@@ -257,6 +257,74 @@ st.markdown(f"""
         color: {_theme.metric_value};
     }}
 
+    /* Metric caption line. Streamlit's own base theme is LIGHT, so left
+       alone this renders in its light-theme label colour (#31333F) —
+       measured at 1.68:1 against this theme's black canvas, i.e. barely
+       visible. Set explicitly per theme instead. */
+    [data-testid="stMain"] [data-testid="stMetricLabel"],
+    [data-testid="stMain"] [data-testid="stMetricLabel"] * {{
+        color: {_theme.metric_label} !important;
+    }}
+
+    /* --- Secondary buttons in the main area --------------------------
+       Same root cause as the metric label above, but worse: Streamlit's
+       light base theme gives these a WHITE face, while the .stApp rule
+       further up cascades near-white text (#e2e8f0) onto them — measured
+       at 1.23:1 in-browser, which is why they read as blank boxes until
+       hover swapped in Streamlit's own dark hover colour. Painting both
+       the face and the text from the palette fixes the whole class at
+       once (chips, ✕ removes, + Add Filter/Rule, Download CSV, ...).
+
+       Scoped to stMain deliberately: the sidebar keeps Streamlit's light
+       chrome, where these same buttons already measure ~11.9:1 and look
+       correct — restyling them there would break what already works.
+
+       Both the data-testid and the kind attribute are matched so a
+       Streamlit version that renames or drops either still leaves a
+       working rule. */
+    [data-testid="stMain"] button[data-testid="stBaseButton-secondary"],
+    [data-testid="stMain"] button[kind="secondary"] {{
+        background-color: {_theme.button_bg} !important;
+        border: 1px solid {_theme.button_border} !important;
+        color: {_theme.button_text} !important;
+    }}
+    [data-testid="stMain"] button[data-testid="stBaseButton-secondary"] *,
+    [data-testid="stMain"] button[kind="secondary"] * {{
+        color: {_theme.button_text} !important;
+    }}
+    [data-testid="stMain"] button[data-testid="stBaseButton-secondary"]:hover,
+    [data-testid="stMain"] button[kind="secondary"]:hover {{
+        background-color: {_theme.button_hover_bg} !important;
+        border-color: {_theme.button_hover_border} !important;
+        color: {_theme.button_hover_text} !important;
+    }}
+    [data-testid="stMain"] button[data-testid="stBaseButton-secondary"]:hover *,
+    [data-testid="stMain"] button[kind="secondary"]:hover * {{
+        color: {_theme.button_hover_text} !important;
+    }}
+    /* A disabled button must still read as disabled rather than just
+       looking like a normal one, so it keeps the face but dims. */
+    [data-testid="stMain"] button[data-testid="stBaseButton-secondary"]:disabled,
+    [data-testid="stMain"] button[kind="secondary"]:disabled {{
+        opacity: 0.45 !important;
+    }}
+
+    /* Quick-access chips are single short ticker labels in fixed-width
+       columns, so a label that doesn't quite fit should ellipsise rather
+       than break mid-word ("AAP / L"), which is what it did before the
+       row was capped. Belt-and-braces alongside that cap.
+
+       Scoped by the same :has() sticky-block selector used below rather
+       than to all secondary buttons, because plenty of those elsewhere
+       have genuinely long labels ("Download Price & Indicator Data
+       (CSV)") that SHOULD be allowed to wrap. */
+    [data-testid="stLayoutWrapper"]:has(.quantix-symbol-header) button p,
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.quantix-symbol-header) button p {{
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }}
+
     /* Adjust table styles for high contrast */
     thead tr th {{
         background-color: {_theme.table_head_bg} !important;

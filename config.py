@@ -519,15 +519,21 @@ class FavoritesConfig:
 
     max_favorites / max_chips are UI bounds, not storage ones: everything
     renders as ONE row of chips, so these caps are really "how many
-    equal-width buttons still fit legibly across that row". Verified
-    in-browser, not guessed: at max_chips=10 the per-chip column came out
-    around 87px and labels like "★ AAPL" wrapped mid-word, so the row is
-    capped at 8. max_favorites is held below max_chips on purpose, so a
-    fully-starred row still leaves room for a couple of recents rather
-    than crowding them out entirely."""
+    equal-width buttons still fit legibly across that row". Tuned
+    in-browser rather than guessed, twice: at max_chips=10 the per-chip
+    column came out ~87px and labels like "★ AAPL" wrapped mid-word, and
+    after the buttons gained a 1px themed border the same thing happened
+    again at 8. Hence 7, which leaves ~86px of usable label width — a
+    starred five-letter ticker ("★ GOOGL", the longest realistic label)
+    fits on one line. The chips are also nowrap in CSS, so any future
+    squeeze degrades to an ellipsis rather than back to a mid-word break.
+
+    max_favorites is held below max_chips on purpose, so a fully-starred
+    row still leaves room for a couple of recents rather than crowding
+    them out entirely."""
     store_filename: str = "favorites_store.json"
-    max_favorites: int = 6
-    max_chips: int = 8  # total favorites + recents chips rendered at once
+    max_favorites: int = 5
+    max_chips: int = 7  # total favorites + recents chips rendered at once
 
 
 @dataclass(frozen=True)
