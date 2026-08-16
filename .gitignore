@@ -20,4 +20,9 @@ risk_alert_rules_store.json
 risk_alert_rules_store.tmp
 theme_state.json
 theme_state.tmp
+favorites_store.json
+# Transient temp files from local_store.atomic_write_text (unique per
+# write, cleaned up on success and on failure). Only ever left behind by
+# a hard kill mid-write; ignored so one can't be committed by accident.
+.*.tmp
 .streamlit/secrets.toml

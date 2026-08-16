@@ -505,6 +505,32 @@ class ThemeConfig:
 
 
 @dataclass(frozen=True)
+class FavoritesConfig:
+    """Favorites (starred tickers) + recently-viewed, the "quick access"
+    strip under the symbol header.
+
+    Deliberately SEPARATE from the sidebar's named watchlists rather than
+    reusing them: watchlists are multiple, named, curated baskets
+    ("Dividend Payers", "Tech"), so a pin action against whichever list
+    happens to be active would be context-dependent and would dirty a
+    deliberately-curated basket. Favorites are one flat set that means
+    "always show me these, whichever watchlist I'm in." That split was
+    settled with the user before this was built, not assumed.
+
+    max_favorites / max_chips are UI bounds, not storage ones: everything
+    renders as ONE row of chips, so these caps are really "how many
+    equal-width buttons still fit legibly across that row". Verified
+    in-browser, not guessed: at max_chips=10 the per-chip column came out
+    around 87px and labels like "★ AAPL" wrapped mid-word, so the row is
+    capped at 8. max_favorites is held below max_chips on purpose, so a
+    fully-starred row still leaves room for a couple of recents rather
+    than crowding them out entirely."""
+    store_filename: str = "favorites_store.json"
+    max_favorites: int = 6
+    max_chips: int = 8  # total favorites + recents chips rendered at once
+
+
+@dataclass(frozen=True)
 class EmailReportConfig:
     """Non-secret defaults for emailing the CIO Tear Sheet PDF. The SMTP
     server/credentials themselves are deliberately NOT here — they're
@@ -652,6 +678,7 @@ SCENARIO_MODELING = ScenarioModelingConfig()
 COMPETITIVE_BENCHMARKING = CompetitiveBenchmarkingConfig()
 ONBOARDING = OnboardingConfig()
 THEME = ThemeConfig()
+FAVORITES = FavoritesConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()

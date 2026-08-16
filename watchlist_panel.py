@@ -1,5 +1,5 @@
-"""Symbol navigation aids — the two ways to change the analyzed ticker
-without retyping it.
+"""Symbol navigation aids — ways to change the analyzed ticker without
+retyping it. (Starred favorites are a third, and live in favorites.py.)
 
 1. The sidebar watchlist: one or more NAMED, user-maintained lists of
    tickers (create/rename/delete, one "active" at a time), each with a
@@ -11,12 +11,21 @@ without retyping it.
    onboarding.py) — so lists and which one you were looking at survive
    an app restart. Quantix has no accounts, so this is a single shared
    store for whoever runs this instance, not per-user.
-2. The recently-viewed strip (record_recent below): an automatic
-   most-recently-used list of symbols visited THIS SESSION, rendered as
-   chips under the symbol header. Deliberately session-only, not
-   persisted — it's a byproduct of navigating, not a curated list the
-   user asked to keep, so treating it as durable state would be
-   surprising ("why do old tickers I glanced at keep coming back").
+2. The recently-viewed half of the quick-access strip: an automatic
+   most-recently-used list of visited symbols, rendered as chips under
+   the symbol header alongside starred favorites. record_recent() below
+   is the pure move-to-front/dedupe/cap helper that computes the
+   ordering; favorites.py owns PERSISTING the result (and the favorites
+   set it renders next to). That split is deliberate — the ordering rule
+   is generic list arithmetic with its own tests here, while the storage
+   concern belongs with the other half of the strip it's stored beside.
+
+   Note this list used to be session-only, on the reasoning that it's a
+   byproduct of navigating rather than something anyone asked to keep.
+   The Favorites & Quick Access task explicitly required it to survive
+   restarts, so that call was reversed; see favorites.py for the
+   reversal and for the "Clear recents" control that answers the
+   original concern.
 
 Deliberately reuses data_loader.load_ticker_bundle(deep=False), the exact
 same shallow (info-only) fetch the Institutional Watchlist scan and the

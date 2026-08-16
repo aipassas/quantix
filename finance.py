@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import streamlit as st
 import plotly.graph_objects as go
@@ -16,7 +17,14 @@ from portfolio_analytics import build_aligned_returns, compute_correlation_matri
 from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
+from favorites import (
+    is_favorite,
+    load_store as load_quick_access,
+    quick_access_chips,
+    save_store as save_quick_access,
+    toggle_favorite,
+)
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
@@ -1291,41 +1299,94 @@ with symbol_header_container:
         unsafe_allow_html=True,
     )
 
-    # --- Recently viewed: one-click switching between symbols visited
-    # this session. Rendered INSIDE symbol_header_container so it's part
-    # of the same sticky block as the header above — the symbol you're on
-    # and the symbols you can jump to stay together and stay on screen.
+    # --- Quick access: favorites (starred, curated) + recently viewed
+    # (automatic), merged into ONE row of one-click switch chips.
+    # Rendered INSIDE symbol_header_container so it's part of the same
+    # sticky block as the header above — the symbol you're on and the
+    # symbols you can jump to stay together and stay on screen. One row
+    # rather than two stacked ones precisely because it's sticky: every
+    # extra row here costs vertical space on every screen forever.
     #
+    # Both halves persist across restarts via favorites.py; see that
+    # module's docstring for why favorites are deliberately separate from
+    # the sidebar's named watchlists, and why recents are now durable
+    # (they used to be session-only) with a Clear control as the escape
+    # hatch.
+    if "quick_access_store" not in st.session_state:
+        st.session_state["quick_access_store"] = load_quick_access()
+    _qa_store = st.session_state["quick_access_store"]
+
     # Recorded here rather than at the sidebar input so it captures the
     # ticker actually analysed on this run, however it was chosen (typed,
     # watchlist click, screener click-through, or one of these chips).
     # record_recent() is idempotent, which matters because Streamlit
-    # re-runs this whole script on every widget interaction.
-    st.session_state["recent_tickers"] = record_recent(
-        st.session_state.get("recent_tickers", ()), ticker_symbol,
-        WATCHLIST_PANEL.max_recent_tickers,
+    # re-runs this whole script on every widget interaction — and the
+    # store is only WRITTEN when the result actually changed, so an
+    # ordinary rerun (slider nudge, tab click) costs no disk write.
+    _qa_new_recents = record_recent(
+        _qa_store.recents, ticker_symbol, WATCHLIST_PANEL.max_recent_tickers,
     )
-    _recents = st.session_state["recent_tickers"]
+    if _qa_new_recents != _qa_store.recents:
+        _qa_store = dataclasses.replace(_qa_store, recents=_qa_new_recents)
+        st.session_state["quick_access_store"] = _qa_store
+        save_quick_access(_qa_store)
 
-    if len(_recents) > 1:
-        # Fixed-width chips: the columns list is padded to the configured
-        # maximum with a trailing spacer, so a chip is the same size
-        # whether two symbols have been visited or eight — rather than
-        # two chips stretching across the whole page.
-        _chip_cols = st.columns(
-            [1] * len(_recents) + [max(1, WATCHLIST_PANEL.max_recent_tickers - len(_recents) + 1)]
-        )
-        for _chip_col, _recent in zip(_chip_cols, _recents):
-            with _chip_col:
-                _is_current = _recent == ticker_symbol
-                if st.button(
-                    _recent, key=f"recent_{_recent}", width="stretch",
-                    type="primary" if _is_current else "secondary",
-                    help="Currently analysed" if _is_current else f"Switch analysis to {_recent}",
-                ):
-                    st.session_state["_pending_ticker"] = _recent
-                    log_event(logger, logging.INFO, "user.recent_switch", ticker=_recent)
-                    st.rerun()
+    _qa_chips = quick_access_chips(_qa_store)
+    _qa_pinned = is_favorite(_qa_store, ticker_symbol)
+
+    # Fixed-width chips: the columns list is padded to the configured
+    # maximum with a trailing spacer, so a chip is the same size whether
+    # two symbols are listed or eight — rather than two chips stretching
+    # across the whole page. The leading column is the star toggle for
+    # the ticker currently on screen, given a fraction of a chip's width
+    # since it holds a single glyph.
+    _qa_cols = st.columns(
+        [0.5] + [1] * len(_qa_chips) + [max(1, FAVORITES.max_chips - len(_qa_chips) + 1)]
+    )
+    with _qa_cols[0]:
+        if st.button(
+            "★" if _qa_pinned else "☆", key="favorite_toggle", width="stretch",
+            help=f"Remove {ticker_symbol} from favorites" if _qa_pinned else f"Add {ticker_symbol} to favorites",
+        ):
+            _qa_store, _qa_error = toggle_favorite(_qa_store, ticker_symbol)
+            if _qa_error:
+                st.warning(_qa_error)
+            else:
+                st.session_state["quick_access_store"] = _qa_store
+                save_quick_access(_qa_store)
+                log_event(
+                    logger, logging.INFO,
+                    "user.favorite_removed" if _qa_pinned else "user.favorite_added",
+                    ticker=ticker_symbol,
+                )
+                st.rerun()
+
+    for _qa_col, (_qa_ticker, _qa_is_fav) in zip(_qa_cols[1:], _qa_chips):
+        with _qa_col:
+            _is_current = _qa_ticker == ticker_symbol
+            _qa_label = f"★ {_qa_ticker}" if _qa_is_fav else _qa_ticker
+            if st.button(
+                _qa_label, key=f"quick_{_qa_ticker}", width="stretch",
+                type="primary" if _is_current else "secondary",
+                help="Currently analysed" if _is_current else f"Switch analysis to {_qa_ticker}",
+            ):
+                st.session_state["_pending_ticker"] = _qa_ticker
+                log_event(
+                    logger, logging.INFO, "user.quick_access_switch",
+                    ticker=_qa_ticker, favorite=_qa_is_fav,
+                )
+                st.rerun()
+
+    if _qa_store.recents:
+        if st.button(
+            "Clear recents", key="clear_recents",
+            help="Forget automatically-tracked recently-viewed symbols. Favorites are kept.",
+        ):
+            _qa_store = dataclasses.replace(_qa_store, recents=())
+            st.session_state["quick_access_store"] = _qa_store
+            save_quick_access(_qa_store)
+            log_event(logger, logging.INFO, "user.recents_cleared")
+            st.rerun()
 
 if df.empty:
     detail = " ".join(ticker_bundle.errors) if ticker_bundle.errors else "No data returned by Yahoo Finance."
