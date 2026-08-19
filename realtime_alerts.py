@@ -3,8 +3,9 @@ against a chosen ticker's price, technicals, and fundamentals, notifying
 in-app the moment a condition is newly met.
 
 SCOPE — three decisions made explicitly with the user before this was
-built, since Quantix has no accounts, no database, and no background
-worker:
+built, when Quantix had no accounts, no database and no background
+worker. Sign-in has since arrived (auth.py), which changes point 3
+below; the other two still stand:
 
 1. Monitoring model: IN-TAB POLLING via st.fragment(run_every=...) in
    finance.py, not a real background worker/process. Monitoring only runs
@@ -21,10 +22,10 @@ worker:
 
 3. Persistence: rules and trigger history ARE persisted to a local JSON
    file (unlike every other piece of state in this app, which lives only
-   in st.session_state and resets each fresh session). Quantix has no
-   user-account system, so this is a single shared local store for
-   whoever runs this instance — not "per user" in the sense of separate
-   accounts, despite the originating task's literal wording.
+   in st.session_state and resets each fresh session). Since auth.py
+   landed these rules ARE per-user in the literal sense the originating
+   task meant: signed in, they live in that user's namespace; signed out,
+   they fall back to the shared instance-wide store.
 
 TRIGGER TYPES — each reuses an already-existing, tested calculation
 rather than new arithmetic:
@@ -65,7 +66,7 @@ import streamlit as st
 
 from config import CHART_DEFAULTS, REALTIME_ALERTS, TECHNICAL
 from data_loader import load_ticker_bundle
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_event, log_exception
 from price_processing import process_price_data
 from risk_alerts import (
@@ -163,7 +164,7 @@ def new_rule_id() -> str:
 # --- Persistence -------------------------------------------------------------
 
 def _default_store_path() -> Path:
-    return Path(__file__).resolve().parent / REALTIME_ALERTS.store_filename
+    return store_path(REALTIME_ALERTS.store_filename)
 
 
 def load_store(path: Optional[Path] = None) -> Tuple[List[AlertRule], List[TriggerEvent]]:

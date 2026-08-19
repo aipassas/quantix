@@ -119,6 +119,11 @@ from watchlist_panel import (
     update_active_tickers,
 )
 from theme import PALETTES, load_theme, save_theme
+# Importing auth is what switches every local store from the shared files
+# to the signed-in user's namespace: auth.py registers itself with
+# local_store on import. It must therefore be imported before anything
+# reads a store, which the import block guarantees.
+import auth
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -158,6 +163,34 @@ def log_input_changes(**current):
 # --- Page Configuration ---
 st.set_page_config(page_title="Quantix", layout="wide", page_icon=None)
 st.title("Quantix: Institutional-Grade Stock Analysis & Simulation Engine")
+
+# ==========================================
+# IDENTITY SWITCH GUARD
+# ==========================================
+# Signing in or out changes which files every store reads (see auth.py),
+# but a dozen stores are cached in session_state so they're loaded once
+# per session rather than once per rerun. Without this, signing in would
+# leave the previous profile's watchlist, theme, favourites, thresholds
+# and alert rules on screen — showing one user another user's data, which
+# is precisely the failure per-user scoping exists to prevent.
+#
+# Placed here, above every one of those `if key not in session_state`
+# loads, so purging is enough on its own: each store simply reloads from
+# the new namespace further down this same run. No rerun needed, and no
+# window in which stale data is visible.
+_AUTH_SCOPED_STATE = (
+    "theme_choice", "watchlist_store", "quick_access_store", "scenario_saved",
+    "risk_alert_rules", "rt_alert_rules", "rt_alert_history",
+    "onboarding_active", "onboarding_step", "collab_store",
+)
+_auth_user = auth.current_user()
+_auth_namespace = _auth_user.key if _auth_user else ""
+if st.session_state.get("_auth_namespace", _auth_namespace) != _auth_namespace:
+    for _k in _AUTH_SCOPED_STATE:
+        st.session_state.pop(_k, None)
+    log_event(logger, logging.INFO, "auth.namespace_switched",
+              signed_in=bool(_auth_namespace))
+st.session_state["_auth_namespace"] = _auth_namespace
 
 # ==========================================
 # ONBOARDING (first-run walkthrough)
@@ -1039,8 +1072,8 @@ st.caption(
     f"every {REALTIME_ALERTS.poll_interval_seconds}s while this tab stays open. Not a background service: closing "
     "the tab stops monitoring, same as everything else in this stateless app. Delivery is in-app only (no "
     "email/SMS/push — this app has no messaging credentials to send them with). Rules and trigger history ARE "
-    "saved to a local file and survive a restart, unlike the rest of this app's session-only state; Quantix has no "
-    "user accounts, so that file is shared by whoever runs this instance rather than private per login."
+    "saved to a local file and survive a restart, unlike the rest of this app's session-only state. Signed in, "
+    "those rules are private to your account; signed out they're shared by whoever runs this instance."
 )
 
 if "rt_alert_rules" not in st.session_state:
@@ -1208,6 +1241,71 @@ if st.session_state["rt_alert_history"]:
         st.table(pd.DataFrame(_rt_hist_rows))
 
 
+# --- Sidebar: Account ---
+# Top of the rail, above Target Configuration, because signing in changes
+# what every panel below it shows. See auth.py for why there is no
+# hand-written auth code here and why GitHub needs an OIDC broker.
+_auth_reason = auth.unavailable_reason()
+with st.sidebar.expander(
+    f"👤 {_auth_user.display_name}" if _auth_user else "👤 Account",
+    expanded=False,
+):
+    if _auth_user is not None:
+        if _auth_user.email:
+            st.caption(_auth_user.email)
+        st.caption(
+            "Your watchlists, favourites, theme, thresholds, alert rules and saved "
+            "scenarios are private to this account on this instance. Team Notes stay "
+            "shared — that's the point of them."
+        )
+
+        # First sign-in on an instance that already has data: without this
+        # the app looks empty and empty is indistinguishable from lost.
+        _auth_shared = auth.shared_data_files()
+        if _auth_shared and not auth.has_user_data(_auth_user.key):
+            st.info(
+                f"This instance has {len(_auth_shared)} saved "
+                f"{'setting' if len(_auth_shared) == 1 else 'settings'} files from before you "
+                "signed in. They're still there — signing out shows them again — but your "
+                "account starts empty."
+            )
+            if st.button("Copy them into my account", key="auth_adopt"):
+                _auth_copied, _auth_errs = auth.adopt_shared_data(_auth_user.key)
+                for _auth_e in _auth_errs:
+                    st.warning(f"Couldn't copy {_auth_e}")
+                if _auth_copied:
+                    for _k in _AUTH_SCOPED_STATE:
+                        st.session_state.pop(_k, None)
+                    st.success(f"Copied {len(_auth_copied)} files. The originals are untouched.")
+                    st.rerun()
+                elif not _auth_errs:
+                    st.info("Nothing to copy.")
+
+        if st.button("Sign out", key="auth_logout"):
+            st.logout()
+    elif _auth_reason:
+        st.caption(
+            "Sign in to keep your watchlists, favourites, theme, thresholds and alert "
+            "rules private to you instead of shared with everyone using this instance — "
+            "and to have your Team Notes carry a verified name rather than a typed one."
+        )
+        st.info(_auth_reason)
+    else:
+        st.caption(
+            "Signing in gives you your own watchlists, favourites, theme, thresholds, "
+            "alert rules and scenarios. Nothing you've saved so far is lost — it stays "
+            "on the signed-out profile and can be copied across in one click."
+        )
+        for _auth_p in auth.configured_providers():
+            if st.button(
+                f"Sign in with {auth.provider_label(_auth_p)}",
+                key=f"auth_login_{_auth_p or 'default'}",
+                width="stretch",
+            ):
+                # st.login() with no argument is the unnamed-default-provider
+                # form; auth.configured_providers() returns "" for that case.
+                st.login(_auth_p) if _auth_p else st.login()
+
 # --- Sidebar Controls ---
 # TradingView-style control rail: only Ticker/Date (used on every
 # interaction) stays always-visible; everything else groups into tabs so
@@ -1339,8 +1437,8 @@ end_date = st.sidebar.date_input("End Date", today)
 #
 # Persisted to a local file (atomic write, same pattern as every other
 # cross-restart store in this app) — genuinely survives an app restart,
-# not just reruns within a session. Quantix has no accounts, so this is a
-# single shared store for whoever runs this instance, not per-user.
+# not just reruns within a session. Scoped per signed-in user when auth
+# is configured, and shared instance-wide when it isn't — see auth.py.
 st.sidebar.markdown("---")
 st.sidebar.subheader("Watchlist")
 
@@ -1843,13 +1941,24 @@ else:
                 st.session_state["collab_store"] = collab_load_store()
             _cl_store = st.session_state["collab_store"]
 
-            st.caption(
-                "Notes attached to this ticker, shared by everyone using this Quantix instance. "
-                "**There are no user accounts here** — the name you type is a self-declared label, "
-                "not an authenticated identity, and anyone using this instance can read or delete "
-                "any note. Mention a teammate with @ to email them; only people on the Team roster "
-                "below can be mentioned, so a typo can never mail a stranger."
+            _cl_caption = (
+                "Notes attached to this ticker, shared by everyone using this Quantix instance — "
+                "deliberately, since a thread only works if teammates can read each other. Anyone "
+                "using this instance can read or delete any note. Mention a teammate with @ to "
+                "email them; only people on the Team roster below can be mentioned, so a typo can "
+                "never mail a stranger."
             )
+            if _auth_user is not None:
+                _cl_caption += (
+                    f" You're signed in, so notes you post are attributed to **{_auth_user.display_name}** "
+                    "as a verified identity."
+                )
+            else:
+                _cl_caption += (
+                    " **You're not signed in**, so the name you type is a self-declared label that "
+                    "nothing verifies. Sign in from the Account panel to post under a verified name."
+                )
+            st.caption(_cl_caption)
 
             _cl_existing = collab_notes_for(_cl_store, ticker_symbol)
             if _cl_existing:
@@ -1857,7 +1966,8 @@ else:
                     _cl_body_col, _cl_del_col = st.columns([12, 1])
                     with _cl_body_col:
                         _cl_when = _cl_note.created_at.replace("T", " ") if _cl_note.created_at else "unknown time"
-                        _cl_meta = f"**{_cl_note.author}** · {_cl_when}"
+                        _cl_badge = " ✅" if _cl_note.authenticated else ""
+                        _cl_meta = f"**{_cl_note.author}**{_cl_badge} · {_cl_when}"
                         if _cl_note.mentions:
                             _cl_sent = [m for m in _cl_note.mentions if m in _cl_note.notified]
                             _cl_unsent = [m for m in _cl_note.mentions if m not in _cl_note.notified]
@@ -1879,13 +1989,19 @@ else:
                 st.caption("No notes on this ticker yet.")
 
             st.markdown("---")
-            _cl_author_col, _cl_spacer = st.columns([2, 3])
-            with _cl_author_col:
-                _cl_author = st.text_input(
-                    "Your name", key="collab_author",
-                    placeholder="e.g. Angelos",
-                    help="Stored with the note as its author. Self-declared — nothing verifies it.",
-                )
+            if _auth_user is not None:
+                # No text box: letting a signed-in user type a different name
+                # would make the ✅ badge a lie.
+                _cl_author = _auth_user.display_name
+                st.caption(f"Posting as **{_cl_author}** ✅ (verified)")
+            else:
+                _cl_author_col, _cl_spacer = st.columns([2, 3])
+                with _cl_author_col:
+                    _cl_author = st.text_input(
+                        "Your name", key="collab_author",
+                        placeholder="e.g. Angelos",
+                        help="Stored with the note as its author. Self-declared — nothing verifies it.",
+                    )
             _cl_handles = ", ".join(f"@{m.handle}" for m in _cl_store.members) or "no teammates added yet"
             _cl_body = st.text_area(
                 "Add a note", key="collab_body",
@@ -1895,6 +2011,8 @@ else:
             if st.button("Post note", type="primary", key="collab_post"):
                 _cl_store, _cl_note, _cl_err = collab_add_note(
                     _cl_store, ticker_symbol, _cl_author, _cl_body,
+                    authenticated=_auth_user is not None,
+                    issuer=_auth_user.issuer if _auth_user else "",
                 )
                 if _cl_err:
                     st.warning(_cl_err)

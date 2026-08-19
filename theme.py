@@ -14,9 +14,9 @@ alone here.
 
 Persisted with the same atomic-write local-JSON-file pattern every other
 cross-restart preference in this app already uses (onboarding.py,
-watchlist_panel.py, risk_alerts.py, ...). Quantix has no accounts, so
-this is "the theme this locally-run instance was last set to," not a
-per-visitor preference.
+watchlist_panel.py, risk_alerts.py, ...). Scoped per signed-in user when
+auth is configured, and otherwise "the theme this locally-run instance was
+last set to" — see auth.py and local_store.store_path().
 """
 import json
 from dataclasses import dataclass
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import THEME
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_exception
 
 logger = get_logger("theme")
@@ -139,7 +139,7 @@ PALETTES = {"dark": DARK, "light": LIGHT}
 
 
 def _state_path() -> Path:
-    return Path(__file__).resolve().parent / THEME.state_filename
+    return store_path(THEME.state_filename)
 
 
 def load_theme(path: Optional[Path] = None) -> str:

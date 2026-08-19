@@ -20,10 +20,10 @@ anything Streamlit can't actually do.
 "FIRST-TIME USER" DETECTION: a single local JSON flag (the same
 atomic-write, gitignored-local-file pattern every other piece of
 cross-restart state in this app already uses — see realtime_alerts.py /
-ml_pipeline.py / scenario_modeling.py). Quantix has no accounts, so this
-is genuinely "has onboarding been dismissed on this locally-run
-instance," not per-visitor tracking — disclosed here and in the UI
-rather than implied. "Replay Tutorial" in the sidebar's System tab is the
+ml_pipeline.py / scenario_modeling.py). Scoped per signed-in user when
+auth is configured, so each person gets the tour once; signed out it is
+"has onboarding been dismissed on this locally-run instance" rather than
+per-visitor tracking — disclosed here and in the UI rather than implied. "Replay Tutorial" in the sidebar's System tab is the
 deliberate way to see it again on the same instance.
 """
 import datetime
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from config import ONBOARDING
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_exception
 
 logger = get_logger("onboarding")
@@ -115,7 +115,7 @@ STEPS: Tuple[OnboardingStep, ...] = (
 
 
 def _state_path() -> Path:
-    return Path(__file__).resolve().parent / ONBOARDING.state_filename
+    return store_path(ONBOARDING.state_filename)
 
 
 def load_onboarding_state(path: Optional[Path] = None) -> dict:

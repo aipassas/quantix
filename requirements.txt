@@ -6,3 +6,7 @@ plotly>=6.0
 scipy>=1.11
 scikit-learn>=1.4
 weasyprint>=69.0
+# Required by Streamlit's native OIDC sign-in (st.login/st.user). Not a
+# dependency of streamlit itself, so it has to be named explicitly; without
+# it auth.py reports sign-in as unavailable and the app runs unchanged.
+Authlib>=1.3

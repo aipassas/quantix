@@ -9,8 +9,8 @@ retyping it. (Starred favorites are a third, and live in favorites.py.)
    piece of cross-restart state in this app already uses (see
    realtime_alerts.py / ml_pipeline.py / scenario_modeling.py /
    onboarding.py) — so lists and which one you were looking at survive
-   an app restart. Quantix has no accounts, so this is a single shared
-   store for whoever runs this instance, not per-user.
+   an app restart. Scoped per signed-in user when auth is configured,
+   and shared instance-wide when it isn't — see auth.py.
 2. The recently-viewed half of the quick-access strip: an automatic
    most-recently-used list of visited symbols, rendered as chips under
    the symbol header alongside starred favorites. record_recent() below
@@ -58,7 +58,7 @@ import streamlit as st
 
 from config import WATCHLIST_PANEL
 from data_loader import load_ticker_bundle
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_event, log_exception
 
 logger = get_logger("watchlist_panel")
@@ -166,7 +166,7 @@ class WatchlistStore:
 
 
 def _watchlist_store_path() -> Path:
-    return Path(__file__).resolve().parent / WATCHLIST_PANEL.store_filename
+    return store_path(WATCHLIST_PANEL.store_filename)
 
 
 def _seed_default_store() -> WatchlistStore:

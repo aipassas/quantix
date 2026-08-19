@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from config import RISK, SCORECARD, THRESHOLDS
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_event, log_exception
 
 logger = get_logger("user_thresholds")
@@ -109,7 +109,7 @@ _PAIRED = {"pe_range": ("pe_range_low", "pe_range_high"),
 
 
 def _store_path() -> Path:
-    return Path(__file__).resolve().parent / THRESHOLDS.store_filename
+    return store_path(THRESHOLDS.store_filename)
 
 
 def default_value(key: str) -> float:

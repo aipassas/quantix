@@ -28,3 +28,8 @@ favorites_store.json
 .streamlit/secrets.toml
 threshold_overrides.json
 collaboration_store.json
+
+# Per-user store namespaces created by auth.py when someone signs in.
+# Same local, never-committed data as the shared stores above, one
+# directory per authenticated identity.
+users/

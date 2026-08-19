@@ -269,3 +269,76 @@ def test_save_leaves_no_leftover_temp_file(tmp_path):
     path = tmp_path / "c.json"
     save_store(_team(), path)
     assert [p.name for p in tmp_path.iterdir()] == ["c.json"]
+
+
+# --- authenticated vs self-declared authorship --------------------------------
+#
+# Since auth.py landed, an author name is either a verified OIDC identity
+# or a string someone typed. Collapsing those two into one would make the
+# verified badge meaningless, so the distinction is carried per-note all
+# the way into the notification email.
+
+def test_notes_are_self_declared_by_default():
+    """The default has to be the weaker claim. Defaulting to authenticated
+    would mark every note written signed-out as verified."""
+    _, note, _ = add_note(_team(), "AAPL", "Angelos", "a thought")
+    assert note.authenticated is False
+    assert note.issuer == ""
+
+
+def test_a_signed_in_note_records_who_vouched_for_the_author():
+    _, note, _ = add_note(
+        _team(), "AAPL", "Angelos Passas", "a thought",
+        authenticated=True, issuer="https://accounts.google.com",
+    )
+    assert note.authenticated is True
+    assert note.issuer == "https://accounts.google.com"
+
+
+def test_authentication_status_survives_a_round_trip(tmp_path):
+    path = tmp_path / "c.json"
+    store, _, _ = add_note(_team(), "AAPL", "A", "verified note",
+                           authenticated=True, issuer="https://accounts.google.com")
+    store, _, _ = add_note(store, "AAPL", "B", "typed note")
+    save_store(store, path)
+    loaded = notes_for(load_store(path), "AAPL")
+    assert [(n.body, n.authenticated) for n in loaded] == [
+        ("verified note", True), ("typed note", False),
+    ]
+    assert loaded[0].issuer == "https://accounts.google.com"
+
+
+def test_notes_written_before_sign_in_existed_read_back_as_self_declared(tmp_path):
+    """Store files predating auth.py have no `authenticated` key. Absent
+    must mean False — treating it as missing-therefore-true would
+    retroactively stamp every historical note as verified."""
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({
+        "members": [],
+        "notes": {"AAPL": [{"id": "1", "author": "A", "body": "old note", "created_at": ""}]},
+    }))
+    note = notes_for(load_store(path), "AAPL")[0]
+    assert note.authenticated is False and note.issuer == ""
+
+
+def test_notification_for_a_verified_note_says_so_and_names_the_issuer():
+    """"Verified" is only meaningful if the reader knows who did the
+    verifying."""
+    store = _team()
+    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva please review",
+                              authenticated=True, issuer="https://accounts.google.com")
+    sender = _FakeSender()
+    notify_mentions(store, note, sender)
+    _, _, body = sender.sent[0]
+    assert "verified identity" in body
+    assert "accounts.google.com" in body
+    assert "no user accounts" not in body  # the self-declared caveat must NOT appear
+
+
+def test_a_verified_note_with_no_issuer_still_reads_sensibly():
+    store = _team()
+    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva hi", authenticated=True)
+    sender = _FakeSender()
+    notify_mentions(store, note, sender)
+    _, _, body = sender.sent[0]
+    assert "their identity provider" in body

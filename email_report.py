@@ -1,9 +1,9 @@
 """Emailing the CIO Tear Sheet PDF directly from the app, via SMTP.
 
-Quantix has no accounts or credential storage of its own (the same
-disclosed limitation every other local store in this app already
-carries), so SMTP credentials are never entered into the app's UI or
-written to disk by it. They're read at send time from Streamlit's own
+Quantix stores no credentials of its own — not even now that it has
+sign-in, since auth.py delegates the whole OIDC flow to Streamlit and
+never handles a secret itself. SMTP credentials are likewise never
+entered into the app's UI or written to disk by it. They're read at send time from Streamlit's own
 secrets mechanism (.streamlit/secrets.toml, an [smtp] table — see
 .streamlit/secrets.toml.example for the exact keys) or, as a fallback,
 QUANTIX_SMTP_*-prefixed environment variables — both standard,

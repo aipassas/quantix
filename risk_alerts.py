@@ -38,7 +38,7 @@ from config import CHART_DEFAULTS, RISK, WATCHLIST
 from data_loader import load_ticker_bundle
 from financial_standardization import standardize_financials
 from fundamental_analysis import FundamentalAnalysisEngine
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from user_thresholds import effective_risk
 from logging_setup import get_logger, log_event, log_exception
 from price_processing import process_price_data
@@ -117,7 +117,7 @@ _RULES_STORE_FILENAME = "risk_alert_rules_store.json"
 
 
 def _rules_store_path() -> Path:
-    return Path(__file__).resolve().parent / _RULES_STORE_FILENAME
+    return store_path(_RULES_STORE_FILENAME)
 
 
 def load_rules(path: Optional[Path] = None) -> Optional[List[dict]]:

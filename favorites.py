@@ -26,8 +26,8 @@ one file, since they're written together on the same interactions.
 
 Persisted with the same atomic-write, gitignored-local-file pattern
 every other piece of cross-restart state in this app uses (see
-local_store.py). Quantix has no accounts, so this is a single shared
-store for whoever runs this instance, not per-user.
+local_store.py). Scoped per signed-in user when auth is configured, and
+shared instance-wide when it isn't — see auth.py.
 """
 import json
 import logging
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from config import FAVORITES
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_exception
 
 logger = get_logger("favorites")
@@ -49,7 +49,7 @@ class QuickAccessStore:
 
 
 def _store_path() -> Path:
-    return Path(__file__).resolve().parent / FAVORITES.store_filename
+    return store_path(FAVORITES.store_filename)
 
 
 def load_store(path: Optional[Path] = None) -> QuickAccessStore:

@@ -239,7 +239,7 @@ class WatchlistPanelConfig:
 class RealtimeAlertsConfig:
     """Real-Time Alert Engine — in-tab polling, not a background worker;
     in-app notification only, not email/push; rules and trigger history
-    persisted to a local file, not per-user (Quantix has no accounts).
+    persisted to a local file, per signed-in user when auth is configured.
     Each of those three is a scope decision made explicitly with the user
     before this was built, not a silent simplification — see
     realtime_alerts.py's module docstring for the full reasoning."""
@@ -479,11 +479,11 @@ class OnboardingConfig:
     """The first-run guided walkthrough. "First-time user" here means
     "onboarding hasn't been completed/skipped on THIS local instance" —
     a single local flag file, not genuine per-browser/per-visitor
-    detection. Quantix has no accounts and no per-user identity (the same
-    honest limitation realtime_alerts.py, ml_pipeline.py, and
-    scenario_modeling.py already disclose for their own local stores), so
-    once anyone completes or skips it on a given locally-run instance, it
-    won't auto-trigger again for anyone else using that same instance —
+    detection. When auth is configured this flag is per signed-in user, so
+    each person gets the walkthrough once. Signed out — or on an instance
+    with no provider set up — it stays a single instance-wide flag, so
+    once anyone completes or skips it, it won't auto-trigger again for
+    anyone else sharing that signed-out profile —
     "Replay Tutorial" in the sidebar's System tab is how it's seen again
     on purpose. See onboarding.py's module docstring for why this is a
     native step-by-step panel rather than a spotlight-style overlay tour:
@@ -498,18 +498,26 @@ class ThemeConfig:
     and Plotly chart templates) — NOT the CIO Tear Sheet, which is a
     deliberately-white printed-report facsimile independent of the app
     theme (see theme.py). Persisted the same way every other cross-restart
-    preference in this app is: a single local JSON file, not a per-user
-    setting (Quantix has no accounts)."""
+    preference in this app is: a single local JSON file, scoped per
+    signed-in user when auth is configured (see auth.py)."""
     state_filename: str = "theme_state.json"
     default_theme: str = "dark"
 
 
 @dataclass(frozen=True)
 class CollaborationConfig:
-    """Per-ticker notes with @-mentions. Identity is SELF-DECLARED — this
-    app has no accounts, so an author name is a claim, not a proven fact,
-    and the UI says so. Mentions resolve only against the roster the user
-    curates, which is what bounds who the app can ever email."""
+    """Per-ticker notes with @-mentions.
+
+    Identity may be either SELF-DECLARED or AUTHENTICATED, and the
+    difference is carried all the way into the notification email rather
+    than being flattened away. Before auth.py existed every author name
+    was a claim; now a note written while signed in via OIDC carries a
+    verified name. A reader deciding how much weight to put on "Ana says
+    sell" needs to know which of those they're looking at, so the two
+    cases get two different closing lines instead of one hedged one.
+
+    Mentions resolve only against the roster the user curates, which is
+    what bounds who the app can ever email."""
     store_filename: str = "collaboration_store.json"
     max_members: int = 25
     max_note_chars: int = 2000
@@ -518,8 +526,19 @@ class CollaborationConfig:
         "Hi {name},\n\n"
         "{author} mentioned you in a note on {ticker} in Quantix:\n\n"
         "  {body}\n\n"
-        "Open Quantix to reply. Note that Quantix has no user accounts — the author name "
-        "above is self-declared rather than authenticated."
+        "Open Quantix to reply. {identity_note}"
+    )
+    # Notes written while signed out, on an instance with auth off, or by
+    # anyone who simply typed a name into the box.
+    identity_note_self_declared: str = (
+        "Note that Quantix has no user accounts — the author name above is "
+        "self-declared rather than authenticated."
+    )
+    # Notes written while signed in. The issuer is named because "verified"
+    # is only meaningful if you know who did the verifying.
+    identity_note_authenticated: str = (
+        "The author was signed in when they wrote this, so the name above is a "
+        "verified identity from {issuer} rather than a self-declared label."
     )
 
 

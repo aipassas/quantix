@@ -5,14 +5,22 @@ Annotations" entry and a team "Collaboration Features" one are the same
 feature with an author name attached, and building them separately would
 leave the app with two overlapping notes systems.
 
-IDENTITY IS SELF-DECLARED, NOT AUTHENTICATED. Quantix has no accounts —
-six other modules already document this — so there is nothing to hang a
-real user off. The honest model here is a shared team whiteboard: you say
-who you are, that name is stored with the note, and anyone using this
-instance can see and edit the thread. This is disclosed in the UI, not
-just here, because a note attributed to a name nobody proved they own is
-a materially weaker claim than a signed comment and the reader deserves
-to know that.
+IDENTITY MAY BE VERIFIED OR SELF-DECLARED, AND EACH NOTE RECORDS WHICH.
+When auth.py has a provider configured and the writer is signed in, the
+author name comes from their OIDC identity and the note is stored with
+authenticated=True plus the issuer that vouched for it. Otherwise the
+name is typed into a box and proves nothing. Both remain possible, so the
+distinction is stored per-note rather than inferred later: a note written
+while signed out does not retroactively become verified when its author
+signs in afterwards. The difference is surfaced in the thread, in the
+notification email, and here, because "Ana says sell" carries very
+different weight depending on whether anyone proved she wrote it.
+
+THESE NOTES STAY SHARED EVEN WHEN EVERYTHING ELSE GOES PER-USER. auth.py
+scopes watchlists, favourites, themes, thresholds, alert rules and
+scenarios to the signed-in user; this store is deliberately excluded. A
+thread on AAPL exists so teammates can read each other — namespacing it
+would quietly convert the collaboration feature into private diaries.
 
 @-MENTIONS RESOLVE ONLY AGAINST THE ROSTER. A mention is matched against
 the teammates explicitly added in the panel, never parsed as a free-form
@@ -74,6 +82,13 @@ class Note:
     created_at: str
     mentions: Tuple[str, ...] = ()      # roster NAMES that were matched
     notified: Tuple[str, ...] = ()      # names an email actually reached
+    # Whether `author` came from a signed-in OIDC identity or was typed
+    # into a box. Stored per-note rather than derived at read time,
+    # because it's a fact about the moment the note was written: a note
+    # written signed-out doesn't retroactively become verified when its
+    # author later signs in.
+    authenticated: bool = False
+    issuer: str = ""                    # who verified it, when authenticated
 
 
 @dataclass(frozen=True)
@@ -123,6 +138,8 @@ def load_store(path: Optional[Path] = None) -> CollaborationStore:
                 created_at=str(n.get("created_at") or ""),
                 mentions=tuple(str(x) for x in (n.get("mentions") or [])),
                 notified=tuple(str(x) for x in (n.get("notified") or [])),
+                authenticated=bool(n.get("authenticated", False)),
+                issuer=str(n.get("issuer") or ""),
             ))
         if good:
             notes[ticker] = tuple(good)
@@ -135,7 +152,8 @@ def save_store(store: CollaborationStore, path: Optional[Path] = None) -> None:
         "members": [{"name": m.name, "email": m.email} for m in store.members],
         "notes": {
             t: [{"id": n.id, "author": n.author, "body": n.body, "created_at": n.created_at,
-                 "mentions": list(n.mentions), "notified": list(n.notified)} for n in items]
+                 "mentions": list(n.mentions), "notified": list(n.notified),
+                 "authenticated": n.authenticated, "issuer": n.issuer} for n in items]
             for t, items in store.notes.items()
         },
     }
@@ -190,7 +208,8 @@ def parse_mentions(body: str, members: Tuple[TeamMember, ...]) -> Tuple[str, ...
 
 # --- notes --------------------------------------------------------------------
 
-def add_note(store: CollaborationStore, ticker: str, author: str, body: str) -> Tuple[CollaborationStore, Optional[Note], Optional[str]]:
+def add_note(store: CollaborationStore, ticker: str, author: str, body: str,
+             authenticated: bool = False, issuer: str = "") -> Tuple[CollaborationStore, Optional[Note], Optional[str]]:
     """Append a note to a ticker's thread. Returns (store, note, error).
 
     Newest-last, so the thread reads chronologically like a conversation.
@@ -214,6 +233,8 @@ def add_note(store: CollaborationStore, ticker: str, author: str, body: str) -> 
         body=body,
         created_at=datetime.datetime.now().isoformat(timespec="seconds"),
         mentions=parse_mentions(body, store.members),
+        authenticated=authenticated,
+        issuer=issuer,
     )
     thread = store.notes.get(ticker, ()) + (note,)
     return replace(store, notes={**store.notes, ticker: thread}), note, None
@@ -257,8 +278,15 @@ def notify_mentions(store: CollaborationStore, note: Note, sender) -> Tuple[Tupl
         if member is None:
             continue
         subject = COLLABORATION.mention_subject_template.format(author=note.author, ticker=note.ticker)
+        if note.authenticated:
+            identity_note = COLLABORATION.identity_note_authenticated.format(
+                issuer=note.issuer or "their identity provider",
+            )
+        else:
+            identity_note = COLLABORATION.identity_note_self_declared
         body = COLLABORATION.mention_body_template.format(
             name=member.name, author=note.author, ticker=note.ticker, body=note.body,
+            identity_note=identity_note,
         )
         ok, err = sender(member.email, subject, body)
         if ok:

@@ -63,7 +63,7 @@ import numpy as np
 import pandas as pd
 
 from config import DCF, SCENARIO_MODELING
-from local_store import atomic_write_text
+from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_event, log_exception
 from risk_analytics import (
     compute_expected_shortfall,
@@ -359,7 +359,7 @@ def run_scenario(
 # --- Persistence: local file, same pattern as realtime_alerts.py/ml_pipeline.py --
 
 def _store_path() -> Path:
-    return Path(__file__).resolve().parent / SCENARIO_MODELING.store_filename
+    return store_path(SCENARIO_MODELING.store_filename)
 
 
 def load_scenarios(path: Optional[Path] = None) -> List[ScenarioDefinition]:
