@@ -19,6 +19,11 @@ from email_report import is_email_configured, send_notification_email, send_repo
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
 from metric_help import chart_help, help_for
+from ticker_search import (
+    build_universe as ts_build_universe,
+    search_symbols as ts_search_symbols,
+    symbol_from_label as ts_symbol_from_label,
+)
 from historical_comparison import (
     available_range as hc_available_range,
     build_comparison as hc_build_comparison,
@@ -1232,6 +1237,93 @@ if _pending_ticker:
     st.session_state["ticker_input"] = _pending_ticker
 
 ticker_symbol = st.sidebar.text_input("Stock Ticker", key="ticker_input").upper()
+
+# --- Ticker autocomplete -----------------------------------------------------
+# Deliberately ADDITIVE: the free-text box above is untouched, because three
+# separate flows drive it through st.session_state["ticker_input"] (the
+# deferred _pending_ticker switch, watchlist row clicks, and the quick-access
+# chips) and it is also the only way to reach an arbitrary symbol. Both
+# controls here simply write to that same key and rerun, so every existing
+# path keeps working unchanged.
+#
+# Neither control is per-keystroke — Streamlit doesn't round-trip on every
+# keystroke and injected <script> doesn't execute (see ticker_search.py).
+# The dropdown filters its options client-side as you type; the name search
+# is one round-trip on submit.
+with st.sidebar.expander("🔎 Find a ticker", expanded=False):
+    _ts_known = list(WATCHLIST.tech_basket) + list(WATCHLIST.diversified_basket)
+    if "watchlist_store" in st.session_state:
+        for _ts_wl in st.session_state["watchlist_store"].lists.values():
+            _ts_known += list(_ts_wl.tickers)
+    if "quick_access_store" in st.session_state:
+        _ts_qa = st.session_state["quick_access_store"]
+        _ts_known += list(_ts_qa.favorites) + list(_ts_qa.recents)
+    _ts_universe = ts_build_universe(_ts_known)
+
+    _ts_labels = [m.label for m in _ts_universe]
+    _ts_pick = st.selectbox(
+        "Known tickers",
+        options=_ts_labels,
+        index=None,
+        placeholder="Type a ticker or company name…",
+        accept_new_options=True,
+        key="ts_pick",
+        help=(
+            "Filters as you type across every ticker this app already knows — the institutional "
+            "baskets, your watchlists, favorites and recently viewed. A symbol that isn't listed "
+            "can still be typed in directly; the list is a shortcut, not a restriction."
+        ),
+    )
+    if _ts_pick:
+        _ts_symbol = ts_symbol_from_label(_ts_pick)
+        # Two things are load-bearing here.
+        #
+        # 1. st.session_state["ts_pick"] is deliberately NOT cleared: a
+        #    widget's own key cannot be assigned after that widget has been
+        #    instantiated this run — Streamlit raises, which silently killed
+        #    the whole handler before the rerun ever fired. Same family as
+        #    the value=/key= footgun documented elsewhere in this app.
+        #
+        # 2. The trigger is "the dropdown CHANGED", not "the dropdown
+        #    disagrees with the current ticker". Those look equivalent and
+        #    aren't: with the latter, a stale selection left in the box
+        #    re-fires on every subsequent run and drags the ticker back,
+        #    so switching by any OTHER control (the name search below, a
+        #    watchlist row, a quick-access chip) would silently revert.
+        #    Caught live — a search pick of COIN was immediately undone by
+        #    a leftover "V — Visa Inc." in this box.
+        if _ts_pick != st.session_state.get("_ts_last_applied"):
+            st.session_state["_ts_last_applied"] = _ts_pick
+            if _ts_symbol and _ts_symbol != ticker_symbol:
+                st.session_state["_pending_ticker"] = _ts_symbol
+                log_event(logger, logging.INFO, "user.autocomplete_pick", ticker=_ts_symbol)
+                st.rerun()
+
+    st.markdown("---")
+    _ts_query = st.text_input(
+        "Search by company name",
+        key="ts_query",
+        placeholder="e.g. apple, nvid, vanguard",
+        help="Looks the name up against Yahoo on Enter — one request, not one per keystroke.",
+    )
+    if _ts_query and len(_ts_query.strip()) >= 2:
+        with st.spinner(f'Searching for "{_ts_query.strip()}"…'):
+            _ts_results, _ts_err = ts_search_symbols(_ts_query)
+        if _ts_err:
+            st.caption(_ts_err)
+        else:
+            st.caption(
+                f"{len(_ts_results)} match(es). Yahoo returns foreign cross-listings and tokenized "
+                "proxies alongside the primary listing, so check the exchange before picking."
+            )
+            for _ts_m in _ts_results:
+                if st.button(_ts_m.label, key=f"ts_hit_{_ts_m.symbol}", width="stretch",
+                             help=_ts_m.detail or None):
+                    # Same reason as above — ts_query is this run's widget key
+                    # and assigning to it here would raise and abort the switch.
+                    st.session_state["_pending_ticker"] = _ts_m.symbol
+                    log_event(logger, logging.INFO, "user.autocomplete_search_pick", ticker=_ts_m.symbol)
+                    st.rerun()
 
 today = datetime.date.today()
 one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_days)
