@@ -1,5 +1,16 @@
-"""Plain-language explanations for every metric the app displays — the
-single source of truth behind the `help=` tooltip on each st.metric.
+"""Plain-language explanations for every metric AND chart the app
+displays — the single source of truth behind the `help=` tooltip on each
+st.metric and the explanatory caption above each chart.
+
+WHY CHARTS GET A CAPTION RATHER THAN A TOOLTIP: st.plotly_chart has no
+`help=` parameter (checked against Streamlit 1.58 — its signature is
+figure_or_data / use_container_width / width / height / theme / key /
+on_select / selection_mode / config), so a hover tooltip simply isn't
+available for a chart. A caption directly above it is the honest
+equivalent, and it was already this app's own convention for the handful
+of charts that had any explanation at all. Plotly's native hover readout
+still covers "what is this data point"; these captions cover the
+different question of "what is this chart telling me".
 
 WHY A CENTRAL GLOSSARY RATHER THAN INLINE STRINGS: several metrics are
 shown in more than one panel (Max Drawdown appears in the Risk Dashboard,
@@ -264,6 +275,75 @@ GLOSSARY: Dict[str, str] = {
 }
 
 
+# --- Charts -----------------------------------------------------------------
+# Same house style as the metric glossary above: what it shows, then how to
+# read it. Rendered as a caption directly above each chart (see the module
+# docstring for why a caption rather than a tooltip).
+CHART_HELP: Dict[str, str] = {
+    "price_technicals": (
+        "Price with whichever overlays you enabled above, and any oscillator panels stacked "
+        "beneath it. Crossover markers show where a signal actually fired — drag to zoom into a "
+        "stretch, and double-click to reset."
+    ),
+    "relative_strength": (
+        "This stock's cumulative return against the benchmark's over the same window. The gap "
+        "between the lines IS the outperformance: above means it beat the market, below means it "
+        "lagged."
+    ),
+    "risk_gauge": (
+        f"The Composite Risk Score on a 0–100 scale, blending every risk metric below into one "
+        f"number. Higher is safer, and the coloured bands mark the app's own risk bands."
+    ),
+    "var_distribution": (
+        "How often each size of daily return actually occurred, with the VaR and CVaR cut-offs "
+        "marked. The left tail is what those two measure — VaR is where it starts, CVaR is the "
+        "average of everything beyond it."
+    ),
+    "drawdown_underwater": (
+        "How far below its running peak the price sat on each day — it touches zero at every new "
+        "high and dips in between. The deepest point is the Maximum Drawdown quoted above."
+    ),
+    "strategy_equity": (
+        "What the strategy did to your capital over time, against simply buying and holding. Watch "
+        "the gap between the lines, and whether the strategy actually dodged the drops rather than "
+        "just finishing higher."
+    ),
+    "walk_forward_equity": (
+        "In-sample performance (data the strategy was fitted on) against out-of-sample (data it "
+        "never saw). A large drop from the first to the second is the classic signature of a "
+        "strategy fitted to noise."
+    ),
+    "portfolio_equity": (
+        "The periodically rebalanced basket against the same weights left untouched. The gap "
+        "between them is what rebalancing actually added — or cost."
+    ),
+    "monte_carlo_paths": (
+        "Many simulated future price paths from today's price, each one a different random draw. "
+        "Read the SPREAD rather than any single line: its width is the range of outcomes the model "
+        "considers plausible."
+    ),
+    "seasonality_surface": (
+        "Monthly returns laid out year by year, so a month that repeatedly behaves the same way "
+        "shows up as a ridge or valley running across years. Drag to rotate — a consistent ridge "
+        "is a tendency, not a guarantee."
+    ),
+    "peer_radar": (
+        "This stock's standing against its peers on each axis, so a larger enclosed shape means "
+        "broadly stronger. Any axis pulled in toward the centre is where it trails the peer group."
+    ),
+    "correlation_matrix": (
+        "How closely each pair of holdings moves together, from -1 (opposite) through 0 (unrelated) "
+        "to 1 (identical). A grid full of high values means the basket is far less diversified than "
+        "the number of names in it suggests."
+    ),
+    "efficient_frontier": (
+        "Each point is a possible mix of these holdings, placed by the risk it carries against the "
+        "return it earned. The upper-left edge is the efficient frontier — the most return "
+        "available at each level of risk."
+    ),
+}
+
+
 def help_for(key: str) -> str:
     """The tooltip text for a metric key.
 
@@ -275,3 +355,9 @@ def help_for(key: str) -> str:
     fails the suite rather than waiting to be noticed in the browser.
     """
     return GLOSSARY[key]
+
+
+def chart_help(key: str) -> str:
+    """The explanatory caption for a chart. Raises KeyError on an unknown
+    key for the same reason help_for() does."""
+    return CHART_HELP[key]

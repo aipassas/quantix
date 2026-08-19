@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from config import RISK, TECHNICAL
-from metric_help import GLOSSARY, help_for
+from metric_help import CHART_HELP, GLOSSARY, chart_help, help_for
 
 FINANCE_PY = Path(__file__).resolve().parent.parent / "finance.py"
 
@@ -45,6 +45,17 @@ def _help_for_keys(tree):
             and n.args and isinstance(n.args[0], ast.Constant)]
 
 
+def _chart_calls(tree):
+    return [n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and _call_name(n).endswith("plotly_chart")]
+
+
+def _chart_help_keys(tree):
+    return [n.args[0].value for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and _call_name(n) == "chart_help"
+            and n.args and isinstance(n.args[0], ast.Constant)]
+
+
 # --- the acceptance criteria, checked against finance.py's real source ---------
 
 def test_every_metric_on_screen_has_a_tooltip():
@@ -72,6 +83,59 @@ def test_glossary_has_no_dead_entries():
     used = set(_help_for_keys(_finance_tree()))
     unused = sorted(set(GLOSSARY) - used)
     assert unused == [], f"glossary entries nothing references: {unused}"
+
+
+def test_every_chart_has_an_explanatory_caption():
+    """The chart half of "every metric/chart". st.plotly_chart has no help=
+    parameter, so the caption is the mechanism — this asserts one exists
+    for every chart by counting chart_help() references against
+    st.plotly_chart calls, so a chart added later without an explanation
+    fails the suite."""
+    tree = _finance_tree()
+    charts = _chart_calls(tree)
+    captions = _chart_help_keys(tree)
+    assert len(captions) >= len(charts), (
+        f"{len(charts)} charts but only {len(captions)} chart_help() captions — "
+        "a chart is missing its explanation"
+    )
+
+
+def test_finance_only_references_chart_keys_that_exist():
+    unknown = sorted({k for k in _chart_help_keys(_finance_tree()) if k not in CHART_HELP})
+    assert unknown == [], f"finance.py references unknown chart keys: {unknown}"
+
+
+def test_chart_glossary_has_no_dead_entries():
+    used = set(_chart_help_keys(_finance_tree()))
+    unused = sorted(set(CHART_HELP) - used)
+    assert unused == [], f"chart entries nothing references: {unused}"
+
+
+def test_chart_captions_follow_the_same_house_style():
+    for key, text in CHART_HELP.items():
+        assert text.strip(), f"{key}: empty"
+        assert text[0].isupper(), f"{key}: does not start with a capital"
+        assert text.rstrip().endswith("."), f"{key}: does not end with a full stop"
+        assert 40 <= len(text) <= 340, f"{key}: {len(text)} chars"
+        assert "  " not in text, f"{key}: contains a double space"
+
+
+def test_chart_captions_say_how_to_read_the_chart():
+    """A caption that only names the chart ("Pairwise correlation over 252
+    days") is what this task set out to improve on — each one has to tell
+    the reader what to actually look at."""
+    reading_cues = ("read", "look", "watch", "means", "shows up", "gap", "spread",
+                    "higher", "larger", "deepest", "above", "below", "edge", "tail",
+                    "drop", "signature")
+    for key, text in CHART_HELP.items():
+        assert any(c in text.lower() for c in reading_cues), (
+            f"{key}: describes the chart but never says how to read it"
+        )
+
+
+def test_chart_help_raises_on_unknown_key():
+    with pytest.raises(KeyError):
+        chart_help("not_a_real_chart")
 
 
 def test_the_metrics_the_task_named_explicitly_are_covered():

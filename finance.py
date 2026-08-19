@@ -18,7 +18,7 @@ from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_report_email
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
-from metric_help import help_for
+from metric_help import chart_help, help_for
 from favorites import (
     is_favorite,
     load_store as load_quick_access,
@@ -2194,6 +2194,7 @@ else:
         # Explicit, not relying on Streamlit/Plotly defaults: the modebar (with
         # its built-in zoom/pan/fullscreen-expand controls) stays visible, mouse
         # scroll zooms directly, and the Plotly logo link is dropped as clutter.
+        st.caption(chart_help("price_technicals"))
         st.plotly_chart(fig, width="stretch", config={'displayModeBar': True, 'scrollZoom': True, 'displaylogo': False})
 
         # Current-value interpretation (RSI Interpretation Engine) — the shaded
@@ -2298,6 +2299,7 @@ else:
             fig_alpha.add_trace(go.Scatter(x=df.index, y=df['CumReturn']*100, name=ticker_symbol, line=dict(color='orange')))
             fig_alpha.add_trace(go.Scatter(x=bench_df.index, y=bench_df['CumReturn']*100, name=benchmark_symbol, line=dict(color='gray')))
             fig_alpha.update_layout(xaxis_rangeslider_visible=False, height=400, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.caption(chart_help("relative_strength"))
             st.plotly_chart(fig_alpha, width="stretch")
 
             # --- Performance Attribution: a deeper breakdown of the same Alpha
@@ -2424,6 +2426,7 @@ else:
             },
         ))
         fig_risk_gauge.update_layout(height=280, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=60, b=20))
+        st.caption(chart_help("risk_gauge"))
         st.plotly_chart(fig_risk_gauge, width="stretch")
         if risk_score_result.excluded_factors:
             st.caption(f"Not computable for {ticker_symbol} and excluded from the composite score (rather than counted as a failure): {', '.join(risk_score_result.excluded_factors)}.")
@@ -2496,7 +2499,7 @@ else:
                 height=300, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 xaxis_title="Daily log return (%)", yaxis_title="Frequency", showlegend=False, margin=dict(t=30, b=30),
             )
-            st.caption(f"Return distribution over the last {var_lookback} trading days, with VaR and CVaR marked")
+            st.caption(f'{chart_help("var_distribution")} Shown over the last {var_lookback} trading days.')
             st.plotly_chart(fig_var, width="stretch")
         else:
             st.info(f"VaR needs at least {RISK.var_min_observations} trading days of returns in the selected lookback window — widen the date range or shorten the lookback to see it.")
@@ -2557,7 +2560,7 @@ else:
                 height=300, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 yaxis_title="Drawdown (%)", showlegend=False, margin=dict(t=20, b=20),
             )
-            st.caption("Underwater chart: % decline from the running peak over time, worst point marked")
+            st.caption(chart_help("drawdown_underwater"))
             st.plotly_chart(fig_dd, width="stretch")
 
             st.markdown("##")
@@ -3113,6 +3116,7 @@ else:
             plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified"
         )
+        st.caption(chart_help("strategy_equity"))
         st.plotly_chart(fig_bt, width="stretch")
 
         # --- Walk-Forward Validation (optional, alongside the single-pass backtest above) ---
@@ -3167,6 +3171,7 @@ else:
                     plot_bgcolor='rgba(0,0,0,0)',
                     hovermode="x unified",
                 )
+                st.caption(chart_help("walk_forward_equity"))
                 st.plotly_chart(fig_wf, width="stretch")
 
                 with st.expander(f"Per-window out-of-sample performance ({wf_result.window_count} windows)"):
@@ -3296,6 +3301,7 @@ else:
                 template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 hovermode="x unified",
             )
+            st.caption(chart_help("portfolio_equity"))
             st.plotly_chart(fig_pbt, width="stretch")
 
             st.markdown("**Per-Ticker Contribution**")
@@ -3406,6 +3412,7 @@ else:
                 plot_bgcolor='rgba(0,0,0,0)',
                 hovermode="x"
             )
+            st.caption(chart_help("monte_carlo_paths"))
             st.plotly_chart(fig_mc, width="stretch")
 
             # 6. Feed the Monte Carlo insights down into the final verdict
@@ -3493,6 +3500,7 @@ else:
                 # Split the layout to show the 3D graph and the exact data insights
                 c1, c2 = st.columns([2.5, 1])
                 with c1:
+                    st.caption(chart_help("seasonality_surface"))
                     st.plotly_chart(fig_3d, width="stretch")
 
                 with c2:
@@ -3715,6 +3723,7 @@ else:
                     margin=dict(l=40, r=40, t=40, b=40)
                 )
 
+                st.caption(chart_help("peer_radar"))
                 st.plotly_chart(fig_radar, width="stretch")
 
                 # --- 4. Relative Performance: outperform/laggard flagging ---
@@ -3892,7 +3901,7 @@ else:
                     colorbar=dict(title="Correlation"),
                 ))
                 fig_corr.update_layout(height=350 + 20 * len(alignment.included_tickers), template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=30, b=30))
-                st.caption(f"Pairwise correlation over the last {portfolio_lookback} trading days")
+                st.caption(f'{chart_help("correlation_matrix")} Measured over the last {portfolio_lookback} trading days.')
                 st.plotly_chart(fig_corr, width="stretch")
 
                 diversification = compute_portfolio_diversification(alignment.returns)
@@ -3938,6 +3947,7 @@ else:
                         height=450, template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                         hovermode="closest",
                     )
+                    st.caption(chart_help("efficient_frontier"))
                     st.plotly_chart(fig_frontier, width="stretch")
 
                     w1, w2 = st.columns(2)
