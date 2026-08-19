@@ -107,6 +107,22 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def shared_path(filename: str) -> Path:
+    """Where a deliberately SHARED store lives — team notes, the trained
+    model. Always the app directory, never a user namespace.
+
+    This exists so that EVERY store path in the app resolves through
+    app_dir(), including the ones that are intentionally not namespaced.
+    The modules that own these files used to build their paths from
+    `Path(__file__).parent` directly, which looks equivalent and isn't:
+    it cannot be redirected. A verification script that carefully pointed
+    app_dir() at a sandbox still wrote a test note straight into the real
+    collaboration store, because that module never consulted app_dir() at
+    all. One resolver for every store closes that off.
+    """
+    return app_dir() / filename
+
+
 def store_path(filename: str, namespace: Optional[str] = None) -> Path:
     """Where `filename` lives for the current user.
 

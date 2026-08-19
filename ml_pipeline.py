@@ -63,7 +63,7 @@ from sklearn.preprocessing import StandardScaler
 
 from config import CHART_DEFAULTS, ML_PIPELINE, RISK, WATCHLIST
 from data_loader import load_price_history_only
-from local_store import atomic_write_text
+from local_store import atomic_write_text, shared_path
 from logging_setup import get_logger, log_event, log_exception
 from price_processing import process_price_data
 from risk_analytics import compute_rolling_volatility
@@ -324,11 +324,11 @@ def train_momentum_model(
 # --- Persistence: local files, same pattern as realtime_alerts.py's store ----
 
 def _model_path() -> Path:
-    return Path(__file__).resolve().parent / ML_PIPELINE.model_filename
+    return shared_path(ML_PIPELINE.model_filename)
 
 
 def _history_path() -> Path:
-    return Path(__file__).resolve().parent / ML_PIPELINE.history_filename
+    return shared_path(ML_PIPELINE.history_filename)
 
 
 def save_model(model: Pipeline, result: TrainingResult, model_path: Optional[Path] = None, history_path: Optional[Path] = None) -> None:

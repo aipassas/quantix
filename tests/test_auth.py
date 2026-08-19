@@ -277,6 +277,58 @@ def test_deliberately_shared_modules_do_not_namespace_their_stores(module):
     )
 
 
+def test_every_store_resolves_through_app_dir():
+    """No store module may build its path from Path(__file__) directly.
+
+    This is a REGRESSION TEST FOR A REAL ACCIDENT. A verification script
+    pointed local_store.app_dir() at a sandbox and then wrote through the
+    store modules, believing that isolated it. collaboration.py did not
+    consult app_dir() at all — it built its path from Path(__file__) — so
+    the write went straight into the live collaboration store and left a
+    junk note in the user's real data.
+
+    Routing every store through app_dir() is what makes sandboxing
+    actually work. logging_setup is excluded: it owns the log file, not a
+    store, and is initialised before any of this exists.
+    """
+    offenders = []
+    for path in sorted(APP_DIR.glob("*.py")):
+        if path.name == "logging_setup.py":
+            continue
+        if "Path(__file__).resolve().parent /" in path.read_text():
+            offenders.append(path.name)
+    assert not offenders, (
+        f"{offenders} resolve a path from Path(__file__) instead of via "
+        f"local_store.store_path() / shared_path(), so they cannot be redirected "
+        f"and will write into the real app directory during tests"
+    )
+
+
+def test_redirecting_app_dir_sandboxes_shared_stores_too(tmp_path, monkeypatch):
+    """The other half of the same accident: a test that redirects app_dir
+    must capture the deliberately-shared stores as well, not just the
+    namespaced ones."""
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    import collaboration
+
+    store, _, _ = collaboration.add_note(
+        collaboration.CollaborationStore(), "AAPL", "Tester", "sandboxed note")
+    collaboration.save_store(store)
+
+    assert (tmp_path / "collaboration_store.json").exists()
+    real = APP_DIR / "collaboration_store.json"
+    # Absent on a fresh checkout; present on a working instance. Either way
+    # the sandboxed note must not be in it.
+    assert "sandboxed note" not in (real.read_text() if real.exists() else ""), \
+        "the note escaped the sandbox and was written into the real store"
+
+
+def test_shared_path_never_namespaces(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    local_store.set_namespace_provider(lambda: "google-abc")
+    assert local_store.shared_path("collaboration_store.json") == tmp_path / "collaboration_store.json"
+
+
 # --- provider configuration ---------------------------------------------------
 
 def _secrets(monkeypatch, section):

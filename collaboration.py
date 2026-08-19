@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import COLLABORATION
-from local_store import atomic_write_text
+from local_store import atomic_write_text, shared_path
 from logging_setup import get_logger, log_exception
 
 logger = get_logger("collaboration")
@@ -98,7 +98,7 @@ class CollaborationStore:
 
 
 def _store_path() -> Path:
-    return Path(__file__).resolve().parent / COLLABORATION.store_filename
+    return shared_path(COLLABORATION.store_filename)
 
 
 def load_store(path: Optional[Path] = None) -> CollaborationStore:

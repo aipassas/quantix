@@ -2003,6 +2003,23 @@ else:
                         help="Stored with the note as its author. Self-declared — nothing verifies it.",
                     )
             _cl_handles = ", ".join(f"@{m.handle}" for m in _cl_store.members) or "no teammates added yet"
+            # Clear the compose box after a successful post — deferred to
+            # the top of the NEXT run, before the widget is instantiated.
+            #
+            # The obvious version (pop the key in the button handler, then
+            # rerun) does not work, and was shipped broken: popping a
+            # text_area's key AFTER the widget has rendered raises nothing
+            # and clears nothing, because Streamlit restores the widget's
+            # value from its own widget-state layer on the next run rather
+            # than from the session_state mirror that was popped. Verified
+            # side by side in an isolated app — the popped box still read
+            # "Test1" after posting; this one comes back empty.
+            #
+            # It mattered: a box that still holds the text you just posted
+            # reads as "nothing happened", and the second click posts a
+            # duplicate. That is exactly how it was found.
+            if st.session_state.pop("_collab_clear_body", False):
+                st.session_state["collab_body"] = ""
             _cl_body = st.text_area(
                 "Add a note", key="collab_body",
                 placeholder="Your thesis, a concern, a reminder… mention a teammate with @",
@@ -2048,7 +2065,7 @@ else:
                         st.success("Note posted.")
                     log_event(logger, logging.INFO, "user.note_posted",
                               ticker=ticker_symbol, mentions=len(_cl_note.mentions))
-                    st.session_state.pop("collab_body", None)
+                    st.session_state["_collab_clear_body"] = True
                     st.rerun()
 
             st.markdown("---")
