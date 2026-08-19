@@ -26,3 +26,4 @@ favorites_store.json
 # a hard kill mid-write; ignored so one can't be committed by accident.
 .*.tmp
 .streamlit/secrets.toml
+threshold_overrides.json

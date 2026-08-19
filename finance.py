@@ -19,6 +19,20 @@ from email_report import is_email_configured, send_report_email
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
 from metric_help import chart_help, help_for
+from user_thresholds import (
+    EDITABLE as THRESHOLD_SPECS,
+    EDITABLE_BY_KEY as THRESHOLD_SPECS_BY_KEY,
+    effective_risk,
+    effective_scorecard,
+    effective_sector_pe as threshold_effective_sector_pe,
+    effective_values as threshold_effective_values,
+    load_overrides as load_threshold_overrides,
+    load_sector_pe as load_threshold_sector_pe,
+    reset_all as reset_thresholds,
+    validate as validate_thresholds,
+    save_overrides as save_threshold_overrides,
+    save_sector_pe as save_threshold_sector_pe,
+)
 from favorites import (
     is_favorite,
     load_store as load_quick_access,
@@ -54,7 +68,7 @@ from scenario_modeling import (
 from competitive_benchmarking import METRICS, build_benchmark_rows, build_peer_metrics
 from onboarding import STEPS as ONBOARDING_STEPS, has_completed_onboarding, mark_onboarding_done
 from sector_percentile import MIN_PEERS as SECTOR_MIN_PEERS, compute_sector_percentiles, format_percentile
-from risk_alerts import METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, load_rules, save_rules, watchlist_tickers
+from risk_alerts import effective_default_threshold as rt_effective_default_threshold, METRICS as RISK_ALERT_METRICS, METRICS_BY_KEY as RISK_ALERT_METRICS_BY_KEY, OPERATORS as RISK_ALERT_OPERATORS, AlertRule, compute_watchlist_snapshots, evaluate_alerts, load_rules, save_rules, watchlist_tickers
 from realtime_alerts import (
     ALL_TRIGGER_TYPES as RT_ALL_TRIGGER_TYPES,
     FUNDAMENTAL_TRIGGER_TYPE as RT_FUNDAMENTAL_TRIGGER_TYPE,
@@ -591,6 +605,130 @@ with st.spinner("Analyzing macro sectors and grouping asset classes..."):
         st.write("No diversified sector leaders currently pass basic filters.")
 
 # ==========================================
+# CUSTOM THRESHOLDS
+# ==========================================
+# Placed here, above the Screener and Alerts and before the analysis tabs,
+# because it governs all of them: the same numbers drive the Scorecard's
+# pass/fail checks, the Altman verdict the screener reports, and the
+# default an alert rule starts at. Collapsed by default so it costs
+# nothing until wanted. Deliberately NOT in the sidebar — 17 numeric
+# inputs plus a sector table need horizontal room the ~300px sidebar
+# doesn't have.
+st.markdown("---")
+with st.expander("⚙️ Custom Thresholds", expanded=False):
+    st.caption(
+        "Your own valuation and risk cut-offs, applied consistently to the Scorecard, the Altman "
+        "verdict the screener reports, and the default a new alert rule starts at. Only the "
+        "pass/fail LINES are editable — the per-metric scoring weights and the Composite Risk "
+        "Score's internal anchors deliberately aren't, since those change how a score is computed "
+        "rather than where its threshold sits. Blank the store with Reset to return to the "
+        "shipped defaults."
+    )
+
+    _thr_values = threshold_effective_values()
+    # Pre-seed each widget's session_state entry, then render with key= only.
+    # Passing BOTH value= and key= is the stomping bug this codebase has hit
+    # before: once the key holds a value, a re-passed value= can silently
+    # revert the user's edit on the next rerun.
+    for _spec in THRESHOLD_SPECS:
+        _wkey = f"thr_{_spec.key}"
+        if _wkey not in st.session_state:
+            st.session_state[_wkey] = float(_thr_values[_spec.key])
+
+    _thr_groups = (
+        ("Profitability & capital efficiency", ("min_net_margin", "min_roic_pct", "min_fcf_yield_pct")),
+        ("Leverage & liquidity", ("max_debt_to_equity", "financials_max_debt_to_equity",
+                                  "min_current_ratio", "min_interest_coverage")),
+        ("Valuation & market", ("pe_range_low", "pe_range_high", "peg_range_low",
+                                "peg_range_high", "max_beta")),
+        ("Verdict bands", ("high_alignment_pct", "moderate_alignment_pct")),
+        ("Risk", ("altman_safe_zone", "altman_grey_zone", "vix_high_risk_threshold")),
+    )
+    for _grp_label, _grp_keys in _thr_groups:
+        st.markdown(f"**{_grp_label}**")
+        _grp_cols = st.columns(len(_grp_keys))
+        for _gc, _gkey in zip(_grp_cols, _grp_keys):
+            _gspec = THRESHOLD_SPECS_BY_KEY[_gkey]
+            with _gc:
+                st.number_input(
+                    _gspec.label, key=f"thr_{_gkey}", help=_gspec.helptext,
+                    min_value=float(_gspec.minimum), max_value=float(_gspec.maximum),
+                    step=float(_gspec.step),
+                )
+
+    st.markdown("---")
+    st.markdown("**Sector P/E bands**")
+    st.caption(
+        "Overrides the global P/E band for a named sector — the task's own example of tech vs "
+        "utilities. Sector names must match Yahoo's spelling exactly to take effect (both "
+        "\"Financial Services\" and \"Financials\" are listed because Yahoo has used each). Any "
+        "sector not listed here falls back to the global band above. Add or delete rows directly "
+        "in the table; PEG is deliberately not sector-adjusted, since it already divides P/E by "
+        "growth."
+    )
+    _sector_rows = [
+        {"Sector": _s, "P/E Low": float(_lo), "P/E High": float(_hi)}
+        for _s, (_lo, _hi) in sorted(threshold_effective_sector_pe().items())
+    ]
+    _sector_edited = st.data_editor(
+        pd.DataFrame(_sector_rows, columns=["Sector", "P/E Low", "P/E High"]),
+        num_rows="dynamic", width="stretch", key="thr_sector_editor",
+        column_config={
+            "Sector": st.column_config.TextColumn("Sector", help="Yahoo's sector name, spelled exactly."),
+            "P/E Low": st.column_config.NumberColumn("P/E Low", min_value=0.0, max_value=500.0, step=1.0),
+            "P/E High": st.column_config.NumberColumn("P/E High", min_value=0.0, max_value=500.0, step=1.0),
+        },
+    )
+
+    _thr_save_col, _thr_reset_col, _thr_status_col = st.columns([1, 1, 4])
+    with _thr_save_col:
+        if st.button("Save thresholds", type="primary"):
+            _thr_new = {s.key: float(st.session_state[f"thr_{s.key}"]) for s in THRESHOLD_SPECS}
+            _thr_errors = []
+            _thr_table = {}
+            for _row in _sector_edited.to_dict("records"):
+                _rs = str(_row.get("Sector") or "").strip()
+                if not _rs:
+                    continue
+                try:
+                    _rlo, _rhi = float(_row.get("P/E Low")), float(_row.get("P/E High"))
+                except (TypeError, ValueError):
+                    _thr_errors.append(f'Sector "{_rs}": P/E values must be numbers.')
+                    continue
+                _thr_table[_rs] = (_rlo, _rhi)
+
+            # Cross-field checks live in user_thresholds.validate() so they're
+            # unit-tested rather than buried in this script.
+            _thr_errors.extend(validate_thresholds(_thr_new, _thr_table))
+            if _thr_errors:
+                for _e in _thr_errors:
+                    st.warning(_e)
+            else:
+                save_threshold_overrides(_thr_new)
+                save_threshold_sector_pe(_thr_table)
+                log_event(logger, logging.INFO, "user.thresholds_saved",
+                          changed=len(load_threshold_overrides()), sectors=len(_thr_table))
+                st.success("Thresholds saved — Scorecard, alerts and screener now use them.")
+    with _thr_reset_col:
+        if st.button("Reset to defaults"):
+            reset_thresholds()
+            for _spec in THRESHOLD_SPECS:
+                st.session_state.pop(f"thr_{_spec.key}", None)
+            st.session_state.pop("thr_sector_editor", None)
+            log_event(logger, logging.INFO, "user.thresholds_reset")
+            st.rerun()
+    with _thr_status_col:
+        _thr_changed = load_threshold_overrides()
+        _thr_sectors = load_threshold_sector_pe()
+        if _thr_changed or _thr_sectors:
+            st.caption(
+                f"{len(_thr_changed)} threshold(s) and {len(_thr_sectors)} sector band(s) "
+                "differ from the shipped defaults."
+            )
+        else:
+            st.caption("Currently using the shipped defaults for everything.")
+
+# ==========================================
 # STOCK SCREENER
 # ==========================================
 st.markdown("---")
@@ -734,7 +872,7 @@ if "risk_alert_rules" not in st.session_state:
     else:
         st.session_state["risk_alert_rules"] = [
             {"metric": "risk_score", "operator": "<", "threshold": 50.0},
-            {"metric": "altman_z", "operator": "<", "threshold": RISK.altman_grey_zone},
+            {"metric": "altman_z", "operator": "<", "threshold": effective_risk().altman_grey_zone},
         ]
         save_rules(st.session_state["risk_alert_rules"])
 
@@ -906,7 +1044,7 @@ elif _rt_new_type == RT_FUNDAMENTAL_TRIGGER_TYPE:
         # per-metric default while still letting the user's own edit stick
         # across reruns once they've touched it for that metric.
         if st.session_state.get("_rt_new_fund_threshold_for_metric") != _rt_new_metric:
-            st.session_state["rt_new_fund_threshold"] = float(RISK_ALERT_METRICS_BY_KEY[_rt_new_metric].default_threshold)
+            st.session_state["rt_new_fund_threshold"] = rt_effective_default_threshold(_rt_new_metric)
             st.session_state["_rt_new_fund_threshold_for_metric"] = _rt_new_metric
         _rt_new_threshold = st.number_input("Threshold", key="rt_new_fund_threshold")
 else:
@@ -1538,10 +1676,10 @@ else:
         st.header("Macro Regime & Systemic Risk", anchor="macro-regime")
         vix_current = vix_df['Close'].iloc[-1] if not vix_df.empty else 20.0
         tnx_current = tnx_df['Close'].iloc[-1] if not tnx_df.empty else 4.0
-        macro_risk_flag = vix_current > RISK.vix_high_risk_threshold
+        macro_risk_flag = vix_current > effective_risk().vix_high_risk_threshold
 
         m1, m2 = st.columns(2)
-        m1.metric("VIX (Fear Index)", f"{vix_current:.2f}", delta=f"High Risk (>{RISK.vix_high_risk_threshold:.0f})" if macro_risk_flag else "Stable Market", delta_color="inverse" if macro_risk_flag else "normal", help=help_for("vix"))
+        m1.metric("VIX (Fear Index)", f"{vix_current:.2f}", delta=f"High Risk (>{effective_risk().vix_high_risk_threshold:.0f})" if macro_risk_flag else "Stable Market", delta_color="inverse" if macro_risk_flag else "normal", help=help_for("vix"))
         m2.metric("10-Year Treasury Yield", f"{tnx_current:.2f}%", help=help_for("treasury_10y"))
 
         if macro_risk_flag:
@@ -4075,7 +4213,7 @@ else:
         if macro_risk_flag:
             verdict = "STRONG AVOID"
             verdict_color = "#dc2626"
-            reason = f"Systemic market risk (VIX > {RISK.vix_high_risk_threshold:.0f}). Capital preservation prioritized over individual asset alpha."
+            reason = f"Systemic market risk (VIX > {effective_risk().vix_high_risk_threshold:.0f}). Capital preservation prioritized over individual asset alpha."
         elif score_pct >= TEAR_SHEET.strong_buy_min_score_pct and _mos > TEAR_SHEET.strong_buy_min_margin_of_safety:
             verdict = "STRONG BUY"
             verdict_color = "#16a34a"

@@ -35,6 +35,7 @@ import pandas as pd
 from scipy.stats import norm
 
 from config import RISK
+from user_thresholds import effective_risk
 
 
 def compute_log_returns(df: pd.DataFrame) -> pd.Series:
@@ -602,7 +603,11 @@ def compute_risk_score(
         ("Sharpe Ratio", sharpe_ratio, RISK.risk_score_sharpe_anchors, RISK.risk_score_weight_sharpe, lambda v: f"{v:.2f}"),
         ("Sortino Ratio", sortino_ratio, RISK.risk_score_sortino_anchors, RISK.risk_score_weight_sortino, lambda v: f"{v:.2f}"),
         ("Calmar Ratio", calmar_ratio, RISK.risk_score_calmar_anchors, RISK.risk_score_weight_calmar, lambda v: f"{v:.2f}"),
-        ("Altman Z-Score", altman_z, (RISK.altman_safe_zone, 0.0), RISK.risk_score_weight_altman_z, lambda v: f"{v:.2f}"),
+        # Anchored on the EFFECTIVE safe zone: the per-factor weights stay
+        # fixed (deliberately not user-editable), but the point at which
+        # Altman is considered fully safe has to agree with the verdict badge
+        # the user retuned, or the score and the badge would contradict.
+        ("Altman Z-Score", altman_z, (effective_risk().altman_safe_zone, 0.0), RISK.risk_score_weight_altman_z, lambda v: f"{v:.2f}"),
     ]
 
     factors: List[RiskFactor] = []

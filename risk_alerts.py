@@ -39,6 +39,7 @@ from data_loader import load_ticker_bundle
 from financial_standardization import standardize_financials
 from fundamental_analysis import FundamentalAnalysisEngine
 from local_store import atomic_write_text
+from user_thresholds import effective_risk
 from logging_setup import get_logger, log_event, log_exception
 from price_processing import process_price_data
 from risk_analytics import (
@@ -146,6 +147,20 @@ def save_rules(rules: List[dict], path: Optional[Path] = None) -> None:
     local store in this app."""
     path = path or _rules_store_path()
     atomic_write_text(path, json.dumps(rules, indent=2))
+
+
+def effective_default_threshold(metric_key: str) -> float:
+    """The threshold a NEW rule on this metric starts at.
+
+    Altman Z tracks the user's own configured Distress-zone boundary rather
+    than the value baked into METRICS at import time, so a retuned zone shows
+    up as the suggested default here too — the alert and the verdict badge
+    agree about what "distress" means. Every other metric keeps its static
+    spec default, since none of them corresponds to a user-editable threshold.
+    """
+    if metric_key == "altman_z":
+        return float(effective_risk().altman_grey_zone)
+    return float(METRICS_BY_KEY[metric_key].default_threshold)
 
 
 def watchlist_tickers() -> Tuple[str, ...]:

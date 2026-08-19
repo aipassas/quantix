@@ -92,6 +92,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from config import DCF, OUTLIER_BOUNDS, QUALITY, RISK, SCORECARD, WATCHLIST
+from user_thresholds import effective_risk, effective_scorecard
 from financial_standardization import StandardizedFinancials, normalize_debt_to_equity
 from logging_setup import get_logger, log_event
 
@@ -519,9 +520,13 @@ class FundamentalMetrics:
 
     @property
     def alignment_verdict(self) -> str:
-        if self.score_pct >= SCORECARD.high_alignment_pct:
+        # Reads the user's effective bands, not the shipped ones, so a
+        # retuned High/Moderate cut-off changes the verdict badge in step
+        # with the score it is describing.
+        sc = effective_scorecard()
+        if self.score_pct >= sc.high_alignment_pct:
             return "high"
-        if self.score_pct >= SCORECARD.moderate_alignment_pct:
+        if self.score_pct >= sc.moderate_alignment_pct:
             return "moderate"
         return "low"
 
@@ -541,9 +546,17 @@ class FundamentalAnalysisEngine:
     second, independent reference for comparison, not a source of truth.
     """
 
-    def __init__(self, standardized: StandardizedFinancials, raw_info: Optional[dict] = None):
+    def __init__(self, standardized: StandardizedFinancials, raw_info: Optional[dict] = None,
+                 scorecard=None):
         self.std = standardized
         self._info = raw_info or {}
+        # Defaults to the USER'S effective thresholds, not the shipped
+        # SCORECARD singleton. Defaulting here rather than at each of the five
+        # construction sites is what makes a retuned threshold reach scoring,
+        # the watchlist screen, the alert engine and the screener together —
+        # none of them has to remember to opt in. Tests pass an explicit
+        # config to pin exact numbers.
+        self._sc = scorecard if scorecard is not None else effective_scorecard()
 
     # ----- individual ratios -------------------------------------------------
 
@@ -653,9 +666,13 @@ class FundamentalAnalysisEngine:
 
         z = (1.2 * x1) + (1.4 * x2) + (3.3 * x3) + (0.6 * x4) + (0.999 * x5)
 
-        if z > RISK.altman_safe_zone:
+        # Effective (user-tunable) zones, so the verdict badge here, the
+        # screener's Altman column and the Composite Risk Score all classify
+        # against the same boundary the user set.
+        _risk = effective_risk()
+        if z > _risk.altman_safe_zone:
             verdict = "🟢 Safe Zone"
-        elif z >= RISK.altman_grey_zone:
+        elif z >= _risk.altman_grey_zone:
             verdict = "🟡 Grey Zone"
         else:
             verdict = "🔴 Distress Zone (High Risk)"
@@ -1238,7 +1255,7 @@ class FundamentalAnalysisEngine:
         from altman_z_score()).
         """
         s = self.std
-        de_threshold = SCORECARD.max_debt_to_equity_for(s.sector)
+        de_threshold = self._sc.max_debt_to_equity_for(s.sector)
         net_margin_pct = None if s.net_margin is None else s.net_margin * 100
         growth_pct = None if s.earnings_growth is None else s.earnings_growth * 100
         ev_ebitda = self.ev_to_ebitda_computed()
@@ -1305,53 +1322,53 @@ class FundamentalAnalysisEngine:
         This list is the single source for both the Strategic Investment
         Scorecard and the Master Matrix — add a metric here and it shows up
         in both, no dashboard changes required. Debt-to-Equity's threshold is
-        sector-adjusted (see SCORECARD.max_debt_to_equity_for); every check's
-        `weight` comes from SCORECARD.weights and determines how much it
+        sector-adjusted (see self._sc.max_debt_to_equity_for); every check's
+        `weight` comes from self._sc.weights and determines how much it
         contributes to the weighted Blueprint Alignment score.
         """
         s = self.std
         nm, de, cr = s.net_margin, s.debt_to_equity, s.current_ratio
         pe, peg, beta = s.pe_ratio, s.peg_ratio, s.beta
-        de_threshold = SCORECARD.max_debt_to_equity_for(s.sector)
-        pe_low, pe_high = SCORECARD.pe_range_for(s.sector)
-        pe_is_sector_adjusted = (pe_low, pe_high) != SCORECARD.pe_range
+        de_threshold = self._sc.max_debt_to_equity_for(s.sector)
+        pe_low, pe_high = self._sc.pe_range_for(s.sector)
+        pe_is_sector_adjusted = (pe_low, pe_high) != self._sc.pe_range
 
         return [
             MetricCheck(
                 key="net_margin", category="Profitability", label="Net Margin",
                 value=nm, display=_fmt(None if nm is None else nm * 100, "%"),
-                benchmark=f"> {SCORECARD.min_net_margin * 100:.0f}%",
-                passed=None if nm is None else nm >= SCORECARD.min_net_margin,
-                weight=SCORECARD.weight_for("net_margin"),
+                benchmark=f"> {self._sc.min_net_margin * 100:.0f}%",
+                passed=None if nm is None else nm >= self._sc.min_net_margin,
+                weight=self._sc.weight_for("net_margin"),
             ),
             MetricCheck(
                 key="debt_to_equity", category="Leverage", label="Debt-to-Equity",
                 value=de, display=_fmt(de),
-                benchmark=f"< {de_threshold} (sector-adjusted)" if de_threshold != SCORECARD.max_debt_to_equity else f"< {de_threshold}",
+                benchmark=f"< {de_threshold} (sector-adjusted)" if de_threshold != self._sc.max_debt_to_equity else f"< {de_threshold}",
                 passed=None if de is None else de < de_threshold,
-                weight=SCORECARD.weight_for("debt_to_equity"),
+                weight=self._sc.weight_for("debt_to_equity"),
             ),
             MetricCheck(
                 key="roic", category="Capital Efficiency", label="ROIC",
                 value=roic, display=_fmt(roic, "%"),
-                benchmark=f"> {SCORECARD.min_roic_pct:.0f}%",
-                passed=None if roic is None else roic > SCORECARD.min_roic_pct,
-                weight=SCORECARD.weight_for("roic"),
+                benchmark=f"> {self._sc.min_roic_pct:.0f}%",
+                passed=None if roic is None else roic > self._sc.min_roic_pct,
+                weight=self._sc.weight_for("roic"),
             ),
             # Reported in the Master Matrix but not one of the scoreboard flags.
             MetricCheck(
                 key="fcf_yield", category="Cash Flow Quality", label="FCF Yield",
                 value=fcf_yield, display=_fmt(fcf_yield, "%"),
-                benchmark=f"> {SCORECARD.min_fcf_yield_pct:.0f}%",
-                passed=None if fcf_yield is None else fcf_yield > SCORECARD.min_fcf_yield_pct,
+                benchmark=f"> {self._sc.min_fcf_yield_pct:.0f}%",
+                passed=None if fcf_yield is None else fcf_yield > self._sc.min_fcf_yield_pct,
                 in_scorecard=False,
             ),
             MetricCheck(
                 key="interest_coverage", category="Debt Safety", label="Interest Coverage",
                 value=interest_cov, display=_fmt(interest_cov, "x", decimals=1),
-                benchmark=f"> {SCORECARD.min_interest_coverage:.1f}x",
-                passed=None if interest_cov is None else interest_cov > SCORECARD.min_interest_coverage,
-                weight=SCORECARD.weight_for("interest_coverage"),
+                benchmark=f"> {self._sc.min_interest_coverage:.1f}x",
+                passed=None if interest_cov is None else interest_cov > self._sc.min_interest_coverage,
+                weight=self._sc.weight_for("interest_coverage"),
             ),
             MetricCheck(
                 key="pe_ratio", category="Valuation (P/E)", label="P/E Ratio TTM",
@@ -1361,32 +1378,32 @@ class FundamentalAnalysisEngine:
                     else f"{pe_low:.0f} - {pe_high:.0f}"
                 ),
                 passed=None if pe is None else pe_low <= pe <= pe_high,
-                weight=SCORECARD.weight_for("pe_ratio"),
+                weight=self._sc.weight_for("pe_ratio"),
             ),
             # Not sector-adjusted like P/E above, deliberately: PEG already
             # divides P/E by the growth rate, which is exactly what makes a
             # flat P/E band misleading across sectors in the first place.
-            # See SCORECARD.pe_range_for()'s docstring.
+            # See self._sc.pe_range_for()'s docstring.
             MetricCheck(
                 key="peg_ratio", category="Valuation (PEG)", label="PEG Ratio (Proxy)",
                 value=peg, display="N/A" if peg is None else f"{peg}",
-                benchmark=f"< {SCORECARD.peg_range[1]}",
-                passed=None if peg is None else SCORECARD.peg_range[0] < peg <= SCORECARD.peg_range[1],
-                weight=SCORECARD.weight_for("peg_ratio"),
+                benchmark=f"< {self._sc.peg_range[1]}",
+                passed=None if peg is None else self._sc.peg_range[0] < peg <= self._sc.peg_range[1],
+                weight=self._sc.weight_for("peg_ratio"),
             ),
             MetricCheck(
                 key="beta", category="Volatility", label="Beta",
                 value=beta, display="N/A" if beta is None else f"{beta}",
-                benchmark=f"< {SCORECARD.max_beta}",
-                passed=None if beta is None else beta < SCORECARD.max_beta,
-                weight=SCORECARD.weight_for("beta"),
+                benchmark=f"< {self._sc.max_beta}",
+                passed=None if beta is None else beta < self._sc.max_beta,
+                weight=self._sc.weight_for("beta"),
             ),
             MetricCheck(
                 key="current_ratio", category="Liquidity", label="Current Ratio",
                 value=cr, display=_fmt(cr),
-                benchmark=f"> {SCORECARD.min_current_ratio}",
-                passed=None if cr is None else cr > SCORECARD.min_current_ratio,
-                weight=SCORECARD.weight_for("current_ratio"),
+                benchmark=f"> {self._sc.min_current_ratio}",
+                passed=None if cr is None else cr > self._sc.min_current_ratio,
+                weight=self._sc.weight_for("current_ratio"),
             ),
         ]
 

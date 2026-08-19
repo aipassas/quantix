@@ -505,6 +505,16 @@ class ThemeConfig:
 
 
 @dataclass(frozen=True)
+class ThresholdsConfig:
+    """Where the user's overrides of the shipped valuation/risk thresholds
+    live. The DEFAULTS stay in ScorecardConfig/RiskConfig above, with the
+    reasoning for each; this only names the store file. See
+    user_thresholds.py for which subset is editable and why the rest
+    deliberately isn't."""
+    store_filename: str = "threshold_overrides.json"
+
+
+@dataclass(frozen=True)
 class FavoritesConfig:
     """Favorites (starred tickers) + recently-viewed, the "quick access"
     strip under the symbol header.
@@ -684,6 +694,7 @@ SCENARIO_MODELING = ScenarioModelingConfig()
 COMPETITIVE_BENCHMARKING = CompetitiveBenchmarkingConfig()
 ONBOARDING = OnboardingConfig()
 THEME = ThemeConfig()
+THRESHOLDS = ThresholdsConfig()
 FAVORITES = FavoritesConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
