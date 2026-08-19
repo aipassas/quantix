@@ -19,6 +19,10 @@ from email_report import is_email_configured, send_notification_email, send_repo
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
 from metric_help import chart_help, help_for
+from historical_comparison import (
+    available_range as hc_available_range,
+    build_comparison as hc_build_comparison,
+)
 from collaboration import (
     add_member as collab_add_member,
     add_note as collab_add_note,
@@ -981,6 +985,34 @@ if _alerts_state:
 # See realtime_alerts.py's module docstring for the full reasoning behind
 # each of these three scope decisions (agreed with the user before this
 # was built, not silent simplifications):
+def _hc_fmt(metric, value) -> str:
+    """One historical-comparison cell. An unavailable value renders as an
+    explicit "N/A" rather than a dash or a zero — the whole point of this
+    panel is that it never implies a number it doesn't have."""
+    if value is None:
+        return "N/A"
+    if metric.unit == "$":
+        for cutoff, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+            if abs(value) >= cutoff:
+                return f"${value / cutoff:,.2f}{suffix}"
+        return f"${value:,.2f}"
+    return f"{value:,.{metric.decimals}f}{metric.unit}"
+
+
+def _hc_delta_text(metric) -> str:
+    """The then->now change, with an arrow only where the metric has a
+    meaningful direction. Price and market cap deliberately get no
+    better/worse arrow — a higher price is not self-evidently good."""
+    delta = metric.delta
+    if delta is None:
+        return "—"
+    body = _hc_fmt(metric, delta) if metric.unit == "$" else f"{delta:+,.{metric.decimals}f}{metric.unit}"
+    if metric.higher_is_better is None or delta == 0:
+        return body
+    improved = delta > 0 if metric.higher_is_better else delta < 0
+    return f"{'🟢' if improved else '🔴'} {body}"
+
+
 def _rt_md_escape_dollar(text: str) -> str:
     """AlertRule.label and EvaluationResult.detail are kept as plain text
     with genuine, unescaped "$" characters (realtime_alerts.py's own
@@ -1637,6 +1669,75 @@ else:
     # ==========================================
     with tab_overview:
         executive_digest_container = st.container()
+
+        # ==========================================
+        # HISTORICAL COMPARISON
+        # ==========================================
+        # Replays the whole analysis as of an earlier date and shows it
+        # beside today's. Lives on Overview because it's a statement about
+        # this ticker's trajectory rather than about any one panel.
+        st.markdown("---")
+        with st.expander("🕰️ Historical Comparison", expanded=False):
+            _hc_earliest, _hc_latest = hc_available_range(ticker_bundle)
+            if _hc_earliest is None:
+                st.caption("No price history is loaded for this ticker, so there's nothing to replay.")
+            else:
+                st.caption(
+                    "Re-runs the analysis using only what was knowable on the date you pick, and shows it "
+                    "beside today's. Technicals and risk are recomputed from the price series truncated to "
+                    "that date. Fundamentals come from the financial statement actually in force then — "
+                    "Yahoo reports **annual** periods, so those step at roughly yearly boundaries rather "
+                    "than daily. Today's figures are never carried backwards: anything that wasn't "
+                    "knowable then is shown as unavailable rather than filled in."
+                )
+                _hc_default = max(_hc_earliest, min(_hc_latest, _hc_latest - datetime.timedelta(days=365)))
+                _hc_col_date, _hc_col_btn = st.columns([2, 1])
+                with _hc_col_date:
+                    _hc_as_of = st.date_input(
+                        "Replay the analysis as of",
+                        value=_hc_default, min_value=_hc_earliest, max_value=_hc_latest,
+                        key="hist_as_of",
+                        help="Bounded by the price history currently loaded — widen Start Date in the sidebar to reach further back.",
+                    )
+                with _hc_col_btn:
+                    st.markdown("&nbsp;")
+                    _hc_run = st.button("Compare", type="primary", key="hist_run")
+
+                if _hc_run:
+                    with st.spinner(f"Replaying {ticker_symbol} as of {_hc_as_of:%d %b %Y}..."):
+                        st.session_state["hist_result"] = hc_build_comparison(
+                            ticker_bundle, _hc_as_of, risk_free_rate=risk_free_rate,
+                        )
+                        st.session_state["hist_result_ticker"] = ticker_symbol
+                        log_event(logger, logging.INFO, "user.historical_comparison",
+                                  ticker=ticker_symbol, as_of=str(_hc_as_of))
+
+                _hc_res = st.session_state.get("hist_result")
+                if _hc_res is not None and st.session_state.get("hist_result_ticker") == ticker_symbol:
+                    if _hc_res.statement_period:
+                        st.caption(
+                            f"Fundamentals below are from the statement period ending "
+                            f"**{_hc_res.statement_period:%d %b %Y}** — the filing in force on "
+                            f"{_hc_res.as_of:%d %b %Y}. Technicals and risk use "
+                            f"{_hc_res.price_bars:,} trading day{'' if _hc_res.price_bars == 1 else 's'} up to that date."
+                        )
+                    for _hc_w in _hc_res.warnings:
+                        st.warning(_hc_w)
+
+                    for _hc_group in ("Fundamentals", "Technicals", "Risk"):
+                        _hc_rows = [m for m in _hc_res.metrics if m.group == _hc_group]
+                        if not _hc_rows:
+                            continue
+                        st.markdown(f"**{_hc_group}**")
+                        _hc_table = []
+                        for _hc_m in _hc_rows:
+                            _hc_table.append({
+                                "Metric": _hc_m.label,
+                                f"As of {_hc_res.as_of:%d %b %Y}": _hc_fmt(_hc_m, _hc_m.then),
+                                "Today": _hc_fmt(_hc_m, _hc_m.now),
+                                "Change": _hc_delta_text(_hc_m),
+                            })
+                        st.dataframe(pd.DataFrame(_hc_table), width="stretch", hide_index=True)
 
         # ==========================================
         # TEAM NOTES (per-ticker thread with @-mentions)
