@@ -18,6 +18,7 @@ from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_report_email
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
+from metric_help import help_for
 from favorites import (
     is_favorite,
     load_store as load_quick_access,
@@ -1540,8 +1541,8 @@ else:
         macro_risk_flag = vix_current > RISK.vix_high_risk_threshold
 
         m1, m2 = st.columns(2)
-        m1.metric("VIX (Fear Index)", f"{vix_current:.2f}", delta=f"High Risk (>{RISK.vix_high_risk_threshold:.0f})" if macro_risk_flag else "Stable Market", delta_color="inverse" if macro_risk_flag else "normal")
-        m2.metric("10-Year Treasury Yield", f"{tnx_current:.2f}%")
+        m1.metric("VIX (Fear Index)", f"{vix_current:.2f}", delta=f"High Risk (>{RISK.vix_high_risk_threshold:.0f})" if macro_risk_flag else "Stable Market", delta_color="inverse" if macro_risk_flag else "normal", help=help_for("vix"))
+        m2.metric("10-Year Treasury Yield", f"{tnx_current:.2f}%", help=help_for("treasury_10y"))
 
         if macro_risk_flag:
             st.error("SYSTEMIC RISK WARNING: High VIX detected. The broader market is experiencing fear. Position sizing will be automatically penalized to protect capital.")
@@ -1604,10 +1605,10 @@ else:
             st.warning(f"{mv.total_issues} issue(s) found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}: " + "; ".join(issue_parts) + ".")
 
         vc1, vc2, vc3, vc4 = st.columns(4)
-        vc1.metric("Metrics Evaluated", f"{len(mv.evaluated_checks)} / {len(mv.checks)}")
-        vc2.metric("Yahoo Disagreements", mv.disagreement_count)
-        vc3.metric("Extreme Outliers", mv.outlier_count)
-        vc4.metric("Incomplete Calculations", mv.fallback_count)
+        vc1.metric("Metrics Evaluated", f"{len(mv.evaluated_checks)} / {len(mv.checks)}", help=help_for("metrics_evaluated"))
+        vc2.metric("Yahoo Disagreements", mv.disagreement_count, help=help_for("yahoo_disagreements"))
+        vc3.metric("Extreme Outliers", mv.outlier_count, help=help_for("extreme_outliers"))
+        vc4.metric("Incomplete Calculations", mv.fallback_count, help=help_for("incomplete_calculations"))
 
         if mv.outliers:
             with st.expander(f"{mv.outlier_count} extreme outlier(s)", expanded=True):
@@ -1653,8 +1654,8 @@ else:
         st.caption(sector_note)
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Institutional Green Flags", f"{green_flags} / {total_checks}")
-        c2.metric("Operational Warning Signs", f"{total_checks - green_flags}")
+        c1.metric("Institutional Green Flags", f"{green_flags} / {total_checks}", help=help_for("green_flags"))
+        c2.metric("Operational Warning Signs", f"{total_checks - green_flags}", help=help_for("warning_signs"))
         c3.metric("Blueprint Alignment", f"{score_pct:.0f}%", help="Weighted over evaluable metrics — see the sector/weighting note above.")
 
         if total_checks < possible_checks:
@@ -2202,7 +2203,7 @@ else:
         rsi_interpretation = interpret_rsi(rsi_series.iloc[-1]) if rsi_series.notna().any() else None
         if rsi_interpretation:
             ri1, ri2 = st.columns([1, 3])
-            ri1.metric(f"RSI ({rsi_length})", f"{rsi_interpretation.value:.1f}", help=f"Overbought ≥ {TECHNICAL.rsi_overbought:.0f} · Oversold ≤ {TECHNICAL.rsi_oversold:.0f}")
+            ri1.metric(f"RSI ({rsi_length})", f"{rsi_interpretation.value:.1f}", help=help_for("rsi"))
             with ri2:
                 st.markdown(f"**{rsi_interpretation.label}**")
                 st.caption(rsi_interpretation.explanation)
@@ -2289,9 +2290,9 @@ else:
             alpha = ticker_return - bench_return
 
             a1, a2, a3 = st.columns(3)
-            a1.metric(f"{ticker_symbol} Period Return", f"{ticker_return:.2f}%")
-            a2.metric(f"{benchmark_symbol} Period Return", f"{bench_return:.2f}%")
-            a3.metric("Generated Alpha", f"{alpha:.2f}%", help="Performance strictly above the market benchmark.")
+            a1.metric(f"{ticker_symbol} Period Return", f"{ticker_return:.2f}%", help=help_for("period_return"))
+            a2.metric(f"{benchmark_symbol} Period Return", f"{bench_return:.2f}%", help=help_for("period_return"))
+            a3.metric("Generated Alpha", f"{alpha:.2f}%", help=help_for("alpha_generated"))
 
             fig_alpha = go.Figure()
             fig_alpha.add_trace(go.Scatter(x=df.index, y=df['CumReturn']*100, name=ticker_symbol, line=dict(color='orange')))
@@ -2324,9 +2325,9 @@ else:
                 f"Systematic + Selection always reconstructs Total Excess Return exactly, by construction."
             )
             p1, p2, p3 = st.columns(3)
-            p1.metric("Total Excess Return", f"{attribution.total_excess_return_pct:.2f}%", help=f"{ticker_symbol}'s period return minus the period risk-free rate.")
-            p2.metric("Systematic (Market Beta)", f"{attribution.systematic_pct:.2f}%", help="beta × the benchmark's excess return — the portion of return explained by simply being exposed to the market at this beta.")
-            p3.metric("Selection (Residual)", f"{attribution.selection_pct:.2f}%", help="Total excess return minus the systematic component — the portion attributable to this specific stock, not market exposure.")
+            p1.metric("Total Excess Return", f"{attribution.total_excess_return_pct:.2f}%", help=f'{help_for("excess_return_total")} Here: {ticker_symbol}\'s period return minus the period risk-free rate.')
+            p2.metric("Systematic (Market Beta)", f"{attribution.systematic_pct:.2f}%", help=help_for("beta_systematic"))
+            p3.metric("Selection (Residual)", f"{attribution.selection_pct:.2f}%", help=help_for("alpha_selection"))
 
     with tab_risk:
         # --- QUANTITATIVE CALCULATIONS ---
@@ -2445,12 +2446,12 @@ else:
         v1.metric(
             f"Annualized Volatility ({vol_window}d)",
             f"{current_rolling_vol * 100:.2f}%" if current_rolling_vol is not None else "N/A",
-            help="Rolling annualized standard deviation of daily log returns — the same figure feeding the Sharpe/Sortino ratios below.",
+            help=f'{help_for("volatility_rolling")} Computed as the rolling annualized standard deviation of daily log returns.',
         )
         v2.metric(
             f"Full-Range Annualized Volatility",
             f"{annual_vol * 100:.2f}%" if annual_vol is not None else "N/A",
-            help="Annualized volatility over the entire selected date range, not just the rolling window.",
+            help=help_for("volatility_full_range"),
         )
         if current_rolling_vol is not None:
             st.caption(f"Rolling {vol_window}-day annualized volatility")
@@ -2465,17 +2466,17 @@ else:
             var1.metric(
                 f"1-Day Historical VaR ({var_confidence:.0%})",
                 f"{historical_var * 100:.2f}%",
-                help=f"Empirical {1 - var_confidence:.0%} percentile of daily log returns over the last {var_lookback} trading days — no distributional assumption.",
+                help=f'{help_for("var_historical")} Here: the empirical {1 - var_confidence:.0%} percentile over the last {var_lookback} trading days, with no distributional assumption.',
             )
             var2.metric(
                 f"1-Day Parametric VaR ({var_confidence:.0%})",
                 f"{parametric_var * 100:.2f}%",
-                help=f"Same {var_confidence:.0%} confidence level, but assuming daily log returns are normally distributed (variance-covariance method) over the same {var_lookback}-day window.",
+                help=f'{help_for("var_parametric")} Here: the variance-covariance method at {var_confidence:.0%} confidence over the same {var_lookback}-day window.',
             )
             var3.metric(
                 f"Expected Shortfall / CVaR ({var_confidence:.0%})",
                 f"{expected_shortfall * 100:.2f}%" if expected_shortfall is not None else "N/A",
-                help=f"Average loss across every day worse than the Historical VaR cutoff — the tail average, not just the cutoff itself. Increasingly preferred by regulators (Basel III) over VaR alone.",
+                help=f'{help_for("cvar")} Increasingly preferred by regulators (Basel III) over VaR alone.',
             )
             var_gap = (historical_var - parametric_var) * 100
             if abs(var_gap) >= 0.1:
@@ -2507,12 +2508,12 @@ else:
             f"{sharpe_ratio:.2f}" if sharpe_ratio is not None else "N/A",
             delta=sharpe_interpretation.label if sharpe_interpretation else None,
             delta_color="off",
-            help=f"(Annualized return − {risk_free_rate:.2%} risk-free rate) / annualized volatility, both legs from daily log returns.",
+            help=f'{help_for("sharpe")} Computed as (annualized return − {risk_free_rate:.2%} risk-free rate) / annualized volatility.',
         )
         r1_c2.metric(
             "Sortino Ratio TTM",
             f"{sortino_ratio:.2f}" if sortino_ratio is not None else "N/A",
-            help="(Annualized return − risk-free rate) / downside deviation — penalizes ONLY returns below the target, unlike Sharpe which penalizes all volatility equally.",
+            help=help_for("sortino"),
         )
         if sharpe_interpretation:
             st.caption(f"{sharpe_interpretation.explanation} {sharpe_interpretation.limitation}")
@@ -2520,14 +2521,14 @@ else:
         st.markdown("##")
         r2_c1, r2_c2, r2_c3 = st.columns(3)
 
-        r2_c1.metric("Current Price Z-Score", f"{current_z_score:.2f}", help="Distance from mean. >2 or <-2 indicates extreme deviation.")
+        r2_c1.metric("Current Price Z-Score", f"{current_z_score:.2f}", help=help_for("price_z_score"))
 
         hurst_desc = "Random Walk"
         if hurst_exponent < RISK.hurst_mean_reverting_below: hurst_desc = "Mean-Reverting (Statistical Edge)"
         elif hurst_exponent > RISK.hurst_trending_above: hurst_desc = "Strongly Trending"
-        r2_c2.metric("Hurst Exponent (H)", f"{hurst_exponent:.2f}", delta=hurst_desc, delta_color="normal" if RISK.hurst_mean_reverting_below <= hurst_exponent <= RISK.hurst_trending_above else "inverse")
+        r2_c2.metric("Hurst Exponent (H)", f"{hurst_exponent:.2f}", delta=hurst_desc, delta_color="normal" if RISK.hurst_mean_reverting_below <= hurst_exponent <= RISK.hurst_trending_above else "inverse", help=help_for("hurst"))
 
-        r2_c3.metric("Altman Z-Score", f"{altman_z:.2f}" if isinstance(altman_z, float) else "N/A", delta=z_verdict, delta_color="normal" if "Safe" in z_verdict else "inverse")
+        r2_c3.metric("Altman Z-Score", f"{altman_z:.2f}" if isinstance(altman_z, float) else "N/A", delta=z_verdict, delta_color="normal" if "Safe" in z_verdict else "inverse", help=help_for("altman_z"))
 
         st.subheader("Statistical Distance from Mean (Z-Score)")
         st.line_chart(df['Z_Score'])
@@ -2539,14 +2540,14 @@ else:
             dd1.metric(
                 "Max Drawdown",
                 f"{max_dd_result.max_drawdown * 100:.2f}%",
-                help=f"Peak: ${max_dd_result.peak_price:.2f} on {max_dd_result.peak_date.date()} → Trough: ${max_dd_result.trough_price:.2f} on {max_dd_result.trough_date.date()}.",
+                help=f'{help_for("max_drawdown")} Here: peak ${max_dd_result.peak_price:.2f} on {max_dd_result.peak_date.date()} → trough ${max_dd_result.trough_price:.2f} on {max_dd_result.trough_date.date()}.',
                 delta_color="off",
             )
-            dd2.metric("Peak → Trough", f"{max_dd_result.peak_date.date()} → {max_dd_result.trough_date.date()}")
+            dd2.metric("Peak → Trough", f"{max_dd_result.peak_date.date()} → {max_dd_result.trough_date.date()}", help=help_for("peak_to_trough"))
             if max_dd_result.recovered:
-                dd3.metric("Recovery Period", f"{max_dd_result.recovery_days} trading days", help=f"Recovered by {max_dd_result.recovery_date.date()}.")
+                dd3.metric("Recovery Period", f"{max_dd_result.recovery_days} trading days", help=f'{help_for("recovery_period")} Recovered by {max_dd_result.recovery_date.date()}.')
             else:
-                dd3.metric("Recovery Period", "Ongoing", help="Price has not yet closed back above the prior peak within the selected date range.", delta_color="off")
+                dd3.metric("Recovery Period", "Ongoing", help=f'{help_for("recovery_period")} Here the price has not yet closed back above the prior peak within the selected range.', delta_color="off")
 
             drawdown_series = compute_drawdown_series(df['Close']) * 100
             fig_dd = go.Figure()
@@ -2566,7 +2567,7 @@ else:
                 f"{calmar_ratio:.2f}" if calmar_ratio is not None else "N/A",
                 delta=calmar_interpretation.label if calmar_interpretation else None,
                 delta_color="off",
-                help="Annualized return ÷ |Maximum Drawdown| — return earned per unit of the single worst realized loss, rather than per unit of volatility.",
+                help=help_for("calmar"),
             )
             if calmar_interpretation:
                 calmar2.caption(calmar_interpretation.explanation)
@@ -2618,9 +2619,9 @@ else:
                 final_allocation = half_kelly_pct / RISK.kelly_macro_risk_extra_factor if macro_risk_flag else half_kelly_pct
 
             k1, k2, k3 = st.columns(3)
-            k1.metric("Daily Win Rate", f"{win_prob * 100:.1f}%", help="Fraction of ALL trading days in the selected range with a positive return — an unconditional statistic, not a specific strategy's trade-level win rate.")
-            k2.metric("Up/Down-Day Payoff Ratio", f"{win_loss_ratio:.2f}", help="Average positive-day return divided by the average magnitude of a negative-day return.")
-            k3.metric("Heuristic Allocation (Half-Kelly)", f"{final_allocation:.2f}%", help="Half-Kelly position size from the simplified daily statistics above, penalized further during high VIX regimes. A rough sizing heuristic, not a rigorous Kelly application to a validated edge.")
+            k1.metric("Daily Win Rate", f"{win_prob * 100:.1f}%", help=f'{help_for("win_rate")} This one counts ALL trading days in the range, not a specific strategy\'s trades.')
+            k2.metric("Up/Down-Day Payoff Ratio", f"{win_loss_ratio:.2f}", help=help_for("payoff_ratio"))
+            k3.metric("Heuristic Allocation (Half-Kelly)", f"{final_allocation:.2f}%", help=f'{help_for("kelly_half")} Penalized further during high-VIX regimes, and derived from simplified daily statistics rather than a validated edge.')
         else:
             st.info("Insufficient return data to calculate this sizing heuristic.")
 
@@ -2634,9 +2635,9 @@ else:
         st.markdown("##")
         if stop_loss is not None:
             a1, a2, a3 = st.columns(3)
-            a1.metric(f"ATR ({atr_length})", f"${current_atr:.2f}", help="Average True Range — the typical size of a full day's price movement, in dollars, over the selected period.")
-            a2.metric(f"Suggested Stop-Loss ({TECHNICAL.atr_stop_multiplier:.0f}× ATR)", f"${stop_loss:.2f}", delta=f"{((stop_loss / standardized.current_price) - 1) * 100:.1f}% below current price", delta_color="off")
-            a3.metric("Risk per Share", f"${standardized.current_price - stop_loss:.2f}")
+            a1.metric(f"ATR ({atr_length})", f"${current_atr:.2f}", help=help_for("atr"))
+            a2.metric(f"Suggested Stop-Loss ({TECHNICAL.atr_stop_multiplier:.0f}× ATR)", f"${stop_loss:.2f}", delta=f"{((stop_loss / standardized.current_price) - 1) * 100:.1f}% below current price", delta_color="off", help=help_for("stop_loss"))
+            a3.metric("Risk per Share", f"${standardized.current_price - stop_loss:.2f}", help=help_for("risk_per_share"))
             st.caption(f"Long-only, volatility-adjusted downside stop: current price − {TECHNICAL.atr_stop_multiplier:.0f}×ATR. Not a recommendation to hold a short position or a guarantee against gap-through losses.")
         else:
             st.info(f"ATR ({atr_length}) not yet available — the selected date range doesn't cover enough trading days to complete the warm-up period.")
@@ -2673,9 +2674,9 @@ else:
 
                     # UI Metrics
                     d1, d2, d3 = st.columns(3)
-                    d1.metric("Market Price", f"${current_price:.2f}")
-                    d2.metric("Intrinsic Value (2-Stage)", f"${intrinsic_price:.2f}")
-                    d3.metric("Margin of Safety", f"{margin_of_safety:.2f}%", delta=dcf_result.status, delta_color=dcf_result.status_color)
+                    d1.metric("Market Price", f"${current_price:.2f}", help=help_for("market_price"))
+                    d2.metric("Intrinsic Value (2-Stage)", f"${intrinsic_price:.2f}", help=help_for("intrinsic_value"))
+                    d3.metric("Margin of Safety", f"{margin_of_safety:.2f}%", delta=dcf_result.status, delta_color=dcf_result.status_color, help=help_for("margin_of_safety"))
 
                     beta_labels = {
                         "regressed": f"regressed vs. {benchmark_symbol}, R²={dcf_result.beta_r_squared:.2f}",
@@ -2806,8 +2807,8 @@ else:
                 if _sc_result.dcf.ok:
                     st.markdown("**DCF Impact**")
                     dc1, dc2, dc3 = st.columns(3)
-                    dc1.metric("Base Intrinsic Value", f"${_sc_result.dcf.base_intrinsic_price:.2f}")
-                    dc2.metric("Shocked Intrinsic Value", f"${_sc_result.dcf.shocked_intrinsic_price:.2f}", delta=f"{_sc_result.dcf.pct_change:+.2f}%")
+                    dc1.metric("Base Intrinsic Value", f"${_sc_result.dcf.base_intrinsic_price:.2f}", help=help_for("base_intrinsic_value"))
+                    dc2.metric("Shocked Intrinsic Value", f"${_sc_result.dcf.shocked_intrinsic_price:.2f}", delta=f"{_sc_result.dcf.pct_change:+.2f}%", help=help_for("shocked_intrinsic_value"))
                     if _sc_result.implied_portfolio_value_change is not None:
                         dc3.metric(f"Illustrative Impact on ${sc_investment:,.0f}", f"${_sc_result.implied_portfolio_value_change:+,.2f}", help="Applies the intrinsic-value % change to your investment amount — assumes eventual price convergence to intrinsic value, not a forecast.")
                 else:
@@ -2824,9 +2825,9 @@ else:
                 if _sc_result.dividend.applicable:
                     st.markdown("**Dividend Impact**")
                     dv1, dv2, dv3 = st.columns(3)
-                    dv1.metric("Annual Dividend / Share", f"${_sc_result.dividend.current_annual_dividend:.2f} → ${_sc_result.dividend.shocked_annual_dividend:.2f}")
-                    dv2.metric("Dividend Yield", f"{_sc_result.dividend.current_yield_pct:.2f}% → {_sc_result.dividend.shocked_yield_pct:.2f}%")
-                    dv3.metric("Lost Income / Share", f"${_sc_result.dividend.lost_annual_income_per_share:.2f}")
+                    dv1.metric("Annual Dividend / Share", f"${_sc_result.dividend.current_annual_dividend:.2f} → ${_sc_result.dividend.shocked_annual_dividend:.2f}", help=help_for("annual_dividend_share"))
+                    dv2.metric("Dividend Yield", f"{_sc_result.dividend.current_yield_pct:.2f}% → {_sc_result.dividend.shocked_yield_pct:.2f}%", help=help_for("dividend_yield"))
+                    dv3.metric("Lost Income / Share", f"${_sc_result.dividend.lost_annual_income_per_share:.2f}", help=help_for("lost_income_share"))
                 elif sc_type == "dividend_cut":
                     st.caption(f"Dividend impact not available: {_sc_result.dividend.detail}")
             elif _sc_risk is not None:
@@ -2840,9 +2841,9 @@ else:
                 if _sc_dividend is not None and _sc_dividend.applicable:
                     st.markdown("**Dividend Impact**")
                     dv1, dv2, dv3 = st.columns(3)
-                    dv1.metric("Annual Dividend / Share", f"${_sc_dividend.current_annual_dividend:.2f} → ${_sc_dividend.shocked_annual_dividend:.2f}")
-                    dv2.metric("Dividend Yield", f"{_sc_dividend.current_yield_pct:.2f}% → {_sc_dividend.shocked_yield_pct:.2f}%")
-                    dv3.metric("Lost Income / Share", f"${_sc_dividend.lost_annual_income_per_share:.2f}")
+                    dv1.metric("Annual Dividend / Share", f"${_sc_dividend.current_annual_dividend:.2f} → ${_sc_dividend.shocked_annual_dividend:.2f}", help=help_for("annual_dividend_share"))
+                    dv2.metric("Dividend Yield", f"{_sc_dividend.current_yield_pct:.2f}% → {_sc_dividend.shocked_yield_pct:.2f}%", help=help_for("dividend_yield"))
+                    dv3.metric("Lost Income / Share", f"${_sc_dividend.lost_annual_income_per_share:.2f}", help=help_for("lost_income_share"))
 
         if st.session_state["scenario_saved"]:
             with st.expander(f"Saved scenarios ({len(st.session_state['scenario_saved'])})", expanded=False):
@@ -3080,8 +3081,8 @@ else:
         backtest_result = run_backtest(df, active_rule, sma_length, rsi_length, cost_bps=cost_bps)
 
         bt1, bt2, bt3, bt4, bt5 = st.columns(5)
-        bt1.metric("Strategy Return (Gross)", f"{backtest_result.total_strategy_return_pct:.2f}%", delta=f"{backtest_result.total_strategy_return_pct - backtest_result.total_buy_hold_return_pct:.2f}% vs Buy & Hold")
-        bt2.metric("Buy & Hold Baseline", f"{backtest_result.total_buy_hold_return_pct:.2f}%")
+        bt1.metric("Strategy Return (Gross)", f"{backtest_result.total_strategy_return_pct:.2f}%", delta=f"{backtest_result.total_strategy_return_pct - backtest_result.total_buy_hold_return_pct:.2f}% vs Buy & Hold", help=help_for("strategy_return_gross"))
+        bt2.metric("Buy & Hold Baseline", f"{backtest_result.total_buy_hold_return_pct:.2f}%", help=help_for("buy_hold_baseline"))
         bt3.metric("Max Strategy Drawdown", f"{backtest_result.max_drawdown_pct:.2f}%", help="The deepest percentage drop your portfolio would have suffered using this algorithm (gross).", delta_color="inverse")
         bt4.metric("Win Rate", f"{backtest_result.win_rate_pct:.1f}%" if backtest_result.win_rate_pct is not None else "N/A", help="Of the days this strategy held a position, the fraction with a positive return.")
         bt5.metric("Trades", f"{backtest_result.trade_count}", help="Number of distinct times this strategy entered a position over the selected date range.")
@@ -3092,10 +3093,10 @@ else:
                 "Strategy Return (Net of Cost)", f"{backtest_result.total_net_strategy_return_pct:.2f}%",
                 delta=f"{backtest_result.total_net_strategy_return_pct - backtest_result.total_strategy_return_pct:.2f}% vs gross",
                 delta_color="inverse",
-                help="Gross return minus every entry/exit's transaction cost charge — the more realistic net-of-cost outcome.",
+                help=help_for("strategy_return_net"),
             )
-            nc2.metric("Net Max Drawdown", f"{backtest_result.net_max_drawdown_pct:.2f}%", delta_color="inverse")
-            nc3.metric("Total Cost Paid", f"{backtest_result.total_cost_pct:.2f}%", help="Sum of every entry/exit's cost charge, as a percentage of starting capital.")
+            nc2.metric("Net Max Drawdown", f"{backtest_result.net_max_drawdown_pct:.2f}%", delta_color="inverse", help=help_for("max_drawdown"))
+            nc3.metric("Total Cost Paid", f"{backtest_result.total_cost_pct:.2f}%", help=help_for("total_cost_paid"))
 
         fig_bt = go.Figure()
         fig_bt.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Buy_Hold'], name='Buy & Hold', line=dict(color='gray', dash='dot')))
@@ -3147,12 +3148,12 @@ else:
                 wf1.metric(
                     "Out-of-Sample Return", f"{wf_result.total_oos_return_pct:.2f}%",
                     delta=f"{wf_result.total_oos_return_pct - backtest_result.total_strategy_return_pct:.2f}% vs in-sample",
-                    help="Stitched performance across every out-of-sample test window only — never a period the strategy was evaluated against before.",
+                    help=help_for("oos_return"),
                 )
-                wf2.metric("Windows", f"{wf_result.window_count}", help=f"{train_days} train / {test_days} test trading days per window, rolled forward non-overlapping.")
-                wf3.metric("OOS Max Drawdown", f"{wf_result.max_drawdown_pct:.2f}%", delta_color="inverse")
-                wf4.metric("OOS Win Rate", f"{wf_result.win_rate_pct:.1f}%" if wf_result.win_rate_pct is not None else "N/A")
-                wf5.metric("OOS Trades", f"{wf_result.trade_count}")
+                wf2.metric("Windows", f"{wf_result.window_count}", help=f'{help_for("windows")} Here: {train_days} train / {test_days} test trading days each, rolled forward without overlap.')
+                wf3.metric("OOS Max Drawdown", f"{wf_result.max_drawdown_pct:.2f}%", delta_color="inverse", help=help_for("max_drawdown"))
+                wf4.metric("OOS Win Rate", f"{wf_result.win_rate_pct:.1f}%" if wf_result.win_rate_pct is not None else "N/A", help=help_for("win_rate"))
+                wf5.metric("OOS Trades", f"{wf_result.trade_count}", help=help_for("trades"))
 
                 fig_wf = go.Figure()
                 fig_wf.add_trace(go.Scatter(x=backtest_result.df.index, y=backtest_result.df['Cum_Strategy'], name="In-Sample (single pass)", line=dict(color='cyan', dash='dot')))
@@ -3277,14 +3278,15 @@ else:
             pb1.metric(
                 "Portfolio Return", f"{pbt_result.total_return_pct:.2f}%",
                 delta=f"{pbt_result.total_return_pct - pbt_result.total_buy_hold_return_pct:.2f}% vs static-weight reference",
+            help=help_for("portfolio_return"),
             )
             pb2.metric(
                 "Static-Weight Reference", f"{pbt_result.total_buy_hold_return_pct:.2f}%",
-                help="Same target weights held with NO rebalancing at all — the reference line rebalancing is measured against.",
+                help=help_for("static_weight_reference"),
             )
-            pb3.metric("Max Drawdown", f"{pbt_result.max_drawdown_pct:.2f}%", delta_color="inverse")
-            pb4.metric("Sharpe Ratio", f"{pbt_result.sharpe_ratio:.2f}" if pbt_result.sharpe_ratio is not None else "N/A")
-            pb5.metric("Rebalances", f"{len(pbt_result.rebalance_dates)}")
+            pb3.metric("Max Drawdown", f"{pbt_result.max_drawdown_pct:.2f}%", delta_color="inverse", help=help_for("max_drawdown"))
+            pb4.metric("Sharpe Ratio", f"{pbt_result.sharpe_ratio:.2f}" if pbt_result.sharpe_ratio is not None else "N/A", help=help_for("sharpe"))
+            pb5.metric("Rebalances", f"{len(pbt_result.rebalance_dates)}", help=help_for("rebalances"))
 
             fig_pbt = go.Figure()
             fig_pbt.add_trace(go.Scatter(x=pbt_result.df.index, y=pbt_result.df['Cum_Buy_Hold'], name='Static Weights (no rebalancing)', line=dict(color='gray', dash='dot')))
@@ -3896,9 +3898,9 @@ else:
                 diversification = compute_portfolio_diversification(alignment.returns)
                 if diversification is not None:
                     d1, d2, d3 = st.columns(3)
-                    d1.metric("Portfolio Volatility", f"{diversification.portfolio_volatility * 100:.2f}%", help="Equal-weighted portfolio's annualized volatility, accounting for how the holdings move together.")
-                    d2.metric("Weighted-Average Volatility", f"{diversification.weighted_average_volatility * 100:.2f}%", help="What the portfolio's volatility would be if every holding moved completely independently — no diversification credit.")
-                    d3.metric("Diversification Benefit", f"{diversification.diversification_benefit * 100:.2f}pp", help="Weighted-Average minus Portfolio Volatility — the risk reduction this basket actually gets from not being perfectly correlated.")
+                    d1.metric("Portfolio Volatility", f"{diversification.portfolio_volatility * 100:.2f}%", help=help_for("portfolio_volatility"))
+                    d2.metric("Weighted-Average Volatility", f"{diversification.weighted_average_volatility * 100:.2f}%", help=help_for("weighted_avg_volatility"))
+                    d3.metric("Diversification Benefit", f"{diversification.diversification_benefit * 100:.2f}pp", help=help_for("diversification_benefit"))
                     if diversification.diversification_ratio is not None:
                         st.caption(f"Diversification ratio: {diversification.diversification_ratio:.2f}× — a basket with zero correlation benefit would read 1.00×; this basket's correlation structure lowers portfolio risk to {1 / diversification.diversification_ratio:.0%} of what the un-diversified weighted average would be.")
 
@@ -4001,9 +4003,10 @@ else:
                     # earlier "inverse" here painted a -3.0pp
                     # underperformance GREEN, directly contradicting the
                     # warning text right below it.
+                    help=help_for("model_accuracy"),
                 )
                 ml_c2.metric("Naive Majority-Class Baseline", f"{_ml_latest['majority_class_baseline_accuracy']*100:.1f}%", help="Accuracy from simply always predicting whichever label (up/down) was more common in the test period — the bar a model has to clear to be adding anything at all.")
-                ml_c3.metric("Test ROC-AUC", f"{_ml_latest['test_roc_auc']:.3f}" if _ml_latest.get('test_roc_auc') is not None else "N/A", help="0.5 = no better than random ranking; 1.0 = perfect. Shown alongside accuracy since accuracy alone can be misleading on imbalanced labels.")
+                ml_c3.metric("Test ROC-AUC", f"{_ml_latest['test_roc_auc']:.3f}" if _ml_latest.get('test_roc_auc') is not None else "N/A", help=help_for("roc_auc"))
 
                 if not _ml_beats_baseline:
                     st.warning(
