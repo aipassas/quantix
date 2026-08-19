@@ -15,10 +15,21 @@ from technical_indicators import compute_sma_lines, detect_sma_crossovers, compu
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score, compute_hurst_exponent
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
-from email_report import is_email_configured, send_report_email
+from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
 from metric_help import chart_help, help_for
+from collaboration import (
+    add_member as collab_add_member,
+    add_note as collab_add_note,
+    delete_note as collab_delete_note,
+    load_store as collab_load_store,
+    mark_notified as collab_mark_notified,
+    notes_for as collab_notes_for,
+    notify_mentions as collab_notify_mentions,
+    remove_member as collab_remove_member,
+    save_store as collab_save_store,
+)
 from user_thresholds import (
     EDITABLE as THRESHOLD_SPECS,
     EDITABLE_BY_KEY as THRESHOLD_SPECS_BY_KEY,
@@ -1626,6 +1637,141 @@ else:
     # ==========================================
     with tab_overview:
         executive_digest_container = st.container()
+
+        # ==========================================
+        # TEAM NOTES (per-ticker thread with @-mentions)
+        # ==========================================
+        # Lives on the Overview tab, attached to the ticker currently being
+        # analysed — the note is about THIS stock, so it belongs beside the
+        # analysis rather than in a separate area you'd have to navigate to.
+        st.markdown("---")
+        with st.expander(f"📝 Team Notes — {ticker_symbol}", expanded=False):
+            if "collab_store" not in st.session_state:
+                st.session_state["collab_store"] = collab_load_store()
+            _cl_store = st.session_state["collab_store"]
+
+            st.caption(
+                "Notes attached to this ticker, shared by everyone using this Quantix instance. "
+                "**There are no user accounts here** — the name you type is a self-declared label, "
+                "not an authenticated identity, and anyone using this instance can read or delete "
+                "any note. Mention a teammate with @ to email them; only people on the Team roster "
+                "below can be mentioned, so a typo can never mail a stranger."
+            )
+
+            _cl_existing = collab_notes_for(_cl_store, ticker_symbol)
+            if _cl_existing:
+                for _cl_note in _cl_existing:
+                    _cl_body_col, _cl_del_col = st.columns([12, 1])
+                    with _cl_body_col:
+                        _cl_when = _cl_note.created_at.replace("T", " ") if _cl_note.created_at else "unknown time"
+                        _cl_meta = f"**{_cl_note.author}** · {_cl_when}"
+                        if _cl_note.mentions:
+                            _cl_sent = [m for m in _cl_note.mentions if m in _cl_note.notified]
+                            _cl_unsent = [m for m in _cl_note.mentions if m not in _cl_note.notified]
+                            _cl_bits = []
+                            if _cl_sent:
+                                _cl_bits.append("emailed " + ", ".join(_cl_sent))
+                            if _cl_unsent:
+                                _cl_bits.append("not emailed: " + ", ".join(_cl_unsent))
+                            _cl_meta += " · " + "; ".join(_cl_bits)
+                        st.markdown(_cl_meta)
+                        st.markdown(_rt_md_escape_dollar(_cl_note.body))
+                    with _cl_del_col:
+                        if st.button("✕", key=f"collab_del_{_cl_note.id}", help="Delete this note"):
+                            _cl_store = collab_delete_note(_cl_store, ticker_symbol, _cl_note.id)
+                            st.session_state["collab_store"] = _cl_store
+                            collab_save_store(_cl_store)
+                            st.rerun()
+            else:
+                st.caption("No notes on this ticker yet.")
+
+            st.markdown("---")
+            _cl_author_col, _cl_spacer = st.columns([2, 3])
+            with _cl_author_col:
+                _cl_author = st.text_input(
+                    "Your name", key="collab_author",
+                    placeholder="e.g. Angelos",
+                    help="Stored with the note as its author. Self-declared — nothing verifies it.",
+                )
+            _cl_handles = ", ".join(f"@{m.handle}" for m in _cl_store.members) or "no teammates added yet"
+            _cl_body = st.text_area(
+                "Add a note", key="collab_body",
+                placeholder="Your thesis, a concern, a reminder… mention a teammate with @",
+                help=f"Mentionable handles: {_cl_handles}",
+            )
+            if st.button("Post note", type="primary", key="collab_post"):
+                _cl_store, _cl_note, _cl_err = collab_add_note(
+                    _cl_store, ticker_symbol, _cl_author, _cl_body,
+                )
+                if _cl_err:
+                    st.warning(_cl_err)
+                else:
+                    # Save FIRST, then attempt notification. A mail failure
+                    # must never cost someone their written note.
+                    st.session_state["collab_store"] = _cl_store
+                    collab_save_store(_cl_store)
+                    if _cl_note.mentions:
+                        if is_email_configured():
+                            _cl_sent, _cl_errs = collab_notify_mentions(
+                                _cl_store, _cl_note, send_notification_email,
+                            )
+                            if _cl_sent:
+                                _cl_store = collab_mark_notified(
+                                    _cl_store, ticker_symbol, _cl_note.id, _cl_sent,
+                                )
+                                st.session_state["collab_store"] = _cl_store
+                                collab_save_store(_cl_store)
+                                st.success(f"Note posted — emailed {', '.join(_cl_sent)}.")
+                            for _cl_e in _cl_errs:
+                                st.warning(f"Couldn't notify {_cl_e}")
+                            if not _cl_sent and not _cl_errs:
+                                st.success("Note posted.")
+                        else:
+                            st.success("Note posted.")
+                            st.info(
+                                "Mentioned " + ", ".join(_cl_note.mentions) +
+                                ", but email isn't configured on this instance so no notification "
+                                "was sent. See .streamlit/secrets.toml.example to enable it."
+                            )
+                    else:
+                        st.success("Note posted.")
+                    log_event(logger, logging.INFO, "user.note_posted",
+                              ticker=ticker_symbol, mentions=len(_cl_note.mentions))
+                    st.session_state.pop("collab_body", None)
+                    st.rerun()
+
+            st.markdown("---")
+            st.markdown("**Team roster**")
+            st.caption(
+                "Only these people can be @-mentioned, and only these addresses can ever receive "
+                "a notification from this app."
+            )
+            for _cl_m in _cl_store.members:
+                _cl_mc1, _cl_mc2 = st.columns([6, 1])
+                with _cl_mc1:
+                    st.caption(f"**{_cl_m.name}** · @{_cl_m.handle} · {_cl_m.email}")
+                with _cl_mc2:
+                    if st.button("✕", key=f"collab_rm_{_cl_m.handle}", help=f"Remove {_cl_m.name}"):
+                        _cl_store = collab_remove_member(_cl_store, _cl_m.name)
+                        st.session_state["collab_store"] = _cl_store
+                        collab_save_store(_cl_store)
+                        st.rerun()
+            _cl_n1, _cl_n2, _cl_n3 = st.columns([2, 3, 1])
+            with _cl_n1:
+                _cl_new_name = st.text_input("Name", key="collab_new_name", placeholder="Ana Silva")
+            with _cl_n2:
+                _cl_new_email = st.text_input("Email", key="collab_new_email", placeholder="ana@example.com")
+            with _cl_n3:
+                st.markdown("&nbsp;")
+                if st.button("Add", key="collab_add_member"):
+                    _cl_store, _cl_merr = collab_add_member(_cl_store, _cl_new_name, _cl_new_email)
+                    if _cl_merr:
+                        st.warning(_cl_merr)
+                    else:
+                        st.session_state["collab_store"] = _cl_store
+                        collab_save_store(_cl_store)
+                        st.rerun()
+
 
         # ==========================================
         # DATA QUALITY REPORT

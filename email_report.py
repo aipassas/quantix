@@ -78,18 +78,24 @@ def is_email_configured() -> bool:
     return load_smtp_settings() is not None
 
 
-def send_report_email(to_address: str, subject: str, body: str, pdf_bytes: bytes, filename: str) -> Tuple[bool, Optional[str]]:
-    """Send pdf_bytes as an attachment to to_address. Returns (True,
-    None) on success or (False, error_message) on any failure — never
-    raises, so a bad SMTP config or a network hiccup surfaces as an
-    in-app warning instead of crashing the page."""
+_NOT_CONFIGURED = (
+    "Email isn't configured for this Quantix instance. Set [smtp] host/port/username/password/from_address "
+    "in .streamlit/secrets.toml (see .streamlit/secrets.toml.example), or the equivalent QUANTIX_SMTP_* "
+    "environment variables."
+)
+
+
+def _send(to_address: str, subject: str, body: str,
+          attachment: Optional[Tuple[bytes, str]] = None) -> Tuple[bool, Optional[str]]:
+    """Shared SMTP path for every outbound mail this app sends. Returns
+    (True, None) on success or (False, error_message) on any failure —
+    never raises, so a bad config or a network hiccup surfaces as an
+    in-app warning instead of crashing the page.
+
+    `attachment` is an optional (bytes, filename) PDF."""
     settings = load_smtp_settings()
     if settings is None:
-        return False, (
-            "Email isn't configured for this Quantix instance. Set [smtp] host/port/username/password/from_address "
-            "in .streamlit/secrets.toml (see .streamlit/secrets.toml.example), or the equivalent QUANTIX_SMTP_* "
-            "environment variables."
-        )
+        return False, _NOT_CONFIGURED
     if not to_address or "@" not in to_address:
         return False, "Enter a valid recipient email address."
 
@@ -98,9 +104,11 @@ def send_report_email(to_address: str, subject: str, body: str, pdf_bytes: bytes
     message["To"] = to_address
     message["Subject"] = subject
     message.attach(MIMEText(body))
-    attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-    attachment.add_header("Content-Disposition", "attachment", filename=filename)
-    message.attach(attachment)
+    if attachment is not None:
+        payload, filename = attachment
+        part = MIMEApplication(payload, _subtype="pdf")
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+        message.attach(part)
 
     try:
         with smtplib.SMTP(settings.host, settings.port, timeout=15) as server:
@@ -114,3 +122,14 @@ def send_report_email(to_address: str, subject: str, body: str, pdf_bytes: bytes
 
     log_event(logger, logging.INFO, "email_report.sent", to_domain=to_address.rsplit("@", 1)[-1])
     return True, None
+
+
+def send_report_email(to_address: str, subject: str, body: str, pdf_bytes: bytes, filename: str) -> Tuple[bool, Optional[str]]:
+    """Send pdf_bytes as an attachment to to_address."""
+    return _send(to_address, subject, body, attachment=(pdf_bytes, filename))
+
+
+def send_notification_email(to_address: str, subject: str, body: str) -> Tuple[bool, Optional[str]]:
+    """Plain-text notification with no attachment — used for @-mention
+    notices. Same never-raises contract as send_report_email."""
+    return _send(to_address, subject, body)

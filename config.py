@@ -505,6 +505,25 @@ class ThemeConfig:
 
 
 @dataclass(frozen=True)
+class CollaborationConfig:
+    """Per-ticker notes with @-mentions. Identity is SELF-DECLARED — this
+    app has no accounts, so an author name is a claim, not a proven fact,
+    and the UI says so. Mentions resolve only against the roster the user
+    curates, which is what bounds who the app can ever email."""
+    store_filename: str = "collaboration_store.json"
+    max_members: int = 25
+    max_note_chars: int = 2000
+    mention_subject_template: str = "{author} mentioned you in a Quantix note on {ticker}"
+    mention_body_template: str = (
+        "Hi {name},\n\n"
+        "{author} mentioned you in a note on {ticker} in Quantix:\n\n"
+        "  {body}\n\n"
+        "Open Quantix to reply. Note that Quantix has no user accounts — the author name "
+        "above is self-declared rather than authenticated."
+    )
+
+
+@dataclass(frozen=True)
 class ThresholdsConfig:
     """Where the user's overrides of the shipped valuation/risk thresholds
     live. The DEFAULTS stay in ScorecardConfig/RiskConfig above, with the
@@ -695,6 +714,7 @@ COMPETITIVE_BENCHMARKING = CompetitiveBenchmarkingConfig()
 ONBOARDING = OnboardingConfig()
 THEME = ThemeConfig()
 THRESHOLDS = ThresholdsConfig()
+COLLABORATION = CollaborationConfig()
 FAVORITES = FavoritesConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()

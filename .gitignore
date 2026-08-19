@@ -27,3 +27,4 @@ favorites_store.json
 .*.tmp
 .streamlit/secrets.toml
 threshold_overrides.json
+collaboration_store.json
