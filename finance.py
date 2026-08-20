@@ -17,7 +17,7 @@ from portfolio_analytics import build_aligned_returns, compute_correlation_matri
 from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -124,6 +124,24 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from support import (
+    build_index as support_build_index,
+    compose_report as support_compose,
+    diagnostics_snapshot as support_diagnostics,
+    is_destination_configured as support_destination_configured,
+    search as support_search,
+    send_report as support_send,
+)
+
+# The questions shown before anyone types — the ones the app's own design
+# provokes most often, rather than an arbitrary first-N slice of the FAQ.
+SUPPORT_STARTERS = (
+    "faq_unavailable_metric",
+    "faq_settings_vanished",
+    "faq_restart_needed",
+    "faq_alignment_score",
+    "faq_where_is_my_data",
+)
 from api_keys import (
     DEFAULT_SCOPES as API_KEY_DEFAULT_SCOPES,
     SCOPES as API_SCOPES,
@@ -1318,6 +1336,120 @@ with st.sidebar.expander(
                 # st.login() with no argument is the unnamed-default-provider
                 # form; auth.configured_providers() returns "" for that case.
                 st.login(_auth_p) if _auth_p else st.login()
+
+# --- Sidebar: Help & Support ---
+# Search first, contact second. See support.py for why there is no live
+# chat here despite the originating task asking for one: nobody is
+# staffing a chat on a locally-run instance, and an unanswered box is a
+# promise the app can't keep.
+with st.sidebar.expander("❓ Help & Support", expanded=False):
+    if "support_index" not in st.session_state:
+        st.session_state["support_index"] = support_build_index()
+    _sp_index = st.session_state["support_index"]
+
+    _sp_query = st.text_input(
+        "Search help", key="support_query",
+        placeholder="e.g. sharpe, sign in, alerts, missing data",
+        help=f"Searches {len(_sp_index)} articles: the FAQ plus every metric and chart explanation in the app.",
+    )
+    if _sp_query.strip():
+        _sp_hits = support_search(_sp_query, _sp_index)
+        if _sp_hits:
+            st.caption(f"{len(_sp_hits)} result{'s' if len(_sp_hits) != 1 else ''}")
+            for _sp_hit in _sp_hits:
+                with st.expander(f"{_sp_hit.title}  ·  {_sp_hit.category}", expanded=False):
+                    st.markdown(_rt_md_escape_dollar(_sp_hit.body))
+        else:
+            st.info(
+                f'Nothing matched "{_sp_query}". Try a single word — every search term has to '
+                "appear for an article to show. Or send a question below."
+            )
+    else:
+        st.caption("Common questions")
+        for _sp_start in SUPPORT_STARTERS:
+            _sp_art = next((a for a in _sp_index if a.id == _sp_start), None)
+            if _sp_art is not None:
+                with st.expander(_sp_art.title, expanded=False):
+                    st.markdown(_rt_md_escape_dollar(_sp_art.body))
+
+    st.markdown("---")
+    st.markdown("**Still stuck? Send a report**")
+    if not support_destination_configured():
+        st.caption(
+            "No support address is configured on this instance — expected, since Quantix "
+            "ships with no support desk behind it. Fill this in anyway and it produces a "
+            "formatted report you can copy into an email or a GitHub issue."
+        )
+
+    if st.session_state.pop("_support_clear_form", False):
+        st.session_state["support_subject"] = ""
+        st.session_state["support_body"] = ""
+
+    _sp_category = st.selectbox("Type", SUPPORT.categories, key="support_category")
+    _sp_subject = st.text_input("Subject", key="support_subject", placeholder="One line")
+    _sp_body = st.text_area(
+        "What happened?", key="support_body",
+        placeholder="What you did, what you expected, what happened instead.",
+    )
+    _sp_reply = st.text_input(
+        "Your email (optional)", key="support_reply",
+        placeholder="so a reply can reach you",
+    )
+    # Off by default and shown in full before sending — recent log lines
+    # name the tickers you've been researching, which is yours to disclose
+    # deliberately rather than discover afterwards.
+    _sp_diag_on = st.checkbox(
+        "Attach diagnostics", key="support_diagnostics", value=False,
+        help="Environment details and recent log lines. Review exactly what would be sent below.",
+    )
+    _sp_diag = ""
+    if _sp_diag_on:
+        # NOT `ticker_symbol` — this panel renders ABOVE Target Configuration
+        # in script order, so that name doesn't exist yet and referencing it
+        # here raises NameError the moment the box is ticked. The widget's
+        # session_state key survives from the previous run, which is what a
+        # diagnostics snapshot actually wants anyway.
+        _sp_diag = support_diagnostics(
+            extra={"Current ticker": st.session_state.get("ticker_input", "(not set yet)")})
+        with st.expander("Review what would be attached", expanded=False):
+            st.caption(
+                "This is the complete text that would be included. It names the tickers you "
+                "have looked at recently."
+            )
+            st.code(_sp_diag, language=None)
+
+    if st.button("Send report", type="primary", key="support_send"):
+        _sp_report, _sp_err = support_compose(
+            _sp_category, _sp_subject, _sp_body, _sp_reply, _sp_diag,
+        )
+        if _sp_err:
+            st.warning(_sp_err)
+        else:
+            _sp_ok, _sp_send_err = (False, None)
+            if support_destination_configured() and is_email_configured():
+                _sp_ok, _sp_send_err = support_send(_sp_report)
+            if _sp_ok:
+                st.success("Report sent.")
+                st.session_state["_support_clear_form"] = True
+                log_event(logger, logging.INFO, "user.support_report_sent",
+                          category=_sp_report.category, diagnostics=bool(_sp_diag))
+                st.rerun()
+            else:
+                # No destination, or the send failed. Either way the user's
+                # words must not be lost — show the composed report so it can
+                # be copied somewhere that will actually be read.
+                if _sp_send_err:
+                    st.warning(_sp_send_err)
+                elif not is_email_configured():
+                    st.info(
+                        "Email isn't configured on this instance, so nothing was sent. "
+                        "Copy the report below."
+                    )
+                st.code(
+                    f"Subject: [Quantix {_sp_report.category}] {_sp_report.subject}\n\n"
+                    f"{_sp_report.as_email_body()}",
+                    language=None,
+                )
 
 # --- Sidebar: API Keys ---
 # Sits under Account because a key belongs to whoever created it. See

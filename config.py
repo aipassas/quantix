@@ -543,6 +543,36 @@ class CollaborationConfig:
 
 
 @dataclass(frozen=True)
+class SupportConfig:
+    """In-app help and support.
+
+    NO LIVE CHAT, DELIBERATELY. The originating task asked for a "chat/help
+    widget" to "reduce support response time". A chat box implies someone
+    is staffing it; on a locally-run instance nobody is, and an unanswered
+    chat is worse than no chat because it makes a promise the app cannot
+    keep. So this is self-serve search first, with an explicit outbound
+    report for what search can't answer.
+
+    The help corpus is NOT duplicated here — it is assembled from the 57
+    metric definitions and 13 chart explanations already in metric_help.py
+    plus the FAQ in support.py. One source per fact, so help text cannot
+    drift from the tooltips describing the same metric.
+    """
+    # Where a support report is emailed. Empty means "no destination
+    # configured", which is the honest default: this app ships with no
+    # support organisation behind it, and inventing an address would send
+    # someone's bug report into a void.
+    support_address: str = ""
+    max_subject_chars: int = 120
+    max_body_chars: int = 4000
+    # Log lines attached to a report when the user opts in. Enough to show
+    # what led to a failure without shipping the whole file.
+    diagnostics_log_lines: int = 50
+    search_results_shown: int = 6
+    categories: Tuple[str, ...] = ("Question", "Bug report", "Feature request", "Data looks wrong")
+
+
+@dataclass(frozen=True)
 class ApiKeysConfig:
     """Scoped API keys for programmatic (non-human) access to Quantix.
 
@@ -775,6 +805,7 @@ THRESHOLDS = ThresholdsConfig()
 COLLABORATION = CollaborationConfig()
 FAVORITES = FavoritesConfig()
 API_KEYS = ApiKeysConfig()
+SUPPORT = SupportConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
