@@ -74,6 +74,12 @@ PROVIDER_LABELS: Dict[str, str] = {
 # Chosen, not blanket-applied. These are all "this is *my* setup" state:
 # my watchlists, my starred tickers, my theme, my thresholds, my alert
 # rules, my saved scenarios, whether I've seen the tour.
+# Marks that the "copy your signed-out data across" offer has been dealt
+# with — accepted or declined. NOT a store of user content; it exists so
+# the offer is gated on whether the USER has answered it rather than on
+# whether files happen to exist. See adoption_pending().
+ADOPTION_MARKER_FILENAME = "adoption_state.json"
+
 PER_USER_STORES: Tuple[str, ...] = (
     "watchlist_store.json",
     "favorites_store.json",
@@ -341,6 +347,46 @@ def has_user_data(key: str) -> bool:
     return any((user_dir(key) / name).exists() for name in PER_USER_STORES)
 
 
+def adoption_pending(key: str) -> bool:
+    """Whether to offer copying the signed-out profile into this account.
+
+    GATED ON WHETHER THE USER HAS ANSWERED, NOT ON WHETHER FILES EXIST.
+    That distinction is the whole bug this replaces: has_user_data() went
+    True the moment ANY per-user file appeared, and simply rendering the
+    page writes several — visiting a ticker records it as a recent,
+    dismissing the tour writes onboarding state, and the risk panel seeds
+    default alert rules. So on a real first sign-in the offer was already
+    suppressed by the time the sidebar drew, which is precisely when it
+    was needed. Observed live: a fresh account had three files written
+    before its owner ever saw the prompt.
+
+    The offer now stands until it is accepted or explicitly declined.
+    """
+    if not key:
+        return False
+    if (user_dir(key) / ADOPTION_MARKER_FILENAME).exists():
+        return False
+    return bool(shared_data_files())
+
+
+def mark_adoption_handled(key: str, adopted: bool) -> None:
+    """Record that the offer was answered, so it stops being made.
+    Never raises — failing to write this must not break the sign-in
+    panel; the worst case is the offer appearing again."""
+    import datetime
+    import json
+
+    try:
+        target = user_dir(key)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / ADOPTION_MARKER_FILENAME).write_text(json.dumps({
+            "adopted": adopted,
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }, indent=2))
+    except Exception:
+        log_exception(logger, "auth.adoption_marker_failed", section="auth")
+
+
 def shared_data_files() -> Tuple[str, ...]:
     """Which per-user stores exist in the shared/anonymous profile."""
     base = local_store.app_dir()
@@ -389,4 +435,8 @@ def adopt_shared_data(key: str, overwrite: bool = False) -> Tuple[Tuple[str, ...
 
     if copied:
         log_event(logger, logging.INFO, "auth.adopted_shared_data", files=len(copied))
+    # Answered either way — a copy that found nothing to bring across is
+    # still an answer, and re-offering it would be noise.
+    if not errors:
+        mark_adoption_handled(key, adopted=bool(copied))
     return tuple(copied), errors

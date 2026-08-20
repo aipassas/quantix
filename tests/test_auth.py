@@ -531,3 +531,66 @@ def test_requirements_name_both_auth_dependencies():
     requirements = (APP_DIR / "requirements.txt").read_text().lower()
     assert "authlib" in requirements
     assert "httpx" in requirements
+
+
+# --- the adoption offer -------------------------------------------------------
+
+def test_the_adoption_marker_is_not_a_per_user_store():
+    """Deliberately excluded from both tuples. It isn't content to copy
+    from the shared profile, and counting it as user data would recreate
+    the exact bug adoption_pending exists to fix."""
+    assert auth.ADOPTION_MARKER_FILENAME not in PER_USER_STORES
+    assert auth.ADOPTION_MARKER_FILENAME not in SHARED_STORES
+
+
+def test_the_offer_survives_files_written_by_merely_using_the_app(tmp_path, monkeypatch):
+    """REGRESSION TEST FOR AN OBSERVED FAILURE.
+
+    The offer used to be gated on has_user_data(), which goes True as
+    soon as ANY per-user file exists. Rendering the page writes several
+    without the user doing anything deliberate: visiting a ticker records
+    a recent, dismissing the tour writes onboarding state, the risk panel
+    seeds default alert rules. So on a real first sign-in the offer was
+    already suppressed by the time the sidebar drew.
+    """
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    (tmp_path / "watchlist_store.json").write_text('{"lists": {}}')
+
+    incidental = tmp_path / "users" / "google-abc"
+    incidental.mkdir(parents=True)
+    (incidental / "favorites_store.json").write_text('{"favorites": [], "recents": ["AAPL"]}')
+    (incidental / "onboarding_state.json").write_text('{"completed": true}')
+
+    assert auth.has_user_data("google-abc") is True      # files exist...
+    assert auth.adoption_pending("google-abc") is True   # ...but the offer stands
+
+
+def test_the_offer_stops_once_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    (tmp_path / "watchlist_store.json").write_text('{"lists": {}}')
+
+    assert auth.adoption_pending("google-abc") is True
+    adopt_shared_data("google-abc")
+    assert auth.adoption_pending("google-abc") is False
+
+
+def test_the_offer_stops_once_declined(tmp_path, monkeypatch):
+    """Declining is an answer. Without it the offer would sit there
+    forever for anyone who wants a genuinely clean account."""
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    (tmp_path / "watchlist_store.json").write_text('{"lists": {}}')
+
+    auth.mark_adoption_handled("google-abc", adopted=False)
+    assert auth.adoption_pending("google-abc") is False
+
+
+def test_no_offer_when_the_shared_profile_is_empty(tmp_path, monkeypatch):
+    """Nothing to copy means nothing to ask about."""
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    assert auth.adoption_pending("google-abc") is False
+
+
+def test_no_offer_when_signed_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    (tmp_path / "watchlist_store.json").write_text('{"lists": {}}')
+    assert auth.adoption_pending("") is False

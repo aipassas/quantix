@@ -1304,7 +1304,7 @@ with st.sidebar.expander(
         # First sign-in on an instance that already has data: without this
         # the app looks empty and empty is indistinguishable from lost.
         _auth_shared = auth.shared_data_files()
-        if _auth_shared and not auth.has_user_data(_auth_user.key):
+        if auth.adoption_pending(_auth_user.key):
             st.info(
                 f"This instance has {len(_auth_shared)} saved "
                 f"{'setting' if len(_auth_shared) == 1 else 'settings'} files from before you "
@@ -1322,6 +1322,13 @@ with st.sidebar.expander(
                     st.rerun()
                 elif not _auth_errs:
                     st.info("Nothing to copy.")
+                    st.rerun()
+            if st.button("No thanks", key="auth_adopt_decline"):
+                # Declining is an answer too. Without a way to say no, the
+                # offer would sit in the panel forever for anyone who
+                # genuinely wants a clean account.
+                auth.mark_adoption_handled(_auth_user.key, adopted=False)
+                st.rerun()
 
         if st.button("Sign out", key="auth_logout"):
             st.logout()
