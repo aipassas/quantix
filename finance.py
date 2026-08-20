@@ -17,7 +17,7 @@ from portfolio_analytics import build_aligned_returns, compute_correlation_matri
 from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -124,6 +124,14 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from digest import (
+    DigestSettings,
+    build_digest as digest_build,
+    cron_line as digest_cron_line,
+    save_settings as digest_save_settings,
+    settings_for as digest_settings_for,
+    validate as digest_validate,
+)
 from support import (
     build_index as support_build_index,
     compose_report as support_compose,
@@ -213,6 +221,9 @@ _AUTH_SCOPED_STATE = (
     # owner's keys — so the cached copy still has to be re-read when the
     # identity changes, or you'd see the previous account's key list.
     "api_key_store",
+    # Digest settings are per-owner records in a shared store, so the
+    # cached copy still has to be re-read when the identity changes.
+    "digest_settings",
 )
 _auth_user = auth.current_user()
 _auth_namespace = _auth_user.key if _auth_user else ""
@@ -1336,6 +1347,85 @@ with st.sidebar.expander(
                 # st.login() with no argument is the unnamed-default-provider
                 # form; auth.configured_providers() returns "" for that case.
                 st.login(_auth_p) if _auth_p else st.login()
+
+# --- Sidebar: Email Digest ---
+# The schedule lives in cron, not here — Streamlit runs nothing while the
+# app is shut, which is exactly when a digest for an inactive user has to
+# go out. See digest.py. This panel configures it and shows the line to
+# install; installing it stays a deliberate act.
+with st.sidebar.expander("📬 Email Digest", expanded=False):
+    _dg_owner = _auth_user.key if _auth_user else ""
+    if "digest_settings" not in st.session_state:
+        st.session_state["digest_settings"] = digest_settings_for(_dg_owner)
+    _dg = st.session_state["digest_settings"]
+
+    st.caption(
+        "A periodic email summarising how your watchlist moved, which alerts fired, and "
+        "which risk thresholds are breached. Quantix doesn't track holdings, so it covers "
+        "what you watch rather than what you own."
+    )
+    if not is_email_configured():
+        st.info(
+            "Email isn't configured on this instance, so nothing can be sent yet. Preview "
+            "works regardless. See .streamlit/secrets.toml.example to set up SMTP."
+        )
+
+    _dg_enabled = st.checkbox(
+        "Send the digest on a schedule", value=_dg.enabled, key="digest_enabled",
+        help="Only takes effect once you install the schedule line below — nothing sends on its own until then.",
+    )
+    _dg_recipient = st.text_input(
+        "Send to", value=_dg.recipient, key="digest_recipient", placeholder="you@example.com",
+    )
+    _dg_period = st.number_input(
+        "Cover the last (days)", min_value=DIGEST.min_period_days, max_value=DIGEST.max_period_days,
+        value=_dg.period_days, step=1, key="digest_period",
+        help="Also how often it sends — a 7-day digest goes out weekly.",
+    )
+    _dg_watch = st.checkbox("Watchlist movement", value=_dg.include_watchlist, key="digest_watch")
+    _dg_alerts = st.checkbox("Alerts that fired", value=_dg.include_alerts, key="digest_alerts")
+    _dg_risk = st.checkbox("Risk thresholds breached", value=_dg.include_risk, key="digest_risk")
+
+    if st.button("Save digest settings", key="digest_save"):
+        _dg_new = DigestSettings(
+            owner_key=_dg_owner, recipient=_dg_recipient.strip(), enabled=_dg_enabled,
+            period_days=int(_dg_period), include_watchlist=_dg_watch,
+            include_alerts=_dg_alerts, include_risk=_dg_risk,
+            last_sent_at=_dg.last_sent_at,
+        )
+        _dg_err = digest_validate(_dg_new)
+        if _dg_err:
+            st.warning(_dg_err)
+        else:
+            digest_save_settings(_dg_new)
+            st.session_state["digest_settings"] = _dg_new
+            log_event(logger, logging.INFO, "user.digest_settings_saved", enabled=_dg_new.enabled)
+            st.success("Saved.")
+
+    if st.button("Preview digest now", key="digest_preview"):
+        # Preview never sends — it builds and renders the same text the
+        # scheduled run would email, so it can be read before committing
+        # to a schedule.
+        with st.spinner("Building digest…"):
+            _dg_preview = digest_build(DigestSettings(
+                owner_key=_dg_owner, recipient=_dg_recipient.strip(),
+                period_days=int(_dg_period), include_watchlist=_dg_watch,
+                include_alerts=_dg_alerts, include_risk=_dg_risk,
+            ))
+        st.caption(f"Subject: {_dg_preview.subject()}")
+        st.code(_dg_preview.as_text(), language=None)
+        st.caption("Preview only — nothing was sent.")
+
+    st.markdown("---")
+    st.markdown("**Scheduling**")
+    st.caption(
+        "Streamlit runs nothing while the app is closed, which is exactly when a digest needs "
+        "to go out. Install this line in your crontab (`crontab -e`) to run it weekly. "
+        "It's yours to install — Quantix won't schedule mail on your behalf."
+    )
+    st.code(digest_cron_line(), language="bash")
+    if _dg.last_sent_at:
+        st.caption(f"Last sent: {_dg.last_sent_at.replace('T', ' ')}")
 
 # --- Sidebar: Help & Support ---
 # Search first, contact second. See support.py for why there is no live

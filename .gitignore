@@ -36,3 +36,7 @@ users/
 
 # Issued API keys (hashes, never plaintext) — local credential state.
 api_keys_store.json
+
+# Digest recipients and schedule state.
+digest_store.json
+digest_cron.log

@@ -543,6 +543,44 @@ class CollaborationConfig:
 
 
 @dataclass(frozen=True)
+class DigestConfig:
+    """The weekly email digest.
+
+    IT RUNS AS A SEPARATE PROCESS ON AN OS SCHEDULER, NOT INSIDE THE APP.
+    The originating task wants a digest that reaches an INACTIVE user
+    "without requiring them to check manually" — so by definition it has
+    to run while Streamlit is shut. Streamlit executes nothing when no
+    browser tab is open (realtime_alerts.py documents the same limit for
+    in-tab alert polling), so digest.py is a standalone script driven by
+    cron or launchd. The app generates the schedule line; installing it
+    stays the user's deliberate act, because a job that mails out on its
+    own should never be arranged silently.
+
+    THE SETTINGS STORE IS SHARED, KEYED BY OWNER — the same reasoning as
+    api_keys.py. A cron-run script has no Streamlit session, so
+    auth.current_user() is None inside it; settings filed under a user's
+    namespace would be invisible to the process that has to read them.
+    Each record carries owner_key instead, which also lets ONE scheduled
+    run send every configured user's digest.
+
+    NO PORTFOLIO SECTION. The task also asks for "portfolio changes", but
+    nothing in Quantix stores holdings — there is no positions store, and
+    designing one belongs to the Multi-Portfolio Management task. The
+    digest says so in plain words rather than dressing the watchlist up as
+    a portfolio, which would misstate what the numbers mean.
+    """
+    store_filename: str = "digest_store.json"
+    default_period_days: int = 7
+    min_period_days: int = 1
+    max_period_days: int = 90
+    # Watchlist rows shown before the digest truncates. A digest long
+    # enough to scroll defeats the point of a digest.
+    max_movers_shown: int = 25
+    max_alerts_shown: int = 20
+    subject_template: str = "Quantix digest — {period} — {headline}"
+
+
+@dataclass(frozen=True)
 class SupportConfig:
     """In-app help and support.
 
@@ -806,6 +844,7 @@ COLLABORATION = CollaborationConfig()
 FAVORITES = FavoritesConfig()
 API_KEYS = ApiKeysConfig()
 SUPPORT = SupportConfig()
+DIGEST = DigestConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()
