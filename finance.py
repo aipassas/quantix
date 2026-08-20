@@ -130,6 +130,11 @@ from news_sentiment import (
 )
 from portfolio_holdings import (
     add_holding as pf_add_holding,
+    create_portfolio as pf_create_portfolio,
+    delete_portfolio as pf_delete_portfolio,
+    portfolio_names as pf_portfolio_names,
+    rename_portfolio as pf_rename_portfolio,
+    set_active_portfolio as pf_set_active_portfolio,
     build_performance as pf_build_performance,
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
@@ -4862,7 +4867,6 @@ else:
         if "portfolio_store" not in st.session_state:
             st.session_state["portfolio_store"] = pf_load_store()
         _pf_store = st.session_state["portfolio_store"]
-        _pf_holdings = _pf_store.holdings()
 
         st.caption(
             "Your actual holdings measured against "
@@ -4870,6 +4874,93 @@ else:
             "purchase date, so the chart shows what you really held rather than "
             "back-projecting today's portfolio onto the past."
         )
+
+        # Switcher. No key= and a computed index=, with the store as the
+        # source of truth — a keyed selectbox whose options change can
+        # raise when its stored value falls outside the new list, which
+        # is exactly what happens the moment a portfolio is renamed or
+        # deleted. Same shape as the Active Watchlist control.
+        _pf_names = list(pf_portfolio_names(_pf_store))
+        _pf_active_idx = _pf_names.index(_pf_store.active) if _pf_store.active in _pf_names else 0
+        _pf_switch_col, _pf_count_col = st.columns([2, 3])
+        with _pf_switch_col:
+            _pf_chosen = st.selectbox("Active portfolio", _pf_names, index=_pf_active_idx)
+        with _pf_count_col:
+            st.caption(
+                f"\n\n{len(_pf_names)} portfolio(s) · "
+                f"{len(_pf_store.holdings(_pf_chosen))} position(s) in this one"
+            )
+        if _pf_chosen != _pf_store.active:
+            _pf_store, _pf_switch_err = pf_set_active_portfolio(_pf_store, _pf_chosen)
+            if _pf_switch_err:
+                st.warning(_pf_switch_err)
+            else:
+                st.session_state["portfolio_store"] = _pf_store
+                pf_save_store(_pf_store)
+                log_event(logger, logging.INFO, "user.portfolio_switched")
+                st.rerun()
+
+        with st.expander("Manage portfolios", expanded=False):
+            st.caption(
+                "Separate portfolios for separate people or mandates. Holdings, returns and "
+                "the benchmark comparison are computed per portfolio — nothing is pooled."
+            )
+            _pf_new_col, _pf_rename_col, _pf_delete_col = st.columns(3)
+
+            with _pf_new_col:
+                st.markdown("**New**")
+                if st.session_state.pop("_pf_clear_new_name", False):
+                    st.session_state["pf_new_name"] = ""
+                _pf_new_name = st.text_input(
+                    "Name", key="pf_new_name", placeholder="e.g. Client A",
+                    label_visibility="collapsed")
+                if st.button("Create", key="pf_create"):
+                    _pf_store, _pf_err = pf_create_portfolio(_pf_store, _pf_new_name)
+                    if _pf_err:
+                        st.warning(_pf_err)
+                    else:
+                        st.session_state["portfolio_store"] = _pf_store
+                        pf_save_store(_pf_store)
+                        st.session_state["_pf_clear_new_name"] = True
+                        st.rerun()
+
+            with _pf_rename_col:
+                st.markdown("**Rename**")
+                _pf_rename_to = st.text_input(
+                    "New name", key="pf_rename_to", placeholder=_pf_store.active,
+                    label_visibility="collapsed")
+                if st.button("Rename", key="pf_rename"):
+                    _pf_store, _pf_err = pf_rename_portfolio(
+                        _pf_store, _pf_store.active, _pf_rename_to)
+                    if _pf_err:
+                        st.warning(_pf_err)
+                    else:
+                        st.session_state["portfolio_store"] = _pf_store
+                        pf_save_store(_pf_store)
+                        st.rerun()
+
+            with _pf_delete_col:
+                st.markdown("**Delete**")
+                # Two-step, because deleting takes the holdings with it and
+                # there is no undo. A single click that destroys a client's
+                # positions is the wrong affordance.
+                _pf_confirm = st.checkbox(
+                    f"Delete “{_pf_store.active}” and its positions", key="pf_delete_confirm")
+                if st.button("Delete", key="pf_delete", disabled=not _pf_confirm):
+                    _pf_store, _pf_err = pf_delete_portfolio(_pf_store, _pf_store.active)
+                    if _pf_err:
+                        st.warning(_pf_err)
+                    else:
+                        st.session_state["portfolio_store"] = _pf_store
+                        pf_save_store(_pf_store)
+                        st.session_state["pf_delete_confirm"] = False
+                        st.rerun()
+
+        # Read AFTER the switcher above, not before it. Switching reruns,
+        # so reading early would also work — but only because of a
+        # st.rerun() three blocks away. Reading here makes the invariant
+        # local instead of load-bearing at a distance.
+        _pf_holdings = _pf_store.holdings()
 
         if not _pf_holdings:
             st.info(

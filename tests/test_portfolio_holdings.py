@@ -27,6 +27,11 @@ from portfolio_holdings import (
     Holding,
     PortfolioStore,
     add_holding,
+    create_portfolio,
+    delete_portfolio,
+    portfolio_names,
+    rename_portfolio,
+    set_active_portfolio,
     build_performance,
     build_value_series,
     load_store,
@@ -399,3 +404,180 @@ def test_save_leaves_no_leftover_temp_file(tmp_path):
     store, _ = add_holding(PortfolioStore(), "AAPL", 1, 1.0, D0)
     save_store(store, path)
     assert [p.name for p in tmp_path.iterdir()] == ["p.json"]
+
+
+# --- managing several portfolios ----------------------------------------------
+#
+# The advisor case from the task: one account, several separate client
+# portfolios, switched between.
+
+def test_a_new_portfolio_starts_empty_and_becomes_active():
+    store, err = create_portfolio(PortfolioStore(), "Client A")
+    assert err is None
+    assert store.active == "Client A"
+    assert store.holdings() == ()
+
+
+def test_portfolios_hold_separate_positions():
+    """The whole point: one client's holdings must not appear under
+    another's."""
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    store, _ = add_holding(store, "AAPL", 10, 100.0, D0)
+    store, _ = create_portfolio(store, "Client B")
+    store, _ = add_holding(store, "MSFT", 5, 200.0, D0)
+
+    assert [h.ticker for h in store.holdings("Client A")] == ["AAPL"]
+    assert [h.ticker for h in store.holdings("Client B")] == ["MSFT"]
+
+
+def test_switching_changes_which_holdings_are_returned():
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    store, _ = add_holding(store, "AAPL", 10, 100.0, D0)
+    store, _ = create_portfolio(store, "Client B")
+    store, _ = add_holding(store, "MSFT", 5, 200.0, D0)
+
+    store, err = set_active_portfolio(store, "Client A")
+    assert err is None and [h.ticker for h in store.holdings()] == ["AAPL"]
+
+
+def test_duplicate_names_are_refused():
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    _, err = create_portfolio(store, "Client A")
+    assert err is not None and "already exists" in err
+
+
+def test_a_blank_name_is_refused():
+    _, err = create_portfolio(PortfolioStore(), "   ")
+    assert err is not None
+
+
+def test_name_length_is_capped():
+    _, err = create_portfolio(PortfolioStore(), "x" * (PORTFOLIO.max_name_chars + 1))
+    assert err is not None
+
+
+def test_the_portfolio_count_is_capped():
+    store = PortfolioStore()
+    for i in range(PORTFOLIO.max_portfolios):
+        store, err = create_portfolio(store, f"Client {i}")
+        assert err is None
+    _, err = create_portfolio(store, "One too many")
+    assert err is not None and "limit" in err.lower()
+
+
+def test_renaming_keeps_the_holdings():
+    store, _ = create_portfolio(PortfolioStore(), "Clietn A")   # typo to fix
+    store, _ = add_holding(store, "AAPL", 10, 100.0, D0)
+    store, err = rename_portfolio(store, "Clietn A", "Client A")
+    assert err is None
+    assert [h.ticker for h in store.holdings("Client A")] == ["AAPL"]
+    assert "Clietn A" not in store.portfolios
+
+
+def test_renaming_the_active_portfolio_keeps_it_active():
+    store, _ = create_portfolio(PortfolioStore(), "Clietn A")
+    store, _ = rename_portfolio(store, "Clietn A", "Client A")
+    assert store.active == "Client A"
+
+
+def test_renaming_preserves_order():
+    """An advisor's list is read top to bottom. A rename that moved a
+    client to the bottom would look like a bug."""
+    store = PortfolioStore()
+    for name in ("Alpha", "Bravo", "Charlie"):
+        store, _ = create_portfolio(store, name)
+    store, _ = rename_portfolio(store, "Bravo", "Bravo Ltd")
+    assert list(store.portfolios) == ["Alpha", "Bravo Ltd", "Charlie"]
+
+
+def test_renaming_onto_an_existing_name_is_refused():
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    store, _ = create_portfolio(store, "Client B")
+    _, err = rename_portfolio(store, "Client A", "Client B")
+    assert err is not None and "already exists" in err
+
+
+def test_renaming_something_that_does_not_exist_is_refused():
+    _, err = rename_portfolio(PortfolioStore(), "Ghost", "New")
+    assert err is not None
+
+
+def test_renaming_to_the_same_name_is_a_no_op():
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    result, err = rename_portfolio(store, "Client A", "Client A")
+    assert err is None and result.portfolios == store.portfolios
+
+
+def test_deleting_removes_only_that_portfolio():
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    store, _ = create_portfolio(store, "Client B")
+    store, err = delete_portfolio(store, "Client A")
+    assert err is None and list(store.portfolios) == ["Client B"]
+
+
+def test_deleting_the_active_portfolio_moves_active_elsewhere():
+    """Something must always be active — otherwise the selectbox has a
+    value outside its options, which raises in Streamlit."""
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    store, _ = create_portfolio(store, "Client B")
+    assert store.active == "Client B"
+    store, _ = delete_portfolio(store, "Client B")
+    assert store.active == "Client A"
+
+
+def test_the_last_portfolio_cannot_be_deleted():
+    """There must be something to be active, and silently recreating a
+    default afterwards would be a confusing surprise."""
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    _, err = delete_portfolio(store, "Client A")
+    assert err is not None and "last portfolio" in err.lower()
+
+
+def test_deleting_something_that_does_not_exist_is_refused():
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    _, err = delete_portfolio(store, "Ghost")
+    assert err is not None
+
+
+def test_activating_something_that_does_not_exist_is_refused():
+    store, _ = create_portfolio(PortfolioStore(), "Client A")
+    _, err = set_active_portfolio(store, "Ghost")
+    assert err is not None
+
+
+def test_names_are_never_empty_even_for_a_fresh_store():
+    """The UI builds a selectbox from this. An empty options list has
+    nothing to select and a stored value outside the options raises."""
+    assert portfolio_names(PortfolioStore()) == (PORTFOLIO.default_portfolio_name,)
+
+
+def test_names_are_in_insertion_order():
+    store = PortfolioStore()
+    for name in ("Alpha", "Bravo", "Charlie"):
+        store, _ = create_portfolio(store, name)
+    assert portfolio_names(store) == ("Alpha", "Bravo", "Charlie")
+
+
+def test_the_active_name_is_always_selectable():
+    """Guards the documented Streamlit footgun directly: a keyed
+    selectbox whose stored value falls outside its options raises."""
+    store = PortfolioStore()
+    for name in ("Alpha", "Bravo"):
+        store, _ = create_portfolio(store, name)
+    store, _ = delete_portfolio(store, "Bravo")
+    assert store.active in portfolio_names(store)
+
+
+def test_several_portfolios_round_trip(tmp_path):
+    path = tmp_path / "p.json"
+    store = PortfolioStore()
+    store, _ = create_portfolio(store, "Client A")
+    store, _ = add_holding(store, "AAPL", 10, 100.0, D0)
+    store, _ = create_portfolio(store, "Client B")
+    store, _ = add_holding(store, "MSFT", 5, 200.0, D0)
+    save_store(store, path)
+
+    loaded = load_store(path)
+    assert list(loaded.portfolios) == ["Client A", "Client B"]
+    assert [h.ticker for h in loaded.holdings("Client A")] == ["AAPL"]
+    assert loaded.active == "Client B"

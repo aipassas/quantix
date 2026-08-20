@@ -270,6 +270,91 @@ def remove_holding(store: PortfolioStore, index: int,
     return replace(store, portfolios={**store.portfolios, name: remaining})
 
 
+# --- managing several portfolios ----------------------------------------------
+#
+# Mirrors watchlist_panel's create/rename/delete/set_active API on purpose:
+# the two are the same shape of problem, and a reader who knows one should
+# not have to learn a second set of conventions. Every operation returns
+# (store, reason) UNCHANGED on refusal, so the caller can say why a click
+# did nothing rather than leaving it silently inert.
+
+def portfolio_names(store: PortfolioStore) -> Tuple[str, ...]:
+    """Names in insertion order, guaranteed non-empty.
+
+    Always returns at least the default name even for an empty store,
+    because the UI renders a selectbox from this and an empty options
+    list has nothing to select.
+    """
+    return tuple(store.portfolios) or (PORTFOLIO.default_portfolio_name,)
+
+
+def create_portfolio(store: PortfolioStore, name: str) -> Tuple[PortfolioStore, Optional[str]]:
+    """Add an empty portfolio and make it active — you just created it to
+    put something in it."""
+    name = (name or "").strip()
+    if not name:
+        return store, "Enter a name first."
+    if len(name) > PORTFOLIO.max_name_chars:
+        return store, f"Names are capped at {PORTFOLIO.max_name_chars} characters."
+    if name in store.portfolios:
+        return store, f'A portfolio named "{name}" already exists.'
+    if len(store.portfolios) >= PORTFOLIO.max_portfolios:
+        return store, (
+            f"Portfolio limit reached ({PORTFOLIO.max_portfolios} max) — delete one first."
+        )
+    return replace(store, active=name,
+                   portfolios={**store.portfolios, name: ()}), None
+
+
+def rename_portfolio(store: PortfolioStore, old_name: str,
+                     new_name: str) -> Tuple[PortfolioStore, Optional[str]]:
+    """Rename in place, PRESERVING ORDER.
+
+    Rebuilding the dict rather than popping and re-adding matters: the UI
+    lists portfolios in insertion order, and a rename that quietly moved
+    a client to the bottom of an advisor's list would look like a bug.
+    """
+    new_name = (new_name or "").strip()
+    if old_name not in store.portfolios:
+        return store, f'"{old_name}" does not exist.'
+    if not new_name:
+        return store, "Enter a new name."
+    if len(new_name) > PORTFOLIO.max_name_chars:
+        return store, f"Names are capped at {PORTFOLIO.max_name_chars} characters."
+    if new_name == old_name:
+        return store, None
+    if new_name in store.portfolios:
+        return store, f'A portfolio named "{new_name}" already exists.'
+
+    renamed = {(new_name if key == old_name else key): value
+               for key, value in store.portfolios.items()}
+    active = new_name if store.active == old_name else store.active
+    return replace(store, active=active, portfolios=renamed), None
+
+
+def delete_portfolio(store: PortfolioStore, name: str) -> Tuple[PortfolioStore, Optional[str]]:
+    """Refuses to delete the last one — something must be active, and
+    silently recreating a default afterwards would be a surprise.
+
+    Deleting a portfolio destroys its holdings, so the caller is expected
+    to confirm first; this function does not second-guess a deliberate
+    call.
+    """
+    if name not in store.portfolios:
+        return store, f'"{name}" does not exist.'
+    if len(store.portfolios) <= 1:
+        return store, "Can't delete your last portfolio."
+    remaining = {k: v for k, v in store.portfolios.items() if k != name}
+    active = store.active if store.active != name else next(iter(remaining))
+    return replace(store, active=active, portfolios=remaining), None
+
+
+def set_active_portfolio(store: PortfolioStore, name: str) -> Tuple[PortfolioStore, Optional[str]]:
+    if name not in store.portfolios:
+        return store, f'"{name}" does not exist.'
+    return replace(store, active=name), None
+
+
 # --- the maths ----------------------------------------------------------------
 
 def build_value_series(holdings: Tuple[Holding, ...],
