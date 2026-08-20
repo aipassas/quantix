@@ -26,9 +26,16 @@ from api_keys import ApiKeyStore, create_key, revoke_key
 
 @pytest.fixture
 def store_path(tmp_path, monkeypatch):
-    """Point the whole key system at a sandboxed store file."""
+    """Point the whole key system at sandboxed files.
+
+    BOTH paths must be redirected. Usage timestamps live in their own
+    file now (see api_keys._usage_path); leaving that one pointed at the
+    real application directory would have the suite writing
+    api_keys_usage.json into it on every run.
+    """
     path = tmp_path / "api_keys_store.json"
     monkeypatch.setattr(api_keys, "_store_path", lambda: path)
+    monkeypatch.setattr(api_keys, "_usage_path", lambda: tmp_path / "api_keys_usage.json")
     return path
 
 

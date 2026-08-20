@@ -12,8 +12,11 @@ Everything else here is ordinary behaviour coverage.
 """
 import datetime
 import json
+import time
 
 import pytest
+
+import api_keys
 
 from api_keys import (
     DEFAULT_SCOPES,
@@ -350,3 +353,99 @@ def test_save_leaves_no_leftover_temp_file(tmp_path):
     store, _, _ = _issue()
     save_store(store, path)
     assert [p.name for p in tmp_path.iterdir()] == ["k.json"]
+
+
+# --- the revocation-loss race --------------------------------------------------
+
+def test_usage_writes_cannot_clobber_a_revocation(tmp_path):
+    """REGRESSION TEST FOR A CONFIRMED, REPRODUCED RACE.
+
+    The API server records key usage from a background thread while the
+    Streamlit UI can revoke a key at any moment. When both lived in one
+    file, the usage write did a read-modify-write of the WHOLE store: it
+    read the keys, got descheduled, and then wrote its stale copy back
+    over the revocation that landed in between — silently resurrecting a
+    revoked credential, which then verified again.
+
+    This drives the exact interleaving deterministically rather than
+    hoping to catch it by timing: the usage write is held open across the
+    revoke, then allowed to complete.
+    """
+    import threading
+
+    keys_path = tmp_path / "api_keys_store.json"
+    usage_path = tmp_path / "api_keys_usage.json"
+
+    store, key, plaintext = _issue()
+    save_store(store, keys_path)
+
+    real_load_usage = api_keys.load_usage
+    gate = threading.Event()
+
+    def slow_load_usage(path=None):
+        result = real_load_usage(path)
+        gate.wait(timeout=5)
+        return result
+
+    api_keys.load_usage = slow_load_usage
+    worker = threading.Thread(target=api_keys.touch_last_used, args=(key.id, usage_path))
+    worker.start()
+    try:
+        time.sleep(0.2)                      # the worker has now READ
+        api_keys.load_usage = real_load_usage
+        save_store(revoke_key(load_store(keys_path, usage_path), key.id), keys_path)
+        gate.set()                           # the worker now WRITES
+    finally:
+        gate.set()
+        worker.join(timeout=5)
+        api_keys.load_usage = real_load_usage
+
+    resolved, error = verify_key(load_store(keys_path, usage_path), plaintext)
+    assert resolved is None, "a revoked key verified again — the revocation was lost"
+    assert "revoked" in error.lower()
+
+
+def test_recording_usage_never_rewrites_the_key_store(tmp_path):
+    """The structural property behind the fix: if this function doesn't
+    touch the key file, it has nothing stale to clobber it with."""
+    keys_path = tmp_path / "api_keys_store.json"
+    usage_path = tmp_path / "api_keys_usage.json"
+
+    store, key, _ = _issue()
+    save_store(store, keys_path)
+    before = keys_path.read_text()
+
+    api_keys.touch_last_used(key.id, usage_path)
+
+    assert keys_path.read_text() == before, "the usage write modified the key store"
+    assert usage_path.exists()
+
+
+def test_usage_timestamps_still_reach_the_loaded_key(tmp_path):
+    """Splitting the files must not lose the feature. The UI shows
+    last-used so an unused key can be revoked with confidence."""
+    keys_path = tmp_path / "api_keys_store.json"
+    usage_path = tmp_path / "api_keys_usage.json"
+
+    store, key, _ = _issue()
+    save_store(store, keys_path)
+    assert load_store(keys_path, usage_path).keys[0].last_used_at == ""
+
+    api_keys.touch_last_used(key.id, usage_path)
+    assert load_store(keys_path, usage_path).keys[0].last_used_at != ""
+
+
+def test_a_corrupt_usage_file_costs_only_the_timestamp(tmp_path):
+    """Usage is cosmetic. A broken usage file must not take the keys with
+    it — that would deny every request over a lost timestamp."""
+    keys_path = tmp_path / "api_keys_store.json"
+    usage_path = tmp_path / "api_keys_usage.json"
+
+    store, key, plaintext = _issue()
+    save_store(store, keys_path)
+    usage_path.write_text("{not json")
+
+    loaded = load_store(keys_path, usage_path)
+    assert len(loaded.keys) == 1
+    assert loaded.keys[0].last_used_at == ""
+    assert verify_key(loaded, plaintext)[0] is not None

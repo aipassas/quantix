@@ -116,6 +116,7 @@ SHARED_STORES: Tuple[str, ...] = (
     "ml_momentum_model.joblib",
     "ml_training_history.json",
     "api_keys_store.json",
+    "api_keys_usage.json",
     # Digest recipients and schedule. Same reason as api_keys: digest.py
     # runs under cron with no Streamlit session, so settings namespaced
     # per user would be unreadable by the process that sends them. Each

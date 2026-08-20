@@ -707,6 +707,15 @@ class ApiKeysConfig:
     exposes no write or trade path at all. Every scope below is a read.
     """
     store_filename: str = "api_keys_store.json"
+    # Last-used timestamps live in their OWN file, and that separation is
+    # a correctness fix rather than tidiness. Usage is hot, frequently
+    # written, and worthless if lost; key definitions are cold and
+    # security-critical. Sharing one file meant a usage write from an
+    # in-flight request could read the store, get descheduled, and then
+    # write its stale copy back over a revocation made in the meantime —
+    # silently resurrecting a revoked key. Reproduced deterministically
+    # before this split; see api_keys.touch_last_used.
+    usage_filename: str = "api_keys_usage.json"
     key_prefix: str = "qtx"
     # 32 bytes of urlsafe randomness. Long enough that online guessing is
     # hopeless and offline guessing is irrelevant against a hashed store.

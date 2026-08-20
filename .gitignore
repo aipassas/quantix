@@ -43,3 +43,4 @@ digest_cron.log
 
 # Recorded holdings — real financial positions, local only.
 portfolio_store.json
+api_keys_usage.json

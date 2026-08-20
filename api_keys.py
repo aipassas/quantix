@@ -123,9 +123,48 @@ def _store_path() -> Path:
     return shared_path(API_KEYS.store_filename)
 
 
+def _usage_path() -> Path:
+    """Last-used timestamps, kept SEPARATE from key definitions.
+
+    This split fixes a confirmed revocation-loss race, not a stylistic
+    concern. The API server records usage from a background thread while
+    the Streamlit UI can revoke a key at any moment. When both lived in
+    one file, the usage write did a read-modify-write of the WHOLE store:
+    read the keys, get descheduled, then write its stale copy back over
+    the revocation that landed in between. Reproduced deterministically —
+    the revoked key verified again afterwards.
+
+    Separating them removes the shared mutable state rather than trying
+    to coordinate access to it. Two usage writes can still race each
+    other, and that is fine: the worst case is one lost timestamp, which
+    costs nothing. A revocation can no longer be the casualty.
+    """
+    return shared_path(API_KEYS.usage_filename)
+
+
+def load_usage(path: Optional[Path] = None) -> Dict[str, str]:
+    """{key_id: last_used_iso}. Never raises — a corrupt or missing usage
+    file means timestamps are unknown, which is cosmetic."""
+    path = path or _usage_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str)}
+
+
+def save_usage(usage: Dict[str, str], path: Optional[Path] = None) -> None:
+    atomic_write_text(path or _usage_path(), json.dumps(usage, indent=2))
+
+
 # --- persistence --------------------------------------------------------------
 
-def load_store(path: Optional[Path] = None) -> ApiKeyStore:
+def load_store(path: Optional[Path] = None,
+               usage_path: Optional[Path] = None) -> ApiKeyStore:
     """Never raises. A missing file is an empty store; a corrupt one
     degrades to empty rather than taking down the app or the API server.
     Individual malformed records are dropped — but note that dropping a
@@ -141,6 +180,10 @@ def load_store(path: Optional[Path] = None) -> ApiKeyStore:
         return ApiKeyStore()
     if not isinstance(raw, dict):
         return ApiKeyStore()
+
+    # Usage lives in its own file; the value recorded on the key itself
+    # is only a fallback for stores written before the split.
+    usage = load_usage(usage_path)
 
     keys: List[ApiKey] = []
     for item in raw.get("keys", []):
@@ -159,7 +202,7 @@ def load_store(path: Optional[Path] = None) -> ApiKeyStore:
             owner_key=str(item.get("owner_key") or ""),
             created_at=str(item.get("created_at") or ""),
             expires_at=str(item.get("expires_at") or ""),
-            last_used_at=str(item.get("last_used_at") or ""),
+            last_used_at=usage.get(key_id) or str(item.get("last_used_at") or ""),
             revoked_at=str(item.get("revoked_at") or ""),
         ))
     return ApiKeyStore(keys=tuple(keys))
@@ -324,14 +367,20 @@ def mark_used(store: ApiKeyStore, key_id: str) -> ApiKeyStore:
 
 
 def touch_last_used(key_id: str, path: Optional[Path] = None) -> None:
-    """Persist a last-used timestamp, best-effort.
+    """Record that a key was used, best-effort.
 
-    Wrapped so a failure here can never fail the request it is recording:
-    losing a usage timestamp is trivial, refusing a robot's legitimate
-    call because a disk write hiccuped is not.
+    Writes ONLY the usage file — never the key store. That is what makes
+    a concurrent revocation safe: this function no longer reads, holds,
+    or rewrites key definitions, so it has nothing stale to clobber them
+    with. See _usage_path() for the race this replaces.
+
+    `path` is the USAGE path (tests pass one); the signature keeps its
+    name for callers that already pass positionally.
     """
     try:
-        path = path or _store_path()
-        save_store(mark_used(load_store(path), key_id), path)
+        path = path or _usage_path()
+        usage = load_usage(path)
+        usage[key_id] = _now_iso()
+        save_usage(usage, path)
     except Exception:
         log_exception(logger, "api_keys.touch_failed", section="api_keys")
