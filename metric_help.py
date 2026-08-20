@@ -270,6 +270,13 @@ _DIAGNOSTICS = {
 }
 
 GLOSSARY: Dict[str, str] = {
+    "news_sentiment": (
+        "How positive or negative recent coverage reads, averaged across headlines that "
+        "actually mention this company. It measures the tone of the narrative, not whether "
+        "the market has already priced it in — a strongly positive read on a stock that has "
+        "already run is not a buy signal."
+    ),
+
     **_RETURN_QUALITY, **_LOSS_RISK, **_FUNDAMENTALS, **_TECHNICALS,
     **_RELATIVE, **_STRATEGY, **_PORTFOLIO, **_MACRO, **_DIAGNOSTICS,
 }

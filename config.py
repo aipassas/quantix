@@ -543,6 +543,45 @@ class CollaborationConfig:
 
 
 @dataclass(frozen=True)
+class NewsSentimentConfig:
+    """Headline sentiment per ticker.
+
+    A GENERAL-PURPOSE LEXICON IS NOT FIT FOR FINANCIAL TEXT, and this was
+    measured rather than assumed: plain VADER misclassified 5 of 10
+    representative financial headlines — coin-flip accuracy. It reads
+    "crushes revenue expectations" as negative (-1.9, violence), scores
+    "regulators fine bank" positive (+0.8, as in "that's fine"), and
+    treats debt (-1.5), risk (-1.1) and liability (-0.8) as negative when
+    they are neutral technical terms. Twenty-five core finance movement
+    words — beats, plunges, surges, downgrade, bankruptcy — are absent
+    entirely and score zero. This is the documented Loughran-McDonald
+    finding, reproduced on this exact library.
+
+    So news_sentiment.py overlays a finance lexicon before scoring, and
+    its measured accuracy is published in the UI rather than asserted.
+
+    THE SIGNAL STAYS IN ITS OWN PANEL. It is deliberately NOT fed into
+    the Blueprint Alignment score: that number is built from audited
+    financial statements, and mixing a headline-derived signal into it
+    would quietly degrade something the user currently has reason to
+    trust.
+    """
+    max_articles: int = 20
+    # Below this many relevant articles, a score is an average of too
+    # little to mean anything, so the panel reports the count instead of
+    # a confident number.
+    min_articles_for_score: int = 3
+    # VADER compound thresholds, its documented conventional cut-offs.
+    positive_threshold: float = 0.05
+    negative_threshold: float = -0.05
+    # Yahoo's per-ticker feed includes loosely related stories — an AAPL
+    # request returned a QCOM headline as its top item. An article has to
+    # actually mention the company to count.
+    require_relevance: bool = True
+    cache_ttl_seconds: int = 900
+
+
+@dataclass(frozen=True)
 class PortfolioConfig:
     """Actual holdings and the performance dashboard built on them.
 
@@ -882,6 +921,7 @@ API_KEYS = ApiKeysConfig()
 SUPPORT = SupportConfig()
 DIGEST = DigestConfig()
 PORTFOLIO = PortfolioConfig()
+NEWS_SENTIMENT = NewsSentimentConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()

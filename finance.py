@@ -17,7 +17,7 @@ from portfolio_analytics import build_aligned_returns, compute_correlation_matri
 from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -124,6 +124,10 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from news_sentiment import (
+    accuracy_summary as ns_accuracy_summary,
+    analyse as ns_analyse,
+)
 from portfolio_holdings import (
     add_holding as pf_add_holding,
     build_performance as pf_build_performance,
@@ -4770,6 +4774,81 @@ else:
 
             else:
                 st.warning("Could not fetch sufficient competitor data. Please check the tickers and try again.")
+
+    # ==========================================
+    # NEWS SENTIMENT
+    # ==========================================
+    # Deliberately NOT wired into the Blueprint Alignment score — that
+    # number comes from audited statements, and blending a
+    # headline-derived signal into it would quietly degrade something
+    # the reader has reason to trust. See news_sentiment.py.
+    with tab_overview:
+        st.markdown("---")
+        with st.expander(f"📰 News Sentiment — {ticker_symbol}", expanded=False):
+            _ns_key = f"news_sentiment_{ticker_symbol}"
+            if _ns_key not in st.session_state:
+                with st.spinner("Reading recent coverage…"):
+                    # ticker_bundle.info, not a bare `info` — that name
+                    # doesn't exist here, and the company name is what
+                    # the relevance filter matches headlines against.
+                    st.session_state[_ns_key] = ns_analyse(
+                        ticker_symbol, (ticker_bundle.info or {}).get("longName", ""))
+            _ns = st.session_state[_ns_key]
+
+            if _ns.has_score:
+                _ns_cols = st.columns([1, 1, 2])
+                _ns_cols[0].metric(
+                    "Sentiment", _ns.label.title(),
+                    help=help_for("news_sentiment"),
+                )
+                _ns_cols[1].metric(
+                    "Score", f"{_ns.score:+.2f}",
+                    help="Mean compound score across the scored headlines, from -1 to +1.",
+                )
+                _ns_cols[2].markdown(
+                    f"**{_ns.positive}** positive · **{_ns.neutral}** neutral · "
+                    f"**{_ns.negative}** negative  \n"
+                    f"from {len(_ns.articles)} relevant article(s)"
+                )
+            else:
+                st.info(f"No sentiment score for {ticker_symbol} right now.")
+
+            for _ns_note in _ns.notes:
+                st.caption(_ns_note)
+
+            if _ns.articles:
+                st.markdown("**Headlines it was computed from**")
+                for _ns_a in _ns.articles:
+                    _ns_badge = {"positive": "🟢", "negative": "🔴",
+                                 "neutral": "⚪", "unscored": "—"}[_ns_a.label]
+                    _ns_line = f"{_ns_badge} {_rt_md_escape_dollar(_ns_a.title)}"
+                    if _ns_a.url:
+                        _ns_line = f"{_ns_badge} [{_rt_md_escape_dollar(_ns_a.title)}]({_ns_a.url})"
+                    st.markdown(_ns_line)
+                    st.caption(
+                        f"{_ns_a.provider or 'unknown source'} · {_ns_a.published_display}"
+                        + (f" · {_ns_a.score:+.2f}" if _ns_a.score is not None else "")
+                    )
+
+            # The headlines are shown ABOVE this on purpose: the honest
+            # use of a lexicon score is as a pointer to what to read, so
+            # the reader can check it against the actual coverage rather
+            # than taking the number on faith.
+            st.markdown("---")
+            st.caption(ns_accuracy_summary())
+            st.caption(
+                "This is a word-list score, not a language model. It sums the sentiment of "
+                "individual words, so it cannot read clause structure — \"beats estimates but "
+                "cuts guidance\" is scored by its words rather than by understanding that the "
+                "second half dominates. It also can't detect sarcasm or judge whether news is "
+                "already priced in.\n\n"
+                "Article selection is imperfect too: a headline has to name the company, which "
+                "keeps out stories about competitors, but still lets through pieces that merely "
+                "mention it in passing — or that happen to contain the word as someone's "
+                "surname. That is why every headline is listed above: if the score looks wrong, "
+                "the articles it came from will usually show why. Treat it as a fast read on "
+                "tone, not a forecast."
+            )
 
     # ==========================================
     # PORTFOLIO PERFORMANCE
