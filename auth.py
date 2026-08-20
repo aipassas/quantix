@@ -96,10 +96,19 @@ PER_USER_STORES: Tuple[str, ...] = (
 #   ml_training_history.json  shared infrastructure, not personal state.
 #                             Retraining per user would multiply the cost
 #                             for no benefit.
+#   api_keys_store.json       Robot credentials. The API server is a
+#                             separate process with no Streamlit session,
+#                             so current_user() is None inside it — a key
+#                             filed under a user's namespace would be
+#                             invisible to the process that must verify
+#                             it. Each record carries owner_key instead,
+#                             which is what still scopes owner-specific
+#                             endpoints correctly. See api_keys.py.
 SHARED_STORES: Tuple[str, ...] = (
     "collaboration_store.json",
     "ml_momentum_model.joblib",
     "ml_training_history.json",
+    "api_keys_store.json",
 )
 
 

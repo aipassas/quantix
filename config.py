@@ -543,6 +543,45 @@ class CollaborationConfig:
 
 
 @dataclass(frozen=True)
+class ApiKeysConfig:
+    """Scoped API keys for programmatic (non-human) access to Quantix.
+
+    THE STORE IS SHARED, NOT PER-USER, AND THAT IS DELIBERATE. Every other
+    piece of personal state is namespaced per signed-in user (see auth.py).
+    Keys cannot be: the API server is a separate process with no Streamlit
+    session, so auth.current_user() is None inside it. A key filed under a
+    user's namespace would be invisible to the exact process whose job is
+    to verify it. So the store is shared and each record carries the
+    owner's namespace key instead — which is also what lets an
+    owner-scoped endpoint resolve the right user's watchlists.
+
+    ONLY THE HASH IS STORED. The secret is shown once, at creation, and
+    never again — recoverable keys are the single most common way key
+    systems leak, and a store that cannot reveal a key cannot leak one.
+
+    READ-ONLY BY DESIGN. The originating task mentions "headless trading
+    bots"; Quantix has no brokerage integration and this API deliberately
+    exposes no write or trade path at all. Every scope below is a read.
+    """
+    store_filename: str = "api_keys_store.json"
+    key_prefix: str = "qtx"
+    # 32 bytes of urlsafe randomness. Long enough that online guessing is
+    # hopeless and offline guessing is irrelevant against a hashed store.
+    secret_bytes: int = 32
+    id_length: int = 8          # public, shown in the UI to identify a key
+    max_keys_per_owner: int = 20
+    default_expiry_days: int = 90
+    max_expiry_days: int = 365
+    max_name_chars: int = 60
+    # Bound to loopback unless deliberately changed. This app is run
+    # locally; a default of 0.0.0.0 would silently publish someone's
+    # financial analysis to their whole network the first time they
+    # started the server.
+    default_host: str = "127.0.0.1"
+    default_port: int = 8787   # Streamlit owns 8501; keep well clear of it
+
+
+@dataclass(frozen=True)
 class ThresholdsConfig:
     """Where the user's overrides of the shipped valuation/risk thresholds
     live. The DEFAULTS stay in ScorecardConfig/RiskConfig above, with the
@@ -735,6 +774,7 @@ THEME = ThemeConfig()
 THRESHOLDS = ThresholdsConfig()
 COLLABORATION = CollaborationConfig()
 FAVORITES = FavoritesConfig()
+API_KEYS = ApiKeysConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()

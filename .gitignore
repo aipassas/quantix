@@ -33,3 +33,6 @@ collaboration_store.json
 # Same local, never-committed data as the shared stores above, one
 # directory per authenticated identity.
 users/
+
+# Issued API keys (hashes, never plaintext) — local credential state.
+api_keys_store.json

@@ -17,7 +17,7 @@ from portfolio_analytics import build_aligned_returns, compute_correlation_matri
 from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -124,6 +124,15 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from api_keys import (
+    DEFAULT_SCOPES as API_KEY_DEFAULT_SCOPES,
+    SCOPES as API_SCOPES,
+    create_key as create_api_key,
+    keys_for_owner as api_keys_for_owner,
+    load_store as load_api_key_store,
+    revoke_key as revoke_api_key,
+    save_store as save_api_key_store,
+)
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -182,6 +191,10 @@ _AUTH_SCOPED_STATE = (
     "theme_choice", "watchlist_store", "quick_access_store", "scenario_saved",
     "risk_alert_rules", "rt_alert_rules", "rt_alert_history",
     "onboarding_active", "onboarding_step", "collab_store",
+    # The key STORE is shared, but the panel lists only the current
+    # owner's keys — so the cached copy still has to be re-read when the
+    # identity changes, or you'd see the previous account's key list.
+    "api_key_store",
 )
 _auth_user = auth.current_user()
 _auth_namespace = _auth_user.key if _auth_user else ""
@@ -1305,6 +1318,109 @@ with st.sidebar.expander(
                 # st.login() with no argument is the unnamed-default-provider
                 # form; auth.configured_providers() returns "" for that case.
                 st.login(_auth_p) if _auth_p else st.login()
+
+# --- Sidebar: API Keys ---
+# Sits under Account because a key belongs to whoever created it. See
+# api_keys.py for why the store is shared rather than namespaced, and
+# api_server.py for what a key can actually reach (reads only).
+with st.sidebar.expander("🔑 API Keys", expanded=False):
+    if "api_key_store" not in st.session_state:
+        st.session_state["api_key_store"] = load_api_key_store()
+    _ak_store = st.session_state["api_key_store"]
+    _ak_owner = _auth_user.key if _auth_user else ""
+
+    st.caption(
+        "Keys let scripts and other programs read your Quantix analysis without your "
+        "login. The API is **read-only** — it has no endpoint that places trades or "
+        "changes anything, because Quantix has no brokerage connection."
+    )
+
+    # A freshly-created key is shown exactly once. Held in session_state
+    # across the rerun that refreshes the list, then dropped on dismiss —
+    # it is never written anywhere, which is the whole point.
+    _ak_fresh = st.session_state.get("_api_key_plaintext")
+    if _ak_fresh:
+        st.success("Key created — copy it now.")
+        st.code(_ak_fresh, language=None)
+        st.warning(
+            "This is the only time this key is shown. Only its hash is stored, so it "
+            "cannot be looked up again. If you lose it, revoke it and make another."
+        )
+        if st.button("I've copied it", key="api_key_dismiss"):
+            st.session_state.pop("_api_key_plaintext", None)
+            st.rerun()
+
+    _ak_mine = api_keys_for_owner(_ak_store, _ak_owner)
+    if _ak_mine:
+        st.markdown("**Your keys**")
+        for _ak in _ak_mine:
+            # [5, 1] squeezed the action button to ~25px in the sidebar and
+            # wrapped its label one letter per line. Matches the ✕ affordance
+            # the watchlist and notes panels already use for the same reason.
+            _ak_cols = st.columns([6, 1])
+            with _ak_cols[0]:
+                _ak_badge = {"active": "🟢", "expired": "🟡", "revoked": "⚪"}[_ak.status]
+                st.markdown(f"{_ak_badge} **{_ak.name}** · `{_ak.id}` · {_ak.status}")
+                _ak_bits = [", ".join(_ak.scopes) or "no scopes"]
+                if _ak.expires_at:
+                    _ak_bits.append(f"expires {_ak.expires_at[:10]}")
+                _ak_bits.append(f"last used {_ak.last_used_at[:16]}" if _ak.last_used_at else "never used")
+                st.caption(" · ".join(_ak_bits))
+            with _ak_cols[1]:
+                if not _ak.revoked and st.button(
+                    "✕", key=f"api_key_revoke_{_ak.id}",
+                    help=f"Revoke '{_ak.name}' — any script using it stops working immediately.",
+                ):
+                    _ak_store = revoke_api_key(_ak_store, _ak.id)
+                    st.session_state["api_key_store"] = _ak_store
+                    save_api_key_store(_ak_store)
+                    st.rerun()
+    else:
+        st.caption("No keys yet.")
+
+    st.markdown("---")
+    # Deferred clear — assigning a widget's own key after it renders does
+    # nothing (see CLAUDE.md and the Team Notes compose box).
+    if st.session_state.pop("_api_key_clear_form", False):
+        st.session_state["api_key_name"] = ""
+    _ak_name = st.text_input(
+        "New key name", key="api_key_name", placeholder="e.g. nightly-screener",
+        help="Only for your own reference — it identifies the key in this list.",
+    )
+    _ak_scopes = st.multiselect(
+        "Scopes", options=list(API_SCOPES.keys()), default=list(API_KEY_DEFAULT_SCOPES),
+        key="api_key_scopes",
+        help="What this key may read. Grant only what the script actually needs.",
+        format_func=lambda s: s,
+    )
+    for _ak_s in _ak_scopes:
+        st.caption(f"`{_ak_s}` — {API_SCOPES[_ak_s]}")
+    _ak_expiry = st.number_input(
+        "Expires in (days)", min_value=0, max_value=API_KEYS.max_expiry_days,
+        value=API_KEYS.default_expiry_days, step=30, key="api_key_expiry",
+        help="0 means the key never expires. A dated key limits the damage of one that leaks.",
+    )
+    if st.button("Create key", type="primary", key="api_key_create"):
+        _ak_store, _ak_new, _ak_plain, _ak_err = create_api_key(
+            _ak_store, _ak_name, tuple(_ak_scopes), owner_key=_ak_owner,
+            expires_in_days=int(_ak_expiry),
+        )
+        if _ak_err:
+            st.warning(_ak_err)
+        else:
+            st.session_state["api_key_store"] = _ak_store
+            save_api_key_store(_ak_store)
+            st.session_state["_api_key_plaintext"] = _ak_plain
+            st.session_state["_api_key_clear_form"] = True
+            log_event(logger, logging.INFO, "user.api_key_created", scopes=len(_ak_new.scopes))
+            st.rerun()
+
+    st.markdown("---")
+    st.caption(
+        f"The API is a separate process and is never started automatically. Run it with "
+        f"`python3 api_server.py` — it listens on {API_KEYS.default_host}:{API_KEYS.default_port} "
+        f"and `GET /v1` lists every endpoint."
+    )
 
 # --- Sidebar Controls ---
 # TradingView-style control rail: only Ticker/Date (used on every
