@@ -501,3 +501,33 @@ def test_nothing_raises_when_auth_is_entirely_unconfigured():
     assert auth.is_logged_in() is False
     assert isinstance(auth.configured_providers(), tuple)
     assert auth.unavailable_reason() is not None or auth.is_available()
+
+
+def test_the_authlib_check_tests_the_import_path_st_login_actually_uses():
+    """REGRESSION TEST FOR A REAL FALSE POSITIVE.
+
+    is_authlib_installed() originally did a bare `import authlib`. That
+    succeeds even when httpx is missing — but Authlib's Starlette
+    integration, which is the code path st.login() takes, imports httpx.
+    So the check returned True, the Account panel offered a sign-in
+    button, and clicking it produced a 500 whose logged error claimed
+    "Authentication requires Authlib>=1.3.2" — naming the wrong package.
+
+    Asserting on the source keeps the check pointed at the real
+    dependency rather than a proxy for it.
+    """
+    source = (APP_DIR / "auth.py").read_text()
+    body = source.split("def is_authlib_installed")[1].split("def ")[0]
+    assert "starlette_client" in body, (
+        "is_authlib_installed must import authlib.integrations.starlette_client — "
+        "a bare `import authlib` gives a false positive when httpx is absent"
+    )
+
+
+def test_requirements_name_both_auth_dependencies():
+    """httpx is a silent, non-obvious requirement: `pip install
+    streamlit[auth]` does not pull it, and without it sign-in fails at
+    runtime rather than at install time."""
+    requirements = (APP_DIR / "requirements.txt").read_text().lower()
+    assert "authlib" in requirements
+    assert "httpx" in requirements

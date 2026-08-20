@@ -6,7 +6,16 @@ plotly>=6.0
 scipy>=1.11
 scikit-learn>=1.4
 weasyprint>=69.0
-# Required by Streamlit's native OIDC sign-in (st.login/st.user). Not a
-# dependency of streamlit itself, so it has to be named explicitly; without
-# it auth.py reports sign-in as unavailable and the app runs unchanged.
-Authlib>=1.3
+# Required by Streamlit's native OIDC sign-in (st.login/st.user). Neither is
+# a dependency of streamlit itself, so both have to be named explicitly.
+#
+# httpx is NOT optional and NOT obvious: Authlib's Starlette integration —
+# the code path st.login() actually uses — imports it. Without httpx,
+# `import authlib` still succeeds while sign-in fails at runtime with
+# Streamlit reporting "Authentication requires Authlib>=1.3.2", which
+# points at the wrong package. Note `pip install streamlit[auth]` does not
+# pull httpx in either.
+#
+# 1.3.2 is the floor Streamlit itself names.
+Authlib>=1.3.2
+httpx>=0.27

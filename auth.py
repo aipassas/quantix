@@ -137,10 +137,24 @@ class AuthUser:
 # --- configuration ------------------------------------------------------------
 
 def is_authlib_installed() -> bool:
-    """Streamlit's auth needs Authlib; it isn't a hard dependency of
-    Streamlit itself, so it can be genuinely absent."""
+    """Whether the auth stack st.login() actually needs is importable.
+
+    IMPORTS THE STARLETTE INTEGRATION, NOT JUST `authlib`. A bare
+    `import authlib` is not the same question and gives a false positive:
+    Authlib's Starlette client pulls in httpx, which is a separate
+    package and can easily be absent. When it is, Streamlit's own
+    handler catches the ImportError and re-raises it as
+    "Authentication requires Authlib>=1.3.2" — pointing at the wrong
+    package entirely.
+
+    That exact false positive shipped once. `import authlib` succeeded,
+    this function returned True, the Account panel offered a sign-in
+    button, and clicking it produced a 500 with a misleading error deep
+    in the server log. Checking the real import path is the only way to
+    answer the question the caller is asking.
+    """
     try:
-        import authlib  # noqa: F401
+        from authlib.integrations import starlette_client  # noqa: F401
         return True
     except Exception:
         return False
