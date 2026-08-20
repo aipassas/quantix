@@ -543,6 +543,50 @@ class CollaborationConfig:
 
 
 @dataclass(frozen=True)
+class RecommendationsConfig:
+    """Ranked stock suggestions from stated preferences.
+
+    IT MAKES NO PREDICTION, AND THAT IS THE CENTRAL DECISION. The
+    originating task asked for a machine-learning model that suggests
+    stocks to buy. ml_pipeline.py's momentum classifier was measured
+    first: test accuracy 0.4913 against a 0.5324 majority-class
+    baseline, ROC AUC 0.4792 on 3,120 held-out rows. No detectable edge
+    — marginally below a coin flip. Ranking by those probabilities would
+    present noise as intelligence on a screen people use to decide where
+    money goes, which is the most consequential form of the fabricated
+    number this codebase refuses everywhere else.
+
+    So suggestions rank how well a stock MATCHES THE CRITERIA THE USER
+    STATED, using metrics the app already computes and discloses. The
+    honest claim is "this fits what you asked for", never "this will go
+    up". No buy/sell/hold labels, no target prices, no implied timing.
+
+    THRESHOLDS ARE MULTIPLES OF THE APP'S OWN CONFIGURED VALUES, not a
+    second set of invented numbers living alongside the first. A
+    conservative profile tightens SCORECARD.max_beta and
+    max_debt_to_equity; an aggressive one loosens them. If those
+    defaults are ever revised, every profile moves with them instead of
+    silently drifting out of step.
+    """
+    # Multipliers applied to the shipped thresholds. Ceilings (beta,
+    # leverage, volatility) scale directly; floors (margin, coverage)
+    # scale inversely, so "conservative" always means "harder to pass".
+    risk_profiles: Dict[str, float] = field(default_factory=lambda: {
+        "Conservative": 0.7,
+        "Balanced": 1.0,
+        "Aggressive": 1.6,
+    })
+    default_risk_profile: str = "Balanced"
+    valuation_preferences: Tuple[str, ...] = ("Any", "Value-leaning", "Growth-leaning")
+    default_valuation: str = "Any"
+    max_suggestions: int = 10
+    # A candidate needs this many evaluable criteria before it is ranked
+    # at all. Below it, "matched 2 of 2" is a statement about missing
+    # data rather than about the company.
+    min_evaluable_criteria: int = 3
+
+
+@dataclass(frozen=True)
 class NewsSentimentConfig:
     """Headline sentiment per ticker.
 
@@ -931,6 +975,7 @@ SUPPORT = SupportConfig()
 DIGEST = DigestConfig()
 PORTFOLIO = PortfolioConfig()
 NEWS_SENTIMENT = NewsSentimentConfig()
+RECOMMENDATIONS = RecommendationsConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()

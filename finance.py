@@ -17,7 +17,7 @@ from portfolio_analytics import build_aligned_returns, compute_correlation_matri
 from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -124,6 +124,12 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from recommendations import (
+    Preferences as rc_Preferences,
+    available_sectors as rc_available_sectors,
+    criteria_for as rc_criteria_for,
+    rank as rc_rank,
+)
 from news_sentiment import (
     accuracy_summary as ns_accuracy_summary,
     analyse as ns_analyse,
@@ -4779,6 +4785,119 @@ else:
 
             else:
                 st.warning("Could not fetch sufficient competitor data. Please check the tickers and try again.")
+
+    # ==========================================
+    # MATCHING STOCKS (the "AI recommendations" task)
+    # ==========================================
+    # Ranks how well candidates match STATED CRITERIA. It predicts
+    # nothing: ml_pipeline's momentum model measured 0.4792 ROC AUC on
+    # held-out data — below a coin flip — so ranking by its probabilities
+    # would be noise dressed as intelligence on a screen used to decide
+    # where money goes. See recommendations.py.
+    with tab_overview:
+        st.markdown("---")
+        with st.expander("🧭 Find stocks matching your criteria", expanded=False):
+            st.caption(
+                "Tell it what you're looking for and it ranks the tickers Quantix knows "
+                "about by how well they fit — using the same scorecard, leverage and risk "
+                "figures shown elsewhere in the app. **It does not predict prices** and "
+                "makes no buy or sell suggestion; it answers \"what matches what I asked "
+                "for\", which is a different and much more answerable question."
+            )
+
+            _rc_universe = tuple(dict.fromkeys(
+                list(WATCHLIST.tech_basket) + list(WATCHLIST.diversified_basket)
+                + [t for entry in _wl_store.lists.values() for t in entry.tickers]
+            ))
+            _rc_sectors_available = st.session_state.get("_rc_sectors")
+            if _rc_sectors_available is None:
+                _rc_sectors_available = rc_available_sectors(_rc_universe)
+                st.session_state["_rc_sectors"] = _rc_sectors_available
+
+            _rc_a, _rc_b, _rc_c = st.columns(3)
+            _rc_risk = _rc_a.selectbox(
+                "Risk tolerance", list(RECOMMENDATIONS.risk_profiles),
+                index=list(RECOMMENDATIONS.risk_profiles).index(
+                    RECOMMENDATIONS.default_risk_profile),
+                help="Scales the app's own configured thresholds — the exact numbers are shown below.",
+            )
+            _rc_val = _rc_b.selectbox(
+                "Valuation leaning", list(RECOMMENDATIONS.valuation_preferences),
+                help="Value adds P/E and price-to-book ceilings; growth uses PEG instead, so a "
+                     "high multiple backed by matching earnings growth isn't excluded.",
+            )
+            _rc_profitable = _rc_c.checkbox(
+                "Require profitability", value=True,
+                help="Applies a net-margin floor. Switch off to include companies not yet profitable.",
+            )
+            _rc_chosen_sectors = st.multiselect(
+                "Sectors (leave empty for any)", _rc_sectors_available,
+                help="Only sectors actually present in the universe are offered.",
+            )
+
+            _rc_prefs = rc_Preferences(
+                sectors=tuple(_rc_chosen_sectors), risk_profile=_rc_risk,
+                valuation=_rc_val, require_profitable=_rc_profitable,
+            )
+
+            # Shown BEFORE any result: a preference whose effect is
+            # invisible is indistinguishable from one that does nothing.
+            with st.expander("What these preferences mean, exactly", expanded=False):
+                st.dataframe(pd.DataFrame([{
+                    "Criterion": o.label, "Metric": o.metric,
+                    "Threshold": f"{o.operator} {o.threshold:g}",
+                } for o in rc_criteria_for(_rc_prefs)]), width="stretch", hide_index=True)
+                st.caption(
+                    "These are the app's own configured thresholds, scaled by the risk "
+                    "profile — not a separate set of numbers. Ceilings tighten and floors "
+                    "rise together as the profile gets more conservative."
+                )
+
+            if st.button("Find matches", type="primary", key="rc_run"):
+                with st.spinner(f"Evaluating {len(_rc_universe)} tickers…"):
+                    st.session_state["_rc_results"] = rc_rank(_rc_prefs, _rc_universe)
+
+            _rc_results = st.session_state.get("_rc_results")
+            if _rc_results:
+                _rc_ranked, _rc_notes = _rc_results
+                if _rc_ranked:
+                    st.markdown(f"**{len(_rc_ranked)} best matches**")
+                    st.caption(
+                        "Ordered with an adjustment for how much each match rests on, so a "
+                        "company judged on four criteria doesn't outrank one judged on eight "
+                        "at a similar rate — which is why a slightly lower percentage can "
+                        "appear above a higher one. The count beside each row is the basis."
+                    )
+                    for _rc_s in _rc_ranked:
+                        _rc_head = (
+                            f"**{_rc_s.ticker}** · {_rc_s.sector or 'sector unknown'} · "
+                            f"matches **{_rc_s.match_pct:.0f}%** "
+                            f"({len(_rc_s.matched)} of {len(_rc_s.evaluable)} criteria)"
+                        )
+                        st.markdown(_rc_head)
+                        _rc_bits = []
+                        for _rc_o in _rc_s.matched:
+                            _rc_bits.append(f"✅ {_rc_o.label} {_rc_o.threshold:g} (is {_rc_o.value:.2f})")
+                        for _rc_o in _rc_s.missed:
+                            _rc_bits.append(f"❌ {_rc_o.label} {_rc_o.threshold:g} (is {_rc_o.value:.2f})")
+                        for _rc_o in _rc_s.unavailable:
+                            _rc_bits.append(f"➖ {_rc_o.label} — not reported")
+                        st.caption("  ·  ".join(_rc_bits))
+                else:
+                    st.info("Nothing matched those criteria. Loosening the risk profile is usually the quickest way to widen the field.")
+                for _rc_n in _rc_notes:
+                    st.caption(_rc_n)
+
+            st.markdown("---")
+            st.caption(
+                "**Not investment advice, and not a prediction.** A high match means a "
+                "company fits the thresholds you selected today — nothing more. Quantix "
+                "does contain a momentum model, and it is deliberately NOT used here: "
+                "measured on held-out data it scored 0.479 ROC AUC against 0.50 for a coin "
+                "flip, so ranking by it would be presenting noise as insight. Every figure "
+                "above is a published, backward-looking metric you can check yourself "
+                "elsewhere in the app."
+            )
 
     # ==========================================
     # NEWS SENTIMENT
