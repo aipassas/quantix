@@ -4,10 +4,50 @@ Synthetic OHLCV data only — no network calls here. Tests that need real
 market data live behind the `live` marker (see pytest.ini) and build their
 own yfinance fetch inline, so it's obvious at a glance which tests are
 network-dependent without hunting through a shared fixture for it.
+
+Also isolates the suite from the developer's real .streamlit/secrets.toml
+— see isolate_secrets below.
 """
+import os
+
 import numpy as np
 import pandas as pd
 import pytest
+import streamlit as st
+
+
+@pytest.fixture(autouse=True)
+def isolate_secrets(monkeypatch):
+    """Hide the real secrets.toml from every test.
+
+    REGRESSION GUARD FOR A CREDENTIAL LEAK. Modules that read
+    configuration check st.secrets BEFORE falling back to environment
+    variables (see email_report._read_secret). On a machine with no
+    secrets.toml that ordering is invisible, so the SMTP tests — which
+    set QUANTIX_SMTP_* env vars and assert on the result — passed
+    everywhere. The moment a real [smtp] section existed, those tests
+    read the developer's LIVE credentials instead of their fixtures,
+    failed on the mismatch, and pytest printed the real App Password
+    into the failure output. That is a credential in terminal
+    scrollback and in any CI log.
+
+    Autouse and suite-wide rather than local to the SMTP tests: the same
+    precedence applies to [auth] and to anything added later, so the
+    isolation belongs at the boundary, not at each call site.
+    """
+    class _EmptySecrets(dict):
+        def get(self, key, default=None):
+            return default
+
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+    monkeypatch.setattr(st, "secrets", _EmptySecrets(), raising=False)
+    # Real QUANTIX_* vars in the developer's shell would leak the same way.
+    for name in list(os.environ):
+        if name.startswith("QUANTIX_"):
+            monkeypatch.delenv(name, raising=False)
+    yield
 
 
 def _make_ohlcv(n=300, seed=7, start_price=100.0, daily_vol=0.015, drift=0.0004, start_date="2023-01-02"):

@@ -176,3 +176,27 @@ def test_send_failure_returns_error_not_raise(monkeypatch):
 
     assert sent is False
     assert "no route to host" in error or "ConnectionRefusedError" in error
+
+
+def test_the_suite_cannot_see_the_real_secrets_file():
+    """REGRESSION GUARD FOR A CREDENTIAL LEAK.
+
+    email_report._read_secret checks st.secrets BEFORE environment
+    variables. With no secrets.toml on disk that ordering is invisible
+    and these tests pass. The moment a real [smtp] section exists, they
+    read the developer's LIVE credentials instead of their fixtures,
+    fail on the mismatch, and pytest prints the real password into the
+    failure output — into terminal scrollback and any CI log.
+
+    conftest.isolate_secrets is what prevents that. This asserts the
+    isolation is actually in force rather than trusting it.
+    """
+    import streamlit as st
+
+    assert st.secrets.get("smtp", None) is None, (
+        "the real secrets.toml is visible to the test suite — "
+        "conftest.isolate_secrets is not doing its job"
+    )
+    assert load_smtp_settings() is None, (
+        "load_smtp_settings() resolved real credentials during a test run"
+    )
