@@ -15,6 +15,7 @@ server, or a real store.
 """
 import datetime
 import json
+from dataclasses import replace
 
 import pandas as pd
 import pytest
@@ -500,3 +501,51 @@ def test_a_run_that_sends_nothing_leaves_the_store_untouched(tmp_path, monkeypat
     before = path.read_text()
     run_scheduled(sender=_FakeSender(), path=path)
     assert path.read_text() == before
+
+
+# --- portfolio summary --------------------------------------------------------
+
+class _FakePerf:
+    def __init__(self, market_value=1000.0, twr_pct=12.5, excess=3.0, holdings=("A",)):
+        self.market_value = market_value
+        self.twr_pct = twr_pct
+        self.excess_vs_benchmark_pct = excess
+        self.holdings = holdings
+
+
+def test_no_holdings_means_no_portfolio_line():
+    assert dg.portfolio_summary(builder=lambda o: None) == ""
+    assert dg.portfolio_summary(builder=lambda o: _FakePerf(holdings=())) == ""
+
+
+def test_the_portfolio_line_reports_value_and_time_weighted_return():
+    line = dg.portfolio_summary(builder=lambda o: _FakePerf())
+    assert "1,000.00" in line and "+12.50%" in line and "+3.00%" in line
+
+
+def test_a_failing_portfolio_drops_the_section_rather_than_the_digest():
+    """Losing a section beats losing the email."""
+    def boom(owner):
+        raise RuntimeError("pricing died")
+    assert dg.portfolio_summary(builder=boom) == ""
+
+
+def test_the_digest_no_longer_claims_holdings_cannot_be_tracked():
+    """That statement was true when the digest was built and became false
+    the moment portfolio_holdings shipped. A stale disclosure is a wrong
+    disclosure."""
+    digest = _built()
+    text = digest.as_text().lower()
+    assert "isn't available" not in text
+    assert "does not track holdings" not in text
+
+
+def test_the_note_explains_how_to_get_a_portfolio_section():
+    digest = _built()
+    assert any("portfolio tab" in n.lower() for n in digest.notes)
+
+
+def test_a_portfolio_line_renders_as_its_own_section():
+    digest = replace(_built(), portfolio_line="value 1,000.00  ·  time-weighted +12.50%")
+    text = digest.as_text()
+    assert "PORTFOLIO" in text and "time-weighted +12.50%" in text

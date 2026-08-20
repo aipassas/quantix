@@ -17,7 +17,7 @@ from portfolio_analytics import build_aligned_returns, compute_correlation_matri
 from report_export import generate_tear_sheet_pdf
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -124,6 +124,13 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from portfolio_holdings import (
+    add_holding as pf_add_holding,
+    build_performance as pf_build_performance,
+    load_store as pf_load_store,
+    remove_holding as pf_remove_holding,
+    save_store as pf_save_store,
+)
 from digest import (
     DigestSettings,
     build_digest as digest_build,
@@ -224,6 +231,7 @@ _AUTH_SCOPED_STATE = (
     # Digest settings are per-owner records in a shared store, so the
     # cached copy still has to be re-read when the identity changes.
     "digest_settings",
+    "portfolio_store",
 )
 _auth_user = auth.current_user()
 _auth_namespace = _auth_user.key if _auth_user else ""
@@ -1091,6 +1099,37 @@ def _hc_delta_text(metric) -> str:
         return body
     improved = delta > 0 if metric.higher_is_better else delta < 0
     return f"{'🟢' if improved else '🔴'} {body}"
+
+
+def _pf_price_loader(ticker, start, end):
+    """Closing prices for the portfolio dashboard, as a Series.
+
+    Wraps the app's existing cached fetch rather than adding a second
+    path to Yahoo, so a ticker already loaded elsewhere on the page is
+    served from the same cache. Returns None rather than raising when
+    there's no data — build_performance treats that as "exclude and say
+    so", which is what keeps an unpriceable holding visible instead of
+    silently dropped.
+    """
+    history, _errors = load_price_history_only(ticker, start, end)
+    if history is None or history.empty or "Close" not in history:
+        return None
+    closes = history["Close"].dropna()
+    return closes if not closes.empty else None
+
+
+def _pf_money(value):
+    """Currency-ish formatting that never fabricates a number: None stays
+    visibly unavailable rather than rendering as 0.00."""
+    if value is None:
+        return "unavailable"
+    return f"{value:,.2f}"
+
+
+def _pf_pct(value):
+    if value is None:
+        return "unavailable"
+    return f"{value:+.2f}%"
 
 
 def _rt_md_escape_dollar(text: str) -> str:
@@ -2187,9 +2226,10 @@ else:
     # Chart Workspace sits second, right after Overview: it's the primary
     # charting surface, so it gets a prominent position rather than being
     # buried mid-list among the analysis panels.
-    tab_overview, tab_chart_workspace, tab_fundamentals, tab_risk, tab_simulation, tab_smart_money, tab_tearsheet = st.tabs([
+    (tab_overview, tab_chart_workspace, tab_fundamentals, tab_risk, tab_simulation,
+     tab_smart_money, tab_portfolio, tab_tearsheet) = st.tabs([
         "Overview", "Chart Workspace", "Fundamentals & Valuation", "Risk & Technicals",
-        "Monte Carlo & Seasonality", "Smart Money & Peers", "CIO Tear Sheet",
+        "Monte Carlo & Seasonality", "Smart Money & Peers", "Portfolio", "CIO Tear Sheet",
     ])
 
 
@@ -4730,6 +4770,187 @@ else:
 
             else:
                 st.warning("Could not fetch sufficient competitor data. Please check the tickers and try again.")
+
+    # ==========================================
+    # PORTFOLIO PERFORMANCE
+    # ==========================================
+    # Ticker-independent content living in a ticker-scoped tab set: the
+    # portfolio has nothing to do with the symbol in the sidebar. It sits
+    # here because a tab is where someone will look for it, at the cost
+    # of being unreachable if the current ticker fails to load entirely.
+    with tab_portfolio:
+        st.header("Portfolio Performance")
+        if "portfolio_store" not in st.session_state:
+            st.session_state["portfolio_store"] = pf_load_store()
+        _pf_store = st.session_state["portfolio_store"]
+        _pf_holdings = _pf_store.holdings()
+
+        st.caption(
+            "Your actual holdings measured against "
+            f"**{PORTFOLIO.default_benchmark}**. Each position counts only from its own "
+            "purchase date, so the chart shows what you really held rather than "
+            "back-projecting today's portfolio onto the past."
+        )
+
+        if not _pf_holdings:
+            st.info(
+                "No holdings yet. Add your first position below — ticker, how many shares, "
+                "what you paid per share, and when you bought. Nothing is sent anywhere; it's "
+                "stored locally like every other setting."
+            )
+        else:
+            with st.spinner("Pricing your portfolio…"):
+                _pf_perf = pf_build_performance(_pf_holdings, _pf_price_loader)
+
+            _pf_cols = st.columns(4)
+            _pf_cols[0].metric(
+                "Market value", _pf_money(_pf_perf.market_value),
+                help="Today's value of every position that could be priced.",
+            )
+            _pf_cols[1].metric(
+                "Total gain", _pf_money(_pf_perf.total_gain),
+                delta=_pf_pct(
+                    (_pf_perf.total_gain / _pf_perf.cost_total * 100)
+                    if _pf_perf.cost_total else None),
+                help="Market value minus what you paid. Unrealised — nothing is sold.",
+            )
+            _pf_cols[2].metric(
+                "Time-weighted return", _pf_pct(_pf_perf.twr_pct),
+                help=(
+                    "Return with the timing of your purchases stripped out — the figure it is "
+                    "fair to compare against an index, and what fund factsheets quote. "
+                    "Adding money never inflates it."
+                ),
+            )
+            _pf_cols[3].metric(
+                f"vs {PORTFOLIO.default_benchmark}", _pf_pct(_pf_perf.excess_vs_benchmark_pct),
+                delta=_pf_pct(_pf_perf.benchmark_return_pct) + " benchmark"
+                      if _pf_perf.benchmark_return_pct is not None else None,
+                delta_color="off",
+                help=(
+                    "Your time-weighted return minus the benchmark's over the same period. "
+                    "Positive means your selection beat simply buying the index."
+                ),
+            )
+
+            if _pf_perf.mwr_pct is not None:
+                st.caption(
+                    f"Money-weighted return (IRR), annualised: **{_pf_pct(_pf_perf.mwr_pct)}** — "
+                    "what your money actually did, including whether you happened to buy at good "
+                    "moments. It differs from the time-weighted figure precisely because it "
+                    "*does* count timing, which is why the benchmark comparison above doesn't "
+                    "use it."
+                )
+
+            if not _pf_perf.value_series.empty:
+                _pf_fig = go.Figure()
+                _pf_fig.add_trace(go.Scatter(
+                    x=_pf_perf.value_series.index, y=_pf_perf.value_series.values,
+                    name="Portfolio", mode="lines", line=dict(width=2.5),
+                ))
+                if _pf_perf.benchmark_series is not None:
+                    _pf_fig.add_trace(go.Scatter(
+                        x=_pf_perf.benchmark_series.index, y=_pf_perf.benchmark_series.values,
+                        name=f"{PORTFOLIO.default_benchmark} (rebased)", mode="lines",
+                        line=dict(width=1.5, dash="dot"),
+                    ))
+                # Mark each purchase. Without these the step where money
+                # arrived reads as a price spike, and a reader who skips
+                # the caption draws exactly the wrong conclusion from the
+                # most visually striking feature of the chart.
+                #
+                # add_shape + add_annotation rather than the tidier
+                # add_vline: add_vline computes its annotation position by
+                # averaging the axis values, which raises TypeError on a
+                # date axis ("unsupported operand type(s) for +: 'int' and
+                # 'datetime.date'"). It fails for ISO strings too, so there
+                # is no one-liner form that works here.
+                for _pf_h in _pf_perf.holdings:
+                    if not _pf_h.ok:
+                        continue
+                    _pf_fig.add_shape(
+                        type="line", x0=_pf_h.purchase_date, x1=_pf_h.purchase_date,
+                        y0=0, y1=1, yref="paper",
+                        line=dict(width=1, dash="dash", color=_chart_faint_line),
+                    )
+                    # Inside the plot, not above it: the legend already
+                    # occupies y=1 in paper coordinates, so an annotation
+                    # anchored there collides with it.
+                    _pf_fig.add_annotation(
+                        x=_pf_h.purchase_date, y=0.02, yref="paper", yanchor="bottom",
+                        xanchor="left", text=f" bought {_pf_h.ticker}", showarrow=False,
+                        font=dict(size=10, color=_chart_fg), opacity=0.75,
+                    )
+                _pf_fig.update_layout(
+                    template=_plotly_template, height=380,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    yaxis_title="Value", xaxis_title=None,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+                )
+                st.plotly_chart(_pf_fig, width="stretch")
+                st.caption(chart_help("portfolio_performance"))
+
+            st.markdown("**Positions**")
+            st.dataframe(
+                pd.DataFrame([{
+                    "Ticker": h.ticker,
+                    "Shares": h.shares,
+                    "Cost basis": _pf_money(h.cost_basis),
+                    "Bought": h.purchase_date.isoformat(),
+                    "Price now": _pf_money(h.current_price) if h.ok else "unavailable",
+                    "Value": _pf_money(h.market_value) if h.ok else "—",
+                    "Gain": _pf_money(h.gain) if h.ok else "—",
+                    "Gain %": _pf_pct(h.gain_pct) if h.ok else "—",
+                } for h in _pf_perf.holdings]),
+                width="stretch", hide_index=True,
+            )
+
+            for _pf_note in _pf_perf.notes:
+                st.caption(_pf_note)
+
+            _pf_remove_col, _ = st.columns([2, 3])
+            with _pf_remove_col:
+                _pf_labels = [
+                    f"{i + 1}. {h.ticker} — {h.shares:g} @ {_pf_money(h.cost_basis)} ({h.purchase_date})"
+                    for i, h in enumerate(_pf_holdings)
+                ]
+                # Positional, not by ticker: the same symbol can be held as
+                # two lots at different cost bases, and matching on ticker
+                # would delete the wrong one.
+                _pf_choice = st.selectbox("Remove a position", _pf_labels, key="pf_remove_choice")
+                if st.button("Remove", key="pf_remove"):
+                    _pf_store = pf_remove_holding(_pf_store, _pf_labels.index(_pf_choice))
+                    st.session_state["portfolio_store"] = _pf_store
+                    pf_save_store(_pf_store)
+                    st.rerun()
+
+        st.markdown("---")
+        st.markdown("**Add a position**")
+        if st.session_state.pop("_pf_clear_form", False):
+            st.session_state["pf_ticker"] = ""
+        _pf_a, _pf_b, _pf_c, _pf_d = st.columns(4)
+        _pf_new_ticker = _pf_a.text_input("Ticker", key="pf_ticker", placeholder="AAPL")
+        _pf_new_shares = _pf_b.number_input("Shares", min_value=0.0, step=1.0, key="pf_shares")
+        _pf_new_cost = _pf_c.number_input(
+            "Cost per share", min_value=0.0, step=1.0, key="pf_cost",
+            help="What you actually paid, not today's price.",
+        )
+        _pf_new_date = _pf_d.date_input(
+            "Purchase date", value=datetime.date.today(), key="pf_date",
+            max_value=datetime.date.today(),
+            help="Each position counts from this date onward, which is what keeps the return honest.",
+        )
+        if st.button("Add position", type="primary", key="pf_add"):
+            _pf_store, _pf_err = pf_add_holding(
+                _pf_store, _pf_new_ticker, _pf_new_shares, _pf_new_cost, _pf_new_date)
+            if _pf_err:
+                st.warning(_pf_err)
+            else:
+                st.session_state["portfolio_store"] = _pf_store
+                pf_save_store(_pf_store)
+                st.session_state["_pf_clear_form"] = True
+                log_event(logger, logging.INFO, "user.portfolio_holding_added")
+                st.rerun()
 
     with tab_tearsheet:
         # ==========================================

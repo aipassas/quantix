@@ -23,12 +23,13 @@ to read them. Each record carries owner_key instead — which also means a
 single scheduled run can send every configured user's digest, and each
 one reads its own namespaced watchlist and alert stores.
 
-NO PORTFOLIO SECTION, DELIBERATELY. The task asks for "portfolio
-changes" too, but nothing in Quantix stores holdings: there is no
-positions store, and designing one is the Multi-Portfolio Management
-task's job. The digest states that plainly rather than relabelling the
-watchlist as a portfolio, which would misrepresent what the numbers mean
-— a list of things you are watching is not a list of things you own.
+THE PORTFOLIO SECTION IS ONE LINE, AND CONDITIONAL. When this was first
+built nothing in Quantix stored holdings, so the digest said so plainly
+rather than relabelling the watchlist as a portfolio. portfolio_holdings
+now exists, so the digest reports value and time-weighted return when
+holdings are recorded and keeps the honest note when they are not. One
+line by choice: a digest is skimmed, and the dashboard is where the
+position detail belongs.
 
 NOTHING IS SENT UNLESS SOMEONE ASKED FOR IT. A recipient must be set and
 the digest explicitly enabled; --preview never sends; and with SMTP
@@ -90,6 +91,7 @@ class Digest:
     moves: Tuple[TickerMove, ...] = ()
     fired_alerts: Tuple[str, ...] = ()
     risk_breaches: Tuple[str, ...] = ()
+    portfolio_line: str = ""     # "" when no holdings are recorded
     notes: Tuple[str, ...] = ()
 
     @property
@@ -162,6 +164,11 @@ class Digest:
                 lines.append(f"  ... and {len(self.fired_alerts) - DIGEST.max_alerts_shown} more")
             lines.append("")
 
+        if self.portfolio_line:
+            lines.append("PORTFOLIO")
+            lines.append(f"  {self.portfolio_line}")
+            lines.append("")
+
         if self.risk_breaches:
             lines.append(f"RISK THRESHOLDS BREACHED NOW ({len(self.risk_breaches)})")
             for entry in self.risk_breaches[:DIGEST.max_alerts_shown]:
@@ -178,9 +185,9 @@ class Digest:
 
         lines += [
             "---",
-            "Quantix does not track holdings, so this digest covers what you watch, not what",
-            "you own. Prices are the closing values Quantix could fetch for the period; a",
-            "figure shown as unavailable was not reported, never assumed to be zero.",
+            "Prices are the closing values Quantix could fetch for the period; a figure shown",
+            "as unavailable was not reported, never assumed to be zero. Portfolio return is",
+            "time-weighted, so money you added is not counted as a gain.",
         ]
         return "\n".join(lines)
 
@@ -398,6 +405,54 @@ def current_risk_breaches(tickers: Tuple[str, ...], owner_key: str = "",
     )
 
 
+def portfolio_summary(owner_key: str = "", builder: Optional[Callable] = None) -> str:
+    """One line on the portfolio, or "" when no holdings are recorded.
+
+    Deliberately one line. A digest is skimmed, and the dashboard is
+    where the detail lives — repeating the full position table here would
+    make the email long enough to stop being a digest.
+
+    Never raises: a portfolio that can't be priced simply drops out of the
+    email rather than failing the send. Losing a section beats losing the
+    digest.
+    """
+    try:
+        if builder is not None:
+            performance = builder(owner_key)
+        else:
+            import local_store
+            import portfolio_holdings as ph
+            from config import PORTFOLIO
+
+            store = ph.load_store(
+                local_store.store_path(PORTFOLIO.store_filename, namespace=owner_key or None))
+            holdings = store.holdings()
+            if not holdings:
+                return ""
+
+            def loader(ticker, start, end):
+                from data_loader import load_price_history_only
+                history, _ = load_price_history_only(ticker, start, end)
+                if history is None or history.empty or "Close" not in history:
+                    return None
+                closes = history["Close"].dropna()
+                return closes if not closes.empty else None
+
+            performance = ph.build_performance(holdings, loader)
+        if performance is None or not performance.holdings:
+            return ""
+    except Exception:
+        log_exception(logger, "digest.portfolio_summary_failed", section="digest")
+        return ""
+
+    parts = [f"value {performance.market_value:,.2f}"]
+    if performance.twr_pct is not None:
+        parts.append(f"time-weighted {performance.twr_pct:+.2f}%")
+    if performance.excess_vs_benchmark_pct is not None:
+        parts.append(f"vs benchmark {performance.excess_vs_benchmark_pct:+.2f}%")
+    return "  ·  ".join(parts)
+
+
 def build_digest(settings: DigestSettings, end: Optional[datetime.date] = None,
                  loader: Optional[Callable] = None,
                  history: Optional[List] = None,
@@ -428,12 +483,15 @@ def build_digest(settings: DigestSettings, end: Optional[datetime.date] = None,
     if settings.include_risk:
         breaches = current_risk_breaches(tickers, owner, evaluator=evaluator)
 
-    notes.append(
-        "Portfolio tracking isn't available in Quantix yet — there's no record of holdings "
-        "to report on, so this digest covers your watchlist rather than positions."
-    )
+    portfolio_line = portfolio_summary(owner)
+    if not portfolio_line:
+        notes.append(
+            "No holdings are recorded, so this digest covers your watchlist rather than "
+            "positions. Add holdings in the Portfolio tab to have them summarised here."
+        )
     return Digest(owner_key=owner, period_start=start, period_end=end,
-                  moves=moves, fired_alerts=fired, risk_breaches=breaches, notes=tuple(notes))
+                  moves=moves, fired_alerts=fired, risk_breaches=breaches,
+                  portfolio_line=portfolio_line, notes=tuple(notes))
 
 
 # --- sending ------------------------------------------------------------------

@@ -280,6 +280,13 @@ GLOSSARY: Dict[str, str] = {
 # read it. Rendered as a caption directly above each chart (see the module
 # docstring for why a caption rather than a tooltip).
 CHART_HELP: Dict[str, str] = {
+    "portfolio_performance": (
+        "Your portfolio's value day by day against the benchmark, rebased to the same starting "
+        "value so the gap between the two lines is the real comparison: above it you are "
+        "beating the index. Each holding joins on its own purchase date, and a step upward "
+        "means money arriving rather than a gain."
+    ),
+
     "price_technicals": (
         "Price with whichever overlays you enabled above, and any oscillator panels stacked "
         "beneath it. Crossover markers show where a signal actually fired — drag to zoom into a "

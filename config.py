@@ -543,6 +543,42 @@ class CollaborationConfig:
 
 
 @dataclass(frozen=True)
+class PortfolioConfig:
+    """Actual holdings and the performance dashboard built on them.
+
+    A HOLDING CARRIES ITS PURCHASE DATE, and that is the load-bearing
+    decision. With only ticker+shares there is no way to know what was
+    held last year, so a "return over time" chart would have to assume
+    today's basket was held for the whole window — back-projecting
+    today's winners onto the past and flattering the result. Recording
+    when each position started lets the series begin each holding on its
+    own date instead.
+
+    TIME-WEIGHTED RETURN HEADLINES THE BENCHMARK COMPARISON. Positions
+    opened at different times are cash flows, and money-weighted return
+    is affected by their timing — so comparing it against an index's
+    return is apples-to-oranges. TWR strips that out, which is what
+    makes "did my picks beat the S&P 500" a fair question. Money-weighted
+    is shown alongside, because it is the truer answer to "what did my
+    money actually do".
+
+    SHAPED FOR MULTIPLE PORTFOLIOS, holding one. The store mirrors
+    WatchlistStore's active/lists layout so the separate Multi-Portfolio
+    Management task becomes a UI change rather than a migration.
+    """
+    store_filename: str = "portfolio_store.json"
+    default_portfolio_name: str = "My Portfolio"
+    default_benchmark: str = "SPY"
+    max_holdings: int = 50
+    max_portfolios: int = 10
+    max_name_chars: int = 40
+    # Below this many aligned trading days, an annualised figure is
+    # extrapolation rather than measurement. Matches the floor
+    # historical_comparison.py and the risk endpoint already use.
+    min_observations: int = 30
+
+
+@dataclass(frozen=True)
 class DigestConfig:
     """The weekly email digest.
 
@@ -845,6 +881,7 @@ FAVORITES = FavoritesConfig()
 API_KEYS = ApiKeysConfig()
 SUPPORT = SupportConfig()
 DIGEST = DigestConfig()
+PORTFOLIO = PortfolioConfig()
 EMAIL_REPORT = EmailReportConfig()
 CHART_DEFAULTS = ChartDefaults()
 TECHNICAL = TechnicalConfig()

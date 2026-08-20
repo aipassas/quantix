@@ -237,6 +237,7 @@ STORE_OWNERS = {
     "risk_alert_rules_store.json": "risk_alerts.py",
     "alert_rules_store.json": "realtime_alerts.py",
     "scenario_store.json": "scenario_modeling.py",
+    "portfolio_store.json": "portfolio_holdings.py",
 }
 
 

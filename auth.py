@@ -89,6 +89,7 @@ PER_USER_STORES: Tuple[str, ...] = (
     "risk_alert_rules_store.json",
     "alert_rules_store.json",
     "scenario_store.json",
+    "portfolio_store.json",
 )
 
 # Deliberately NOT per-user, and worth stating so nobody "fixes" it later:
