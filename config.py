@@ -662,6 +662,38 @@ class PortfolioConfig:
 
 
 @dataclass(frozen=True)
+class SlackConfig:
+    """Posting triggered alerts to a Slack channel via an incoming webhook.
+
+    THE WEBHOOK URL IS A CREDENTIAL. Anyone holding it can post into that
+    channel as this app, so it is read from secrets like every other
+    credential here, is never written to disk by the app, and is
+    redacted from every error message and log line. An HTTP failure that
+    echoed the URL back would leak it into quantix.log.
+
+    DELIVERY IS SCHEDULED, NOT IN-TAB. realtime_alerts evaluates rules
+    inside the page via st.fragment polling, so alerts only fire while a
+    browser tab is open — and a Slack message about something already on
+    your screen is not what this feature is for. alert_watch.py runs the
+    same evaluation headlessly under cron, sharing the digest's schedule
+    so there is still only one thing to install.
+
+    ALERTS ONLY. Not the digest, not note mentions. A channel that
+    receives only things the user explicitly asked to be told about stays
+    worth reading; a general notification firehose gets muted.
+    """
+    # Rule-ids seen as active on the previous run, so a still-breaching
+    # alert isn't re-posted every 15 minutes forever. Shared, since the
+    # scheduled runner has no Streamlit session — same reasoning as
+    # api_keys and the digest.
+    state_filename: str = "slack_alert_state.json"
+    max_alerts_per_message: int = 15
+    request_timeout_seconds: int = 15
+    username: str = "Quantix"
+    icon_emoji: str = ":chart_with_upwards_trend:"
+
+
+@dataclass(frozen=True)
 class DigestConfig:
     """The weekly email digest.
 
@@ -973,6 +1005,7 @@ FAVORITES = FavoritesConfig()
 API_KEYS = ApiKeysConfig()
 SUPPORT = SupportConfig()
 DIGEST = DigestConfig()
+SLACK = SlackConfig()
 PORTFOLIO = PortfolioConfig()
 NEWS_SENTIMENT = NewsSentimentConfig()
 RECOMMENDATIONS = RecommendationsConfig()

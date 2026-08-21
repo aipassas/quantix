@@ -123,6 +123,9 @@ SHARED_STORES: Tuple[str, ...] = (
     # record carries owner_key, which also lets one scheduled run serve
     # every configured user.
     "digest_store.json",
+    # Which alert rules were breaching on the last headless check. Shared
+    # for the same reason as the digest: the cron process has no session.
+    "slack_alert_state.json",
 )
 
 

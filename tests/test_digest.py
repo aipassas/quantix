@@ -468,9 +468,32 @@ def test_other_owners_survive_a_targeted_run(store, monkeypatch):
 
 def test_cron_line_is_runnable_and_targets_this_script():
     line = cron_line(python_executable="/usr/bin/python3", script_dir="/opt/quantix")
-    assert line.startswith("0 8 * * 1 ")
+    assert line.startswith("*/30 * * * * ")
     assert "cd /opt/quantix" in line
     assert "/usr/bin/python3 digest.py --send" in line
+
+
+def test_the_cron_line_is_a_frequent_heartbeat_not_a_weekly_run():
+    """It drives the alert check as well as the digest, and an alert on a
+    weekly cadence is not an alert. This only works because the digest
+    checks its own due-ness — running it every half hour is a no-op until
+    a week has elapsed."""
+    line = cron_line()
+    assert line.startswith("*/"), "a weekly schedule would delay alerts by up to seven days"
+
+
+def test_the_cron_line_also_runs_the_alert_check():
+    assert "alert_watch.py --post" in cron_line()
+
+
+def test_a_digest_failure_does_not_block_the_alert_check():
+    """`;` rather than `&&` between them — they're independent, and
+    alerts are the more time-sensitive of the two."""
+    line = cron_line()
+    digest_at = line.index("digest.py --send")
+    alerts_at = line.index("alert_watch.py --post")
+    between = line[digest_at:alerts_at]
+    assert ";" in between and "&&" not in between
 
 
 def test_cron_line_sends_rather_than_previews():

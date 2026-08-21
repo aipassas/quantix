@@ -577,18 +577,33 @@ def _is_due(settings: DigestSettings, now: datetime.datetime) -> bool:
 # --- scheduling helper --------------------------------------------------------
 
 def cron_line(python_executable: Optional[str] = None, script_dir: Optional[Path] = None,
-              weekday: int = 1, hour: int = 8) -> str:
-    """The crontab entry that runs this weekly.
+              every_minutes: int = 30) -> str:
+    """The crontab entry that drives both the digest and the alert check.
 
-    Generated rather than hand-written into the docs so the paths are
-    this machine's actual ones. Installing it is deliberately left to the
-    user — see the module docstring.
+    A FREQUENT HEARTBEAT, NOT A WEEKLY ONE, and that combination only
+    works because the digest checks its own due-ness. Running
+    `digest.py --send` every half hour is safe: run_scheduled compares
+    elapsed time against period_days and does nothing until a digest is
+    actually due. Alerts, meanwhile, are worthless on a weekly cadence —
+    learning that a price breached seven days ago is not an alert.
+
+    So cron supplies the tick and each tool decides whether it has
+    anything to do. One entry to install, correct cadence for both.
+
+    Generated rather than written into the docs so the paths are this
+    machine's real ones. Installing it stays the user's deliberate act —
+    see the module docstring.
+
+    `;` between the two commands rather than `&&`: a digest failure must
+    not prevent alerts from being posted, since they are independent and
+    alerts are the more time-sensitive.
     """
     python_executable = python_executable or sys.executable
     script_dir = script_dir or Path(__file__).resolve().parent
     return (
-        f"{0} {hour} * * {weekday} cd {script_dir} && "
-        f"{python_executable} digest.py --send >> digest_cron.log 2>&1"
+        f"*/{every_minutes} * * * * cd {script_dir} && "
+        f"{{ {python_executable} digest.py --send ; "
+        f"{python_executable} alert_watch.py --post ; }} >> digest_cron.log 2>&1"
     )
 
 

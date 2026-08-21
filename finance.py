@@ -124,6 +124,9 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from alert_watch import run as alert_watch_run
+from slack_notify import unavailable_reason as slack_unavailable_reason
+from realtime_alerts import load_store as load_rt_store
 from recommendations import (
     Preferences as rc_Preferences,
     available_sectors as rc_available_sectors,
@@ -1408,6 +1411,40 @@ with st.sidebar.expander(
                 # st.login() with no argument is the unnamed-default-provider
                 # form; auth.configured_providers() returns "" for that case.
                 st.login(_auth_p) if _auth_p else st.login()
+
+# --- Sidebar: Slack ---
+# Posting happens on the SCHEDULED run, not in-tab: alerts only evaluate
+# while a browser tab is open, and a Slack message about something
+# already on your screen isn't the point. See alert_watch.py.
+with st.sidebar.expander("💬 Slack Alerts", expanded=False):
+    st.caption(
+        "Posts your triggered alert rules to a Slack channel, so they reach you when "
+        "Quantix is closed. Alerts only — not the digest, not note mentions."
+    )
+    _sl_reason = slack_unavailable_reason()
+    if _sl_reason:
+        st.info(_sl_reason)
+    else:
+        st.success("Slack webhook configured.")
+
+    _sl_rules, _sl_history = load_rt_store()
+    st.caption(
+        f"{len(_sl_rules)} alert rule(s) configured. Rules are created in the Real-Time "
+        "Alerts panel on the Overview tab; this only controls where they're delivered."
+    )
+
+    if st.button("Check alerts now (posts nothing)", key="slack_dry_run"):
+        with st.spinner("Evaluating rules…"):
+            _sl_posted, _sl_messages = alert_watch_run(post=False)
+        for _sl_m in _sl_messages:
+            st.caption(_sl_m)
+
+    st.markdown("---")
+    st.caption(
+        "Delivery runs on the same schedule as the digest — one crontab entry drives both. "
+        "The line is shown in the Email Digest panel above. Nothing is posted until you "
+        "install it; opening this panel doesn't start anything."
+    )
 
 # --- Sidebar: Email Digest ---
 # The schedule lives in cron, not here — Streamlit runs nothing while the
