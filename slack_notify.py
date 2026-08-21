@@ -120,7 +120,8 @@ def format_alerts(alerts: Sequence[Tuple[str, str, str]]) -> str:
         return ""
     shown = list(alerts)[:SLACK.max_alerts_per_message]
     count = len(alerts)
-    heading = f"*Quantix* — {count} alert{'s' if count != 1 else ''} triggered"
+    from branding import brand
+    heading = f"*{brand().name}* — {count} alert{'s' if count != 1 else ''} triggered"
     lines = [heading]
     for ticker, trigger_type, detail in shown:
         readable = trigger_type.replace("_", " ")
@@ -167,7 +168,9 @@ def post(text: str, poster: Optional[Callable] = None,
     if not url:
         return False, redact(unavailable_reason() or "Slack isn't configured.")
 
-    payload = {"text": text, "username": SLACK.username, "icon_emoji": SLACK.icon_emoji}
+    from branding import brand, rebrand
+    payload = {"text": rebrand(text), "username": brand().name,
+               "icon_emoji": SLACK.icon_emoji}
     try:
         ok, error = (poster or _default_poster)(url, payload)
     except Exception as e:

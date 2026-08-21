@@ -124,6 +124,13 @@ from theme import PALETTES, load_theme, save_theme
 # local_store on import. It must therefore be imported before anything
 # reads a store, which the import block guarantees.
 import auth
+from branding import (
+    apply_accent as apply_brand_accent,
+    brand,
+    configuration_notes as brand_config_notes,
+    rebrand,
+    summary as brand_summary,
+)
 from alert_watch import run as alert_watch_run
 from slack_notify import unavailable_reason as slack_unavailable_reason
 from realtime_alerts import load_store as load_rt_store
@@ -221,8 +228,8 @@ def log_input_changes(**current):
 
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Quantix", layout="wide", page_icon=None)
-st.title("Quantix: Institutional-Grade Stock Analysis & Simulation Engine")
+st.set_page_config(page_title=brand().name, layout="wide", page_icon=None)
+st.title(brand().title)
 
 # ==========================================
 # IDENTITY SWITCH GUARD
@@ -326,7 +333,9 @@ symbol_header_container = st.container()
 # has rendered once.
 if "theme_choice" not in st.session_state:
     st.session_state["theme_choice"] = load_theme()
-_theme = PALETTES[st.session_state["theme_choice"]]
+# A licensee's accent colour replaces the identity-carrying palette
+# fields; the contrast-tuned remainder is untouched (see branding.py).
+_theme = apply_brand_accent(PALETTES[st.session_state["theme_choice"]])
 _plotly_template = _theme.plotly_template
 _chart_fg = _theme.chart_fg
 _chart_faint_line = _theme.chart_faint_line
@@ -1411,6 +1420,26 @@ with st.sidebar.expander(
                 # st.login() with no argument is the unnamed-default-provider
                 # form; auth.configured_providers() returns "" for that case.
                 st.login(_auth_p) if _auth_p else st.login()
+
+# --- Sidebar: Branding ---
+with st.sidebar.expander("🏷️ Branding", expanded=False):
+    st.caption(brand_summary())
+    for _br_note in brand_config_notes():
+        st.warning(_br_note)
+    st.caption(
+        "Set a [branding] section in .streamlit/secrets.toml to run this instance under "
+        "your own name, tagline and accent colour — see .streamlit/secrets.toml.example."
+    )
+    st.caption(
+        "**Disclosures are not brandable.** \"Not investment advice\", the unavailable-data "
+        "notices and the measured model accuracy stay whatever the branding says. They're "
+        "why the numbers here can be relied on."
+    )
+    st.caption(
+        "Licensing to more than one firm means one deployment each: Streamlit reads secrets "
+        "once per process, so a single instance can't give two firms separate sign-in "
+        "providers or mail senders."
+    )
 
 # --- Sidebar: Slack ---
 # Posting happens on the SCHEDULED run, not in-tab: alerts only evaluate

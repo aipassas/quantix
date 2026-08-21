@@ -662,6 +662,47 @@ class PortfolioConfig:
 
 
 @dataclass(frozen=True)
+class BrandingConfig:
+    """White-labelling: running this app under a licensee's own name.
+
+    ONE DEPLOYMENT PER FIRM, not one deployment serving many. That is a
+    measured constraint rather than a preference. st.context.headers
+    exists, so a single instance COULD resolve a tenant from the Host
+    header and give each one separate branding and data. But st.secrets
+    is a process-level singleton — every tenant in one process would
+    share a single OAuth client, one mail sender and one Slack webhook.
+    An asset management firm licensing this will not accept signing their
+    clients in through another firm's identity provider, so the sharing
+    is the dealbreaker, not the branding.
+
+    Per-deployment branding delivers the whole visible product — their
+    name, their colours, their domain, their credentials — without
+    pretending to a multi-tenancy the runtime cannot support.
+
+    THE DISCLOSURES ARE NOT BRANDABLE, and that is deliberate. A licensee
+    can change every name, colour and logo here. There is no field that
+    removes "not investment advice", the unavailable-data notices, or the
+    measured model accuracy, because those are the reason the numbers in
+    this app can be trusted. A rebranded copy that quietly dropped them
+    while showing the same figures to a client would be materially worse
+    than the original. Enforcement is structural — no knob exists — plus
+    a test asserting the phrases survive rebranding.
+    """
+    # Defaults are this app's own identity. A licensee overrides them in
+    # secrets.toml; nothing here is written by the app.
+    name: str = "Quantix"
+    tagline: str = "Institutional-Grade Stock Analysis & Simulation Engine"
+    # Overrides only the identity-carrying palette fields, not all 45 —
+    # a licensee wants their accent colour, not to rebuild a theme that
+    # has already been tuned for contrast (see theme.py).
+    accent_color: str = ""
+    support_email: str = ""
+    footer_note: str = ""
+    logo_path: str = ""
+    max_name_chars: int = 40
+
+
+@dataclass(frozen=True)
 class SlackConfig:
     """Posting triggered alerts to a Slack channel via an incoming webhook.
 
@@ -1006,6 +1047,7 @@ API_KEYS = ApiKeysConfig()
 SUPPORT = SupportConfig()
 DIGEST = DigestConfig()
 SLACK = SlackConfig()
+BRANDING = BrandingConfig()
 PORTFOLIO = PortfolioConfig()
 NEWS_SENTIMENT = NewsSentimentConfig()
 RECOMMENDATIONS = RecommendationsConfig()

@@ -49,6 +49,16 @@ from logging_setup import get_logger, log_event, log_exception, setup_logging
 
 logger = get_logger("api_server")
 
+def _brand_name() -> str:
+    """Imported lazily — api_server runs as a separate process and must
+    not depend on Streamlit being importable at module load."""
+    try:
+        from branding import brand
+        return brand().name
+    except Exception:
+        return "Quantix"
+
+
 API_VERSION = "v1"
 
 # Endpoint table: path -> (required scope, handler). Every route is a GET
@@ -123,7 +133,7 @@ def index(key: Optional[ApiKey], query: Dict[str, list]) -> dict:
     """Discovery. Unauthenticated on purpose so an integrator can see what
     exists — and what deliberately does not — before wiring a key up."""
     return {
-        "service": "Quantix API",
+        "service": f"{_brand_name()} API",
         "version": API_VERSION,
         "read_only": True,
         "trading_supported": False,

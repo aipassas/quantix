@@ -52,6 +52,16 @@ from logging_setup import get_logger, log_event, log_exception, setup_logging
 logger = get_logger("digest")
 
 
+def _brand_name() -> str:
+    """Lazy for the same reason as api_server: this runs headless under
+    cron, and a branding failure must not stop a digest going out."""
+    try:
+        from branding import brand
+        return brand().name
+    except Exception:
+        return "Quantix"
+
+
 @dataclass(frozen=True)
 class DigestSettings:
     owner_key: str = ""
@@ -135,7 +145,7 @@ class Digest:
 
     def as_text(self) -> str:
         lines = [
-            f"Quantix digest for {self.period_start:%d %B %Y} to {self.period_end:%d %B %Y}",
+            f"{_brand_name()} digest for {self.period_start:%d %B %Y} to {self.period_end:%d %B %Y}",
             "",
         ]
 
