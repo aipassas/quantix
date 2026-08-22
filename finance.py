@@ -411,6 +411,14 @@ st.markdown(f"""
     [data-testid="stMain"] [data-testid="stMetricLabel"],
     [data-testid="stMain"] [data-testid="stMetricLabel"] * {{
         color: {_theme.metric_label} !important;
+        /* Measured 8.27:1 against this canvas, so contrast was never the
+           problem — 14px at weight 400 simply disappeared beside a 1.85rem
+           value. Size and weight are what make a caption readable at a
+           glance; going brighter instead would have flattened the
+           deliberate hierarchy between label and figure. */
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.01em !important;
     }}
 
     /* --- Secondary buttons in the main area --------------------------
@@ -485,11 +493,31 @@ st.markdown(f"""
         border-bottom: 1px solid {_theme.table_body_border} !important;
     }}
 
-    /* Ensure expanders remain legible */
-    .streamlit-expanderHeader {{
+    /* Expander headers.
+       This rule used to target `.streamlit-expanderHeader`, a class that no
+       longer exists in Streamlit 1.58 — grepping the shipped frontend
+       bundle finds no such string, so the styling had silently done
+       nothing since the upgrade and every expander title fell back to
+       Streamlit's defaults. The current markup is a <summary> inside
+       [data-testid="stExpander"]. */
+    [data-testid="stExpander"] details {{
         background-color: {_theme.expander_bg} !important;
         border: 1px solid {_theme.expander_border} !important;
+    }}
+    [data-testid="stExpander"] summary {{
         color: {_theme.expander_text} !important;
+    }}
+    /* Streamlit renders the label as a <p>, which inherits the body colour
+       and weight rather than the summary's — so the colour above alone
+       leaves the title looking like ordinary paragraph text. */
+    [data-testid="stExpander"] summary p,
+    [data-testid="stExpander"] summary span {{
+        color: {_theme.expander_text} !important;
+        font-size: 1rem !important;
+        font-weight: 600 !important;
+    }}
+    [data-testid="stExpander"] summary:hover p {{
+        color: {_theme.card_accent} !important;
     }}
 
     /* --- Top-level panel navigation ---------------------------------
@@ -768,7 +796,7 @@ with st.spinner("Analyzing macro sectors and grouping asset classes..."):
 # inputs plus a sector table need horizontal room the ~300px sidebar
 # doesn't have.
 st.markdown("---")
-with st.expander("⚙️ Custom Thresholds", expanded=False):
+with st.expander("Custom Thresholds", expanded=False):
     st.caption(
         "Your own valuation and risk cut-offs, applied consistently to the Scorecard, the Altman "
         "verdict the screener reports, and the default a new alert rule starts at. Only the "
@@ -982,13 +1010,13 @@ if _screener_state:
             v = r.values.get(c.metric)
             row[f"{spec.label} ({c.operator} {c.threshold:g}{spec.unit})"] = round(v, spec.decimals) if v is not None else None
         if r.status == "fetch_error":
-            row["Result"] = "🟡 Could Not Load"
+            row["Result"] = "Could Not Load"
         elif r.status == "insufficient_data":
-            row["Result"] = "🟡 Insufficient Data"
+            row["Result"] = "Insufficient Data"
         elif r.passed_all:
-            row["Result"] = "🟢 Pass"
+            row["Result"] = "Pass"
         else:
-            row["Result"] = "🔴 Fail"
+            row["Result"] = "Fail"
         row["Detail"] = r.detail
         _screener_rows.append(row)
 
@@ -1109,7 +1137,7 @@ if _alerts_state:
             })
         st.table(pd.DataFrame(_alert_rows))
     else:
-        st.success(f"🟢 No alerts triggered across your {len(_alert_snapshots)}-ticker watchlist right now.")
+        st.success(f"No alerts triggered across your {len(_alert_snapshots)}-ticker watchlist right now.")
 
     if _alert_error_count or _alert_insufficient_count:
         st.caption(f"{_alert_error_count} ticker(s) could not be loaded · {_alert_insufficient_count} had at least one non-computable metric — never silently excluded from the check.")
@@ -1148,7 +1176,7 @@ def _hc_delta_text(metric) -> str:
     if metric.higher_is_better is None or delta == 0:
         return body
     improved = delta > 0 if metric.higher_is_better else delta < 0
-    return f"{'🟢' if improved else '🔴'} {body}"
+    return body
 
 
 def _pf_price_loader(ticker, start, end):
@@ -1328,7 +1356,7 @@ def _render_realtime_alerts_fragment():
             if _rt_rule is None:
                 continue
             _rt_result = _rt_results[_rt_rid]
-            st.toast(_rt_md_escape_dollar(f"{_rt_rule.label} — {_rt_result.detail}"), icon="🔔")
+            st.toast(_rt_md_escape_dollar(f"{_rt_rule.label} — {_rt_result.detail}"))
             st.session_state["rt_alert_history"].append(RealtimeTriggerEvent(
                 rule_id=_rt_rid, ticker=_rt_rule.ticker, trigger_type=_rt_rule.trigger_type,
                 detail=_rt_result.detail, triggered_at=_rt_now_iso,
@@ -1340,11 +1368,11 @@ def _render_realtime_alerts_fragment():
 
     _rt_active_rules = [r for r in _rt_rules if _rt_active_now.get(r.id)]
     if _rt_active_rules:
-        st.error(f"🔴 {len(_rt_active_rules)} alert(s) currently active")
+        st.error(f"{len(_rt_active_rules)} alert(s) currently active")
         for _rt_r in _rt_active_rules:
             st.markdown(_rt_md_escape_dollar(f"- **{_rt_r.label}** — {_rt_results[_rt_r.id].detail}"))
     else:
-        st.success("🟢 No alert conditions currently met.")
+        st.success("No alert conditions currently met.")
 
     _rt_issue_rules = [r for r in _rt_rules if _rt_results[r.id].status != "ok"]
     if _rt_issue_rules:
@@ -1378,7 +1406,7 @@ if st.session_state["rt_alert_history"]:
 # hand-written auth code here and why GitHub needs an OIDC broker.
 _auth_reason = auth.unavailable_reason()
 with st.sidebar.expander(
-    f"👤 {_auth_user.display_name}" if _auth_user else "👤 Account",
+    f"{_auth_user.display_name}" if _auth_user else "Account",
     expanded=False,
 ):
     if _auth_user is not None:
@@ -1455,7 +1483,7 @@ with st.sidebar.expander(
                 st.login(_auth_p) if _auth_p else st.login()
 
 # --- Sidebar: Branding ---
-with st.sidebar.expander("🏷️ Branding", expanded=False):
+with st.sidebar.expander("Branding", expanded=False):
     st.caption(brand_summary())
     for _br_note in brand_config_notes():
         st.warning(_br_note)
@@ -1478,7 +1506,7 @@ with st.sidebar.expander("🏷️ Branding", expanded=False):
 # Posting happens on the SCHEDULED run, not in-tab: alerts only evaluate
 # while a browser tab is open, and a Slack message about something
 # already on your screen isn't the point. See alert_watch.py.
-with st.sidebar.expander("💬 Slack Alerts", expanded=False):
+with st.sidebar.expander("Slack Alerts", expanded=False):
     st.caption(
         "Posts your triggered alert rules to a Slack channel, so they reach you when "
         "Quantix is closed. Alerts only — not the digest, not note mentions."
@@ -1513,7 +1541,7 @@ with st.sidebar.expander("💬 Slack Alerts", expanded=False):
 # app is shut, which is exactly when a digest for an inactive user has to
 # go out. See digest.py. This panel configures it and shows the line to
 # install; installing it stays a deliberate act.
-with st.sidebar.expander("📬 Email Digest", expanded=False):
+with st.sidebar.expander("Email Digest", expanded=False):
     _dg_owner = _auth_user.key if _auth_user else ""
     if "digest_settings" not in st.session_state:
         st.session_state["digest_settings"] = digest_settings_for(_dg_owner)
@@ -1592,7 +1620,7 @@ with st.sidebar.expander("📬 Email Digest", expanded=False):
 # chat here despite the originating task asking for one: nobody is
 # staffing a chat on a locally-run instance, and an unanswered box is a
 # promise the app can't keep.
-with st.sidebar.expander("❓ Help & Support", expanded=False):
+with st.sidebar.expander("Help & Support", expanded=False):
     if "support_index" not in st.session_state:
         st.session_state["support_index"] = support_build_index()
     _sp_index = st.session_state["support_index"]
@@ -1705,7 +1733,7 @@ with st.sidebar.expander("❓ Help & Support", expanded=False):
 # Sits under Account because a key belongs to whoever created it. See
 # api_keys.py for why the store is shared rather than namespaced, and
 # api_server.py for what a key can actually reach (reads only).
-with st.sidebar.expander("🔑 API Keys", expanded=False):
+with st.sidebar.expander("API Keys", expanded=False):
     if "api_key_store" not in st.session_state:
         st.session_state["api_key_store"] = load_api_key_store()
     _ak_store = st.session_state["api_key_store"]
@@ -1741,7 +1769,7 @@ with st.sidebar.expander("🔑 API Keys", expanded=False):
             # the watchlist and notes panels already use for the same reason.
             _ak_cols = st.columns([6, 1])
             with _ak_cols[0]:
-                _ak_badge = {"active": "🟢", "expired": "🟡", "revoked": "⚪"}[_ak.status]
+                _ak_badge = {"active": "Active", "expired": "Expired", "revoked": "Revoked"}[_ak.status]
                 st.markdown(f"{_ak_badge} **{_ak.name}** · `{_ak.id}` · {_ak.status}")
                 _ak_bits = [", ".join(_ak.scopes) or "no scopes"]
                 if _ak.expires_at:
@@ -1846,7 +1874,7 @@ ticker_symbol = st.sidebar.text_input("Stock Ticker", key="ticker_input").upper(
 # keystroke and injected <script> doesn't execute (see ticker_search.py).
 # The dropdown filters its options client-side as you type; the name search
 # is one round-trip on submit.
-with st.sidebar.expander("🔎 Find a ticker", expanded=False):
+with st.sidebar.expander("Find a ticker", expanded=False):
     _ts_known = list(WATCHLIST.tech_basket) + list(WATCHLIST.diversified_basket)
     if "watchlist_store" in st.session_state:
         for _ts_wl in st.session_state["watchlist_store"].lists.values():
@@ -2366,7 +2394,7 @@ else:
         # beside today's. Lives on Overview because it's a statement about
         # this ticker's trajectory rather than about any one panel.
         st.markdown("---")
-        with st.expander("🕰️ Historical Comparison", expanded=False):
+        with st.expander("Historical Comparison", expanded=False):
             _hc_earliest, _hc_latest = hc_available_range(ticker_bundle)
             if _hc_earliest is None:
                 st.caption("No price history is loaded for this ticker, so there's nothing to replay.")
@@ -2435,7 +2463,7 @@ else:
         # analysed — the note is about THIS stock, so it belongs beside the
         # analysis rather than in a separate area you'd have to navigate to.
         st.markdown("---")
-        with st.expander(f"📝 Team Notes — {ticker_symbol}", expanded=False):
+        with st.expander(f"Team Notes — {ticker_symbol}", expanded=False):
             if "collab_store" not in st.session_state:
                 st.session_state["collab_store"] = collab_load_store()
             _cl_store = st.session_state["collab_store"]
@@ -2465,7 +2493,7 @@ else:
                     _cl_body_col, _cl_del_col = st.columns([12, 1])
                     with _cl_body_col:
                         _cl_when = _cl_note.created_at.replace("T", " ") if _cl_note.created_at else "unknown time"
-                        _cl_badge = " ✅" if _cl_note.authenticated else ""
+                        _cl_badge = " (verified)" if _cl_note.authenticated else ""
                         _cl_meta = f"**{_cl_note.author}**{_cl_badge} · {_cl_when}"
                         if _cl_note.mentions:
                             _cl_sent = [m for m in _cl_note.mentions if m in _cl_note.notified]
@@ -2490,9 +2518,9 @@ else:
             st.markdown("---")
             if _auth_user is not None:
                 # No text box: letting a signed-in user type a different name
-                # would make the ✅ badge a lie.
+                # would make the verified badge a lie.
                 _cl_author = _auth_user.display_name
-                st.caption(f"Posting as **{_cl_author}** ✅ (verified)")
+                st.caption(f"Posting as **{_cl_author}** (verified)")
             else:
                 _cl_author_col, _cl_spacer = st.columns([2, 3])
                 with _cl_author_col:
@@ -2610,7 +2638,7 @@ else:
         # analysis instead of piecing it together from separate panels.
         quality = assess_data_quality(standardized, ticker_bundle, macro_bundle)
 
-        st.subheader(f"{quality.grade_icon} Data Quality Report — {quality.score}/100 ({quality.grade})")
+        st.subheader(f"Data Quality Report — {quality.score}/100 ({quality.grade})")
         dq1, dq2, dq3, dq4 = st.columns(4)
         dq1.metric("Required Fields", f"{quality.required_completeness_pct:.0f}%", help="% of required balance sheet / income statement / cash flow fields present.")
         dq2.metric("Optional Fields", f"{quality.optional_completeness_pct:.0f}%", help="% of optional statement fields present (e.g. Retained Earnings, Interest Expense).")
@@ -2624,10 +2652,10 @@ else:
         detail_issue_count = len(quality.missing_required_fields) + len(quality.missing_optional_fields) + len(quality.fetch_warnings) + len(quality.fetch_errors)
         with st.expander(f"Data Quality Detail ({detail_issue_count} issue(s))", expanded=quality.grade in ("Poor", "Fair")):
             for stmt in standardized.validation.statements:
-                status = "🟢 Complete" if stmt.is_valid else f"🔴 {len(stmt.missing_required)} required field(s) missing"
+                status = "Complete" if stmt.is_valid else f"{len(stmt.missing_required)} required field(s) missing"
                 st.markdown(f"**{stmt.statement_name}** — {status}")
                 for check in stmt.checks:
-                    icon = "🟢" if check.present else ("🔴" if check.required else "⚪")
+                    icon = "Present" if check.present else ("Missing" if check.required else "Optional, absent")
                     label = check.name + (" (required)" if check.required else " (optional)")
                     st.markdown(f"&nbsp;&nbsp;{icon} {label}")
 
@@ -2704,7 +2732,7 @@ else:
         st.header("Financial Metrics Validation Report")
 
         if mv.is_clean:
-            st.success(f"🟢 No issues found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}.")
+            st.success(f"No issues found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}.")
         else:
             issue_parts = []
             if mv.disagreement_count:
@@ -2772,9 +2800,9 @@ else:
         if total_checks < possible_checks:
             st.caption(f"{possible_checks - total_checks} of {possible_checks} scorecard metric(s) not computable for {ticker_symbol} and excluded from scoring, rather than counted as a failure.")
 
-        if fundamentals.alignment_verdict == "high": st.success("🟢 HIGH ALIGNMENT: Passes major filters.")
-        elif fundamentals.alignment_verdict == "moderate": st.warning("🟡 MODERATE RISK: Proceed with caution.")
-        else: st.error("🔴 ABORT RESEARCH: Fails safety benchmarks.")
+        if fundamentals.alignment_verdict == "high": st.success("HIGH ALIGNMENT: Passes major filters.")
+        elif fundamentals.alignment_verdict == "moderate": st.warning("MODERATE RISK: Proceed with caution.")
+        else: st.error("ABORT RESEARCH: Fails safety benchmarks.")
 
         # ==========================================
         # COMPANY QUALITY CLASSIFICATION
@@ -2792,7 +2820,7 @@ else:
         st.header("Company Quality Classification", anchor="quality-classification")
 
         if cq.overall_score is None:
-            st.warning(f"⚪ Not enough data to classify {ticker_symbol}'s quality — every factor was missing all of its inputs.")
+            st.warning(f"Not enough data to classify {ticker_symbol}'s quality — every factor was missing all of its inputs.")
         else:
             qc1, qc2 = st.columns([1, 2])
             qc1.metric("Overall Quality Score", f"{cq.overall_score:.0f} / 100", help="Weighted average across evaluable factors — see config.QUALITY for every band and weight.")
@@ -2889,12 +2917,12 @@ else:
         # data and cross-checked against Yahoo's own separately-reported ratio
         # for the same concept — the practical substitute here for reconciling
         # against a real annual report (no live 10-K access in this environment).
-        # A 🟡 does not necessarily mean our formula is wrong: Yahoo's figure is
+        # A "Differs" does not necessarily mean our formula is wrong: Yahoo's figure is
         # often trailing-twelve-month while ours uses the most recent annual
         # period, and that timing difference alone can exceed the tolerance.
         st.markdown("---")
         st.header("Profitability Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
 
         prof_rows = fundamentals.profitability_checks
         profitability_data = {
@@ -2934,7 +2962,7 @@ else:
         # that figure and to surface Quick Ratio, which has no scorecard flag.
         st.markdown("---")
         st.header("Liquidity Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
 
         liq_rows = fundamentals.liquidity_checks
         liquidity_data = {
@@ -2978,7 +3006,7 @@ else:
         # everywhere else.
         st.markdown("---")
         st.header("Leverage Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
 
         lev_rows = fundamentals.leverage_checks
         leverage_data = {
@@ -3024,7 +3052,7 @@ else:
         # with no prior canonical value in the app.
         st.markdown("---")
         st.header("Valuation Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · 🟢 agrees (within 15%) · 🟡 disagrees · ⚪ no independent reference / not applicable for this company")
+        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
 
         val_rows = fundamentals.valuation_checks
         valuation_data = {
@@ -3102,7 +3130,7 @@ else:
         # caption rather than a prominent report unless something was found.
         ppr = price_processing_result
         if ppr.is_clean:
-            st.caption("🟢 Price data validated — no duplicate timestamps, invalid bars, or likely gaps detected.")
+            st.caption("Price data validated — no duplicate timestamps, invalid bars, or likely gaps detected.")
         else:
             with st.expander(f"Price data required cleaning ({ppr.issue_count} issue(s)) — click for details", expanded=False):
                 if ppr.duplicate_rows_removed:
@@ -3519,12 +3547,12 @@ else:
         st.header("Risk Dashboard", anchor="risk-dashboard")
         st.caption("At-a-glance summary of every risk metric below — click through to the detailed panels further down this page for the full picture on any one of them.")
 
-        gauge_color = {"🟢": "#22c55e", "🟡": "#eab308", "🟠": "#f97316", "🔴": "#ef4444"}[risk_score_result.grade_icon]
+        gauge_color = risk_score_result.grade_color
         fig_risk_gauge = go.Figure(go.Indicator(
             mode="gauge+number",
             value=risk_score_result.score,
             number={'suffix': " / 100"},
-            title={'text': f"{risk_score_result.grade_icon} Composite Risk Score — {risk_score_result.grade}"},
+            title={'text': f"Composite Risk Score — {risk_score_result.grade}"},
             gauge={
                 'axis': {'range': [0, 100]},
                 'bar': {'color': gauge_color},
@@ -3547,7 +3575,7 @@ else:
             factor_cols[i % 4].metric(
                 factor.label,
                 factor.value_display,
-                delta=f"{factor.icon} weight {factor.weight:.0%}",
+                delta=f"{factor.status} · weight {factor.weight:.0%}",
                 delta_color="off",
                 help=f"Sub-score: {factor.sub_score:.0f}/100" if factor.sub_score is not None else "Not computable for this ticker — excluded from the composite score.",
             )
@@ -4072,14 +4100,14 @@ else:
         else:
             _dcol1, _dcol2 = st.columns(2)
             with _dcol1:
-                st.markdown("**🟢 Top Strengths**")
+                st.markdown("**Top Strengths**")
                 if _digest_strengths:
                     for _flag in _digest_strengths:
                         st.markdown(_digest_flag_line(_flag))
                 else:
                     st.caption("No standout strengths identified.")
             with _dcol2:
-                st.markdown("**🔴 Top Concerns**")
+                st.markdown("**Top Concerns**")
                 if _digest_concerns:
                     for _flag in _digest_concerns:
                         st.markdown(_digest_flag_line(_flag))
@@ -4861,9 +4889,9 @@ else:
                 # independently-fetched dataset that could silently disagree.
                 st.subheader("Relative Performance")
                 st.caption(
-                    f"Each metric is flagged against the GROUP AVERAGE (every ticker below, target included) — 🟢 "
-                    f"outperform / 🔴 laggard once a value sits at least {COMPETITIVE_BENCHMARKING.outperform_threshold_pct:.0f}% "
-                    f"away from that average in the favorable direction for that metric, ⚪ in-line or not available. "
+                    f"Each metric is flagged against the GROUP AVERAGE (every ticker below, target included) — "
+                    f"Outperform / Laggard once a value sits at least {COMPETITIVE_BENCHMARKING.outperform_threshold_pct:.0f}% "
+                    f"away from that average in the favorable direction for that metric; In line otherwise, or n/a. "
                     f"This is a distance threshold, not a statistical test — a peer group this size (2-6 names) is too "
                     f"small for one to mean anything."
                 )
@@ -4913,7 +4941,7 @@ else:
     # where money goes. See recommendations.py.
     with tab_overview:
         st.markdown("---")
-        with st.expander("🧭 Find stocks matching your criteria", expanded=False):
+        with st.expander("Find stocks matching your criteria", expanded=False):
             st.caption(
                 "Tell it what you're looking for and it ranks the tickers Quantix knows "
                 "about by how well they fit — using the same scorecard, leverage and risk "
@@ -4994,11 +5022,11 @@ else:
                         st.markdown(_rc_head)
                         _rc_bits = []
                         for _rc_o in _rc_s.matched:
-                            _rc_bits.append(f"✅ {_rc_o.label} {_rc_o.threshold:g} (is {_rc_o.value:.2f})")
+                            _rc_bits.append(f"met: {_rc_o.label} {_rc_o.threshold:g} (is {_rc_o.value:.2f})")
                         for _rc_o in _rc_s.missed:
-                            _rc_bits.append(f"❌ {_rc_o.label} {_rc_o.threshold:g} (is {_rc_o.value:.2f})")
+                            _rc_bits.append(f"not met: {_rc_o.label} {_rc_o.threshold:g} (is {_rc_o.value:.2f})")
                         for _rc_o in _rc_s.unavailable:
-                            _rc_bits.append(f"➖ {_rc_o.label} — not reported")
+                            _rc_bits.append(f"not reported: {_rc_o.label}")
                         st.caption("  ·  ".join(_rc_bits))
                 else:
                     st.info("Nothing matched those criteria. Loosening the risk profile is usually the quickest way to widen the field.")
@@ -5025,7 +5053,7 @@ else:
     # the reader has reason to trust. See news_sentiment.py.
     with tab_overview:
         st.markdown("---")
-        with st.expander(f"📰 News Sentiment — {ticker_symbol}", expanded=False):
+        with st.expander(f"News Sentiment — {ticker_symbol}", expanded=False):
             _ns_key = f"news_sentiment_{ticker_symbol}"
             if _ns_key not in st.session_state:
                 with st.spinner("Reading recent coverage…"):
@@ -5060,8 +5088,8 @@ else:
             if _ns.articles:
                 st.markdown("**Headlines it was computed from**")
                 for _ns_a in _ns.articles:
-                    _ns_badge = {"positive": "🟢", "negative": "🔴",
-                                 "neutral": "⚪", "unscored": "—"}[_ns_a.label]
+                    _ns_badge = {"positive": "[positive]", "negative": "[negative]",
+                                 "neutral": "[neutral]", "unscored": "[unscored]"}[_ns_a.label]
                     _ns_line = f"{_ns_badge} {_rt_md_escape_dollar(_ns_a.title)}"
                     if _ns_a.url:
                         _ns_line = f"{_ns_badge} [{_rt_md_escape_dollar(_ns_a.title)}]({_ns_a.url})"

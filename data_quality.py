@@ -43,9 +43,9 @@ def _grade(score: float) -> str:
 
 
 def _grade_icon(score: float) -> str:
-    if score >= 75: return "🟢"
-    if score >= 55: return "🟡"
-    return "🔴"
+    if score >= 75: return ""
+    if score >= 55: return ""
+    return ""
 
 
 @dataclass

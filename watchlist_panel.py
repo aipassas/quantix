@@ -82,12 +82,12 @@ class QuoteSnapshot:
         White for an unavailable quote or a genuinely flat day — never a
         directional colour for a direction that isn't there."""
         if self.change_pct is None:
-            return "⚪"
+            return ""
         if self.change_pct > 0:
-            return "🟢"
+            return "▲"
         if self.change_pct < 0:
-            return "🔴"
-        return "⚪"
+            return "▼"
+        return ""
 
 
 def parse_tickers(raw: str) -> Tuple[str, ...]:

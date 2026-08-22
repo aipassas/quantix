@@ -99,7 +99,7 @@ def test_remove_ticker_absent_is_a_no_op():
 # --- direction_icon ---------------------------------------------------------
 
 @pytest.mark.parametrize("change_pct,expected", [
-    (1.5, "🟢"), (-1.5, "🔴"), (0.0, "⚪"), (None, "⚪"),
+    (1.5, "▲"), (-1.5, "▼"), (0.0, ""), (None, ""),
 ])
 def test_direction_icon_matches_sign(change_pct, expected):
     assert QuoteSnapshot(ticker="X", change_pct=change_pct).direction_icon == expected
@@ -134,14 +134,14 @@ def test_load_quote_computes_change_from_price_and_previous_close(monkeypatch):
     assert q.status == "ok"
     assert q.change_pct == pytest.approx(10.0)
     assert q.pe_ratio == 20.0
-    assert q.direction_icon == "🟢"
+    assert q.direction_icon == "▲"
 
 
 def test_load_quote_negative_change(monkeypatch):
     _patch_bundle(monkeypatch, _StubBundle({"currentPrice": 90.0, "previousClose": 100.0}))
     q = _uncached_load_quote("TEST")
     assert q.change_pct == pytest.approx(-10.0)
-    assert q.direction_icon == "🔴"
+    assert q.direction_icon == "▼"
 
 
 def test_load_quote_falls_back_to_regular_market_fields(monkeypatch):
@@ -159,7 +159,7 @@ def test_load_quote_unavailable_when_info_empty(monkeypatch):
     assert q.status == "unavailable"
     assert q.change_pct is None
     assert q.detail  # a real, disclosed reason
-    assert q.direction_icon == "⚪"
+    assert q.direction_icon == ""
 
 
 def test_load_quote_unavailable_when_previous_close_missing(monkeypatch):

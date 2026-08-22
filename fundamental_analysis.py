@@ -127,9 +127,12 @@ class MetricCheck:
 
     @property
     def status_icon(self) -> str:
+        """A word, not a coloured dot — the value goes into a plain-text
+        table column where colour cannot survive, and a word is also
+        unambiguous to a colour-blind reader."""
         if self.passed is None:
-            return "⚪"
-        return "🟢" if self.passed else "🔴"
+            return "Not rated"
+        return "Pass" if self.passed else "Fail"
 
 
 @dataclass
@@ -166,9 +169,10 @@ class ProfitabilityCheck:
 
     @property
     def status_icon(self) -> str:
+        """Whether our computed figure agrees with Yahoo's reported one."""
         if self.agrees is None:
-            return "⚪"
-        return "🟢" if self.agrees else "🟡"
+            return "Not checked"
+        return "Agrees" if self.agrees else "Differs"
 
 
 @dataclass
@@ -388,8 +392,8 @@ class CompanyQuality:
     @property
     def category_icon(self) -> str:
         return {
-            "Elite Quality": "🟢", "High Quality": "🟢", "Average Quality": "🟡",
-            "Below Average": "🟠", "Weak Quality": "🔴", "Not Ratable": "⚪",
+            "Elite Quality": "", "High Quality": "", "Average Quality": "",
+            "Below Average": "", "Weak Quality": "", "Not Ratable": "",
         }[self.category]
 
 
@@ -671,11 +675,11 @@ class FundamentalAnalysisEngine:
         # against the same boundary the user set.
         _risk = effective_risk()
         if z > _risk.altman_safe_zone:
-            verdict = "🟢 Safe Zone"
+            verdict = "Safe Zone"
         elif z >= _risk.altman_grey_zone:
-            verdict = "🟡 Grey Zone"
+            verdict = "Grey Zone"
         else:
-            verdict = "🔴 Distress Zone (High Risk)"
+            verdict = "Distress Zone (High Risk)"
         return z, verdict, []
 
     # ----- valuation ---------------------------------------------------------
@@ -898,7 +902,7 @@ class FundamentalAnalysisEngine:
             flags += 1
 
         score = (flags / 4) * 100
-        status = "🟢 High" if score >= 75 else ("🟡 Moderate" if score >= 50 else "🔴 Low")
+        status = "High" if score >= 75 else ("Moderate" if score >= 50 else "Low")
         return WatchlistScore(
             ticker=s.ticker, score=score, status=status,
             pe_ratio=s.pe_ratio, net_margin_pct=s.net_margin * 100,
@@ -1051,7 +1055,7 @@ class FundamentalAnalysisEngine:
           be picked. Shown in $ billions.
         - Interest Coverage has no Yahoo-reported equivalent (same situation
           as ROIC in validate_profitability()) — documented here for
-          completeness with no cross-check (⚪ "not evaluable").
+          completeness with no cross-check ("not evaluable").
         """
         yahoo_de = normalize_debt_to_equity(self._info.get('debtToEquity'))
         de_check = ProfitabilityCheck(
@@ -1183,7 +1187,7 @@ class FundamentalAnalysisEngine:
                 suffix="x",
             ),
             # No Yahoo equivalent field exists for FCF Yield — documented
-            # here for completeness with no cross-check (⚪ "not evaluable"),
+            # here for completeness with no cross-check ("not evaluable"),
             # same treatment as ROIC and Interest Coverage.
             ProfitabilityCheck(
                 key="fcf_yield", label="FCF Yield",
@@ -1372,7 +1376,7 @@ class FundamentalAnalysisEngine:
             ),
             MetricCheck(
                 key="pe_ratio", category="Valuation (P/E)", label="P/E Ratio TTM",
-                value=pe, display="N/A" if pe is None else f"{pe}",
+                value=pe, display="N/A" if pe is None else f"{pe:,.2f}",
                 benchmark=(
                     f"{pe_low:.0f} - {pe_high:.0f} (sector-adjusted)" if pe_is_sector_adjusted
                     else f"{pe_low:.0f} - {pe_high:.0f}"
@@ -1386,14 +1390,14 @@ class FundamentalAnalysisEngine:
             # See self._sc.pe_range_for()'s docstring.
             MetricCheck(
                 key="peg_ratio", category="Valuation (PEG)", label="PEG Ratio (Proxy)",
-                value=peg, display="N/A" if peg is None else f"{peg}",
+                value=peg, display="N/A" if peg is None else f"{peg:,.2f}",
                 benchmark=f"< {self._sc.peg_range[1]}",
                 passed=None if peg is None else self._sc.peg_range[0] < peg <= self._sc.peg_range[1],
                 weight=self._sc.weight_for("peg_ratio"),
             ),
             MetricCheck(
                 key="beta", category="Volatility", label="Beta",
-                value=beta, display="N/A" if beta is None else f"{beta}",
+                value=beta, display="N/A" if beta is None else f"{beta:,.2f}",
                 benchmark=f"< {self._sc.max_beta}",
                 passed=None if beta is None else beta < self._sc.max_beta,
                 weight=self._sc.weight_for("beta"),

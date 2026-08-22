@@ -214,14 +214,14 @@ def interpret_sharpe_ratio(value: Optional[float]) -> Optional[SharpeInterpretat
         "Compare against Sortino (downside-only) for a fuller picture."
     )
     if value < 0:
-        return SharpeInterpretation("🔴 Poor", "Negative risk-adjusted return — the asset underperformed the risk-free rate over this period once volatility is accounted for.", limitation)
+        return SharpeInterpretation("Poor", "Negative risk-adjusted return — the asset underperformed the risk-free rate over this period once volatility is accounted for.", limitation)
     if value < 1.0:
-        return SharpeInterpretation("🟡 Sub-optimal", "Positive but modest risk-adjusted return — returns are not compensating investors much for the volatility taken on.", limitation)
+        return SharpeInterpretation("Sub-optimal", "Positive but modest risk-adjusted return — returns are not compensating investors much for the volatility taken on.", limitation)
     if value < 2.0:
-        return SharpeInterpretation("🟢 Good", "A solid risk-adjusted return — widely considered an acceptable-to-good Sharpe by institutional standards.", limitation)
+        return SharpeInterpretation("Good", "A solid risk-adjusted return — widely considered an acceptable-to-good Sharpe by institutional standards.", limitation)
     if value < 3.0:
-        return SharpeInterpretation("🟢 Very Good", "A strong risk-adjusted return, notably above typical market benchmarks.", limitation)
-    return SharpeInterpretation("🟢 Exceptional (verify)", "Unusually high for a sustained strategy — worth double-checking the sample period isn't too short or unusually low-volatility, rather than assuming it's simply an outstanding result.", limitation)
+        return SharpeInterpretation("Very Good", "A strong risk-adjusted return, notably above typical market benchmarks.", limitation)
+    return SharpeInterpretation("Exceptional (verify)", "Unusually high for a sustained strategy — worth double-checking the sample period isn't too short or unusually low-volatility, rather than assuming it's simply an outstanding result.", limitation)
 
 
 def compute_downside_deviation(
@@ -510,14 +510,14 @@ def interpret_calmar_ratio(value: Optional[float]) -> Optional[CalmarInterpretat
     if value is None:
         return None
     if value < 0:
-        return CalmarInterpretation("🔴 Poor", "Negative — the annualized return didn't even cover the worst drawdown experienced, let alone compensate for it.")
+        return CalmarInterpretation("Poor", "Negative — the annualized return didn't even cover the worst drawdown experienced, let alone compensate for it.")
     if value < 1.0:
-        return CalmarInterpretation("🟡 Below Average", "Positive but modest — annualized return is smaller than the worst peak-to-trough loss over this period.")
+        return CalmarInterpretation("Below Average", "Positive but modest — annualized return is smaller than the worst peak-to-trough loss over this period.")
     if value < 3.0:
-        return CalmarInterpretation("🟢 Good", "A solid return relative to the worst drawdown experienced — a commonly cited acceptable range for trend-following strategies.")
+        return CalmarInterpretation("Good", "A solid return relative to the worst drawdown experienced — a commonly cited acceptable range for trend-following strategies.")
     if value < 5.0:
-        return CalmarInterpretation("🟢 Very Good", "A strong return-to-drawdown profile, notably better than typical benchmarks.")
-    return CalmarInterpretation("🟢 Excellent (verify)", "Unusually high — often a sign the selected date range happened to avoid a deep drawdown rather than proof the strategy is resilient to one. Check Max Drawdown's own recovery period before relying on this.")
+        return CalmarInterpretation("Very Good", "A strong return-to-drawdown profile, notably better than typical benchmarks.")
+    return CalmarInterpretation("Excellent (verify)", "Unusually high — often a sign the selected date range happened to avoid a deep drawdown rather than proof the strategy is resilient to one. Check Max Drawdown's own recovery period before relying on this.")
 
 
 def _anchored_score(value: Optional[float], anchors: Tuple[float, float]) -> Optional[float]:
@@ -531,14 +531,20 @@ def _anchored_score(value: Optional[float], anchors: Tuple[float, float]) -> Opt
     return float(np.clip(fraction, 0.0, 1.0) * 100.0)
 
 
-def _factor_icon(sub_score: Optional[float]) -> str:
+def _factor_status(sub_score: Optional[float]) -> str:
+    """A word rather than a coloured dot.
+
+    Text survives being copied out of a table, is unambiguous to a
+    colour-blind reader, and does not depend on the terminal rendering an
+    emoji font — the dots were showing as tofu boxes on some machines.
+    """
     if sub_score is None:
-        return "⚪"
+        return "Not rated"
     if sub_score >= 70:
-        return "🟢"
+        return "Strong"
     if sub_score >= 40:
-        return "🟡"
-    return "🔴"
+        return "Adequate"
+    return "Weak"
 
 
 @dataclass
@@ -547,26 +553,27 @@ class RiskFactor:
     value_display: str
     sub_score: Optional[float]  # 0-100, None if this factor couldn't be computed
     weight: float
-    icon: str
+    status: str                 # "Strong" / "Adequate" / "Weak" / "Not rated" 
 
 
 @dataclass
 class RiskScoreResult:
     score: float
     grade: str
-    grade_icon: str
+    grade_color: str          # hex, for the gauge; was an emoji the caller had to map
     factors: List[RiskFactor] = field(default_factory=list)
     excluded_factors: List[str] = field(default_factory=list)
 
 
 def _risk_grade(score: float) -> Tuple[str, str]:
+    """(grade label, hex colour)."""
     if score >= 75:
-        return "Low Risk", "🟢"
+        return "Low Risk", "#22c55e"
     if score >= 50:
-        return "Moderate Risk", "🟡"
+        return "Moderate Risk", "#eab308"
     if score >= 30:
-        return "Elevated Risk", "🟠"
-    return "High Risk", "🔴"
+        return "Elevated Risk", "#f97316"
+    return "High Risk", "#ef4444"
 
 
 def compute_risk_score(
@@ -622,7 +629,7 @@ def compute_risk_score(
             value_display=formatter(value) if value is not None else "N/A",
             sub_score=sub_score,
             weight=weight,
-            icon=_factor_icon(sub_score),
+            status=_factor_status(sub_score),
         ))
         if sub_score is None:
             excluded.append(label)
@@ -631,12 +638,12 @@ def compute_risk_score(
             weight_total += weight
 
     score = (weighted_sum / weight_total) if weight_total > 0 else 0.0
-    grade, grade_icon = _risk_grade(score)
+    grade, grade_color = _risk_grade(score)
 
     return RiskScoreResult(
         score=round(score, 1),
         grade=grade,
-        grade_icon=grade_icon,
+        grade_color=grade_color,
         factors=factors,
         excluded_factors=excluded,
     )

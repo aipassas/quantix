@@ -121,10 +121,14 @@ def test_flag_metric_in_line_within_threshold():
 
 
 def test_flag_metric_icon_matches_verdict():
-    assert flag_metric(20.0, 10.0, True).icon == "🟢"
-    assert flag_metric(5.0, 10.0, True).icon == "🔴"
-    assert flag_metric(10.0, 10.0, True).icon == "⚪"
-    assert flag_metric(None, 10.0, True).icon == "⚪"
+    assert flag_metric(20.0, 10.0, True).icon == "Outperform"
+    assert flag_metric(5.0, 10.0, True).icon == "Laggard"
+    assert flag_metric(10.0, 10.0, True).icon == "In line"
+    # "n/a", not "In line". The old white-circle icon rendered these two
+    # states identically, so a metric nobody could compute looked exactly
+    # like one that came out average — the conflation this codebase
+    # refuses everywhere else. Words separate them.
+    assert flag_metric(None, 10.0, True).icon == "n/a"
 
 
 # --- build_benchmark_rows (overall verdict roll-up) ---------------------------
@@ -150,7 +154,7 @@ def test_build_benchmark_rows_clear_outperformer():
     result = build_benchmark_rows(rows)
     a = next(r for r in result if r.ticker == "A")
     assert a.overall_verdict == "Outperformer"
-    assert a.overall_icon == "🟢"
+    assert a.overall_icon == "Outperform"
 
 
 def test_build_benchmark_rows_clear_laggard():
@@ -167,7 +171,7 @@ def test_build_benchmark_rows_no_evaluable_metrics_is_not_enough_data():
     rows = [_row("A"), _row("B")]  # no values at all
     result = build_benchmark_rows(rows)
     assert all(r.overall_verdict == "Not Enough Data" for r in result)
-    assert all(r.overall_icon == "⚪" for r in result)
+    assert all(r.overall_icon == "n/a" for r in result)
 
 
 def test_build_benchmark_rows_preserves_row_count_and_tickers():

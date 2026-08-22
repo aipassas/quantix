@@ -41,7 +41,7 @@ class SMACrossoverSignal:
 
     @property
     def icon(self) -> str:
-        return "🟢▲" if self.kind == "bullish" else "🔴▼"
+        return "▲" if self.kind == "bullish" else "▼"
 
     @property
     def label(self) -> str:
@@ -170,7 +170,7 @@ def interpret_rsi(value: Optional[float]) -> Optional[RSIInterpretation]:
     overbought, oversold = TECHNICAL.rsi_overbought, TECHNICAL.rsi_oversold
     if value >= overbought:
         return RSIInterpretation(
-            value=value, zone="overbought", label="🔴 Overbought",
+            value=value, zone="overbought", label="Overbought",
             explanation=(
                 f"RSI is at {value:.1f}, at or above the overbought threshold of {overbought:.0f} — "
                 "the recent price advance has been unusually strong and may be due for a pullback or consolidation."
@@ -178,14 +178,14 @@ def interpret_rsi(value: Optional[float]) -> Optional[RSIInterpretation]:
         )
     if value <= oversold:
         return RSIInterpretation(
-            value=value, zone="oversold", label="🟢 Oversold",
+            value=value, zone="oversold", label="Oversold",
             explanation=(
                 f"RSI is at {value:.1f}, at or below the oversold threshold of {oversold:.0f} — "
                 "the recent decline has been unusually strong and may be due for a bounce or stabilization."
             ),
         )
     return RSIInterpretation(
-        value=value, zone="neutral", label="🟡 Neutral",
+        value=value, zone="neutral", label="Neutral",
         explanation=(
             f"RSI is at {value:.1f}, between the oversold ({oversold:.0f}) and overbought ({overbought:.0f}) "
             "thresholds — no extreme momentum signal in either direction."
@@ -307,7 +307,7 @@ class MACDCrossoverSignal:
 
     @property
     def icon(self) -> str:
-        return "🟢▲" if self.kind == "bullish" else "🔴▼"
+        return "▲" if self.kind == "bullish" else "▼"
 
     @property
     def label(self) -> str:
@@ -393,7 +393,7 @@ class BollingerBreakout:
 
     @property
     def icon(self) -> str:
-        return "🔴⬆" if self.kind == "upper" else "🟢⬇"
+        return "▲" if self.kind == "upper" else "▼"
 
     @property
     def label(self) -> str:
@@ -569,7 +569,7 @@ class StochasticCrossoverSignal:
 
     @property
     def icon(self) -> str:
-        return "🟢▲" if self.kind == "bullish" else "🔴▼"
+        return "▲" if self.kind == "bullish" else "▼"
 
     @property
     def label(self) -> str:

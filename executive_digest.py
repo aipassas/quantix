@@ -1,5 +1,5 @@
 """Executive Digest — the top 3 strengths and top 3 concerns across the
-ENTIRE analysis, auto-prioritized from every 🟢/🔴 signal already computed
+ENTIRE analysis, auto-prioritized from every pass/fail signal already computed
 elsewhere in the app (Scorecard checks, Company Quality classification,
 Altman Z zone, the Composite Risk Score and its 8 factors, DCF margin of
 safety, buy-and-hold Max Drawdown, VIX macro regime, and RSI/SMA/MACD/
@@ -8,7 +8,7 @@ Bollinger state).
 Pure synthesis, per the task's own technical requirement: this module
 performs zero indicator/statement/risk math of its own. Every threshold
 used to classify a flag as a strength or a concern is the SAME threshold
-already used to color that exact signal 🟢/🟡/🔴 elsewhere in finance.py
+already used to color that exact signal elsewhere in finance.py
 (e.g. a Risk Score factor's 70/40 sub-score cutoffs are risk_analytics.py's
 own _factor_icon() boundaries, not a new scale invented here) — see each
 branch's comment in collect_flags() for the specific source.
@@ -64,7 +64,7 @@ def collect_flags(
     each already ranked and capped — nothing further for the caller to
     rank. An ambiguous/neutral reading (e.g. a "Moderate Risk" grade, an
     RSI in neither zone) contributes no flag at all in either direction,
-    exactly like the underlying 🟡 signal it comes from."""
+    exactly like the underlying caution signal it comes from."""
     strengths: List[Flag] = []
     concerns: List[Flag] = []
 

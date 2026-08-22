@@ -107,7 +107,8 @@ class MetricFlag:
 
     @property
     def icon(self) -> str:
-        return {"outperform": "🟢", "laggard": "🔴", "in_line": "⚪", "unavailable": "⚪"}[self.verdict]
+        return {"outperform": "Outperform", "laggard": "Laggard",
+                "in_line": "In line", "unavailable": "n/a"}[self.verdict]
 
 
 def flag_metric(value: Optional[float], average: Optional[float], higher_is_better: bool) -> MetricFlag:
@@ -143,7 +144,8 @@ class BenchmarkRow:
 
     @property
     def overall_icon(self) -> str:
-        return {"Outperformer": "🟢", "Laggard": "🔴", "Mixed": "🟡", "Not Enough Data": "⚪"}[self.overall_verdict]
+        return {"Outperformer": "Outperform", "Laggard": "Laggard",
+                "Mixed": "Mixed", "Not Enough Data": "n/a"}[self.overall_verdict]
 
 
 def _overall_verdict(outperform_count: int, laggard_count: int, evaluable_count: int) -> str:
