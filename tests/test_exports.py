@@ -490,3 +490,23 @@ def test_the_pdf_really_comes_out_dark():
     luminance = [sum(rgb) / 3 for rgb in fills]
     assert min(luminance) < 40, f"no dark background painted: {fills}"
     assert max(luminance) > 150, f"no light text painted: {fills}"
+
+    # And the dark fill must cover the WHOLE PAGE, not just the sheet's own
+    # box. This is the assertion that was missing: a PDF whose card was
+    # black but whose page was white passed every check above while
+    # visibly rendering with white margins, because the wrapper document
+    # never painted a page background. WeasyPrint emits its content stream
+    # in CSS pixels, so A4 is 793.7 x 1122.5 rather than 595 x 842.
+    page_w, page_h = 793.7, 1122.5
+    rects = [tuple(float(v) for v in found) for found in
+             re.findall(r"([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re", body)]
+    full_page = [r for r in rects
+                 if r[2] >= page_w - 2 and r[3] >= page_h - 2
+                 and r[0] <= 1 and r[1] <= 1]
+    assert full_page, (
+        "no full-page background box — the page will render with white "
+        f"margins around the sheet. Boxes found: {sorted(rects, key=lambda r: -r[2] * r[3])[:3]}")
+
+    # Nothing may be wider than the paper, or it is trimmed at the edge.
+    widest = max((r[2] for r in rects), default=0)
+    assert widest <= page_w + 2, f"content is {widest:.0f}px wide on a {page_w:.0f}px page"

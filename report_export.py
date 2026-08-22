@@ -42,6 +42,58 @@ def _ensure_weasyprint_can_load_native_libs() -> None:
         os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(parts)
 
 
+# CSS the PDF needs and the screen must not get.
+#
+# TWO THINGS WERE MAKING THE PDF COME OUT PART-WHITE.
+#
+# First, the wrapper below is the whole document, and nothing in it ever
+# painted a page background. The tear sheet's own div is black, so the
+# sheet looked right and everything around it — margins, and any second
+# page — stayed WeasyPrint's default white. A background on html/body
+# propagates to the page box and covers every page, which is what makes
+# the whole thing black rather than just the card.
+#
+# Second, the on-screen fragment carries an @media print block, and
+# WeasyPrint renders in print media, so those rules applied here too.
+# They were written for Cmd+P inside Streamlit, where the job is to hide
+# the app chrome and let the BROWSER supply page margins: position the
+# sheet absolutely, strip its padding, force width to 100%. Rendered onto
+# a page we control instead, that combination pushed the content wider
+# than the paper (measured 644pt of content on a 595pt A4 page) and ran
+# the text into the trimmed edge. Undoing them is safer than editing the
+# shared fragment, which still needs those rules for the browser path.
+_PDF_CSS = """
+@page { size: A4; margin: 0; }
+html, body {
+    margin: 0;
+    padding: 0;
+    background: #000000 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+}
+* { box-sizing: border-box; }
+@media print {
+    .tear-sheet {
+        position: static !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 30px 34px !important;
+        border: none !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        background-color: #000000 !important;
+    }
+    /* The fragment hides everything and re-shows only the sheet, which is
+       how it isolates itself from the Streamlit page. Here the sheet IS
+       the document. */
+    body *, .tear-sheet, .tear-sheet * { visibility: visible !important; }
+    /* Full-bleed accent bar: with a zero page margin it reads as a
+       masthead rule rather than the floating bar it is on screen. */
+    .ts-top-accent { display: block !important; }
+}
+"""
+
+
 def generate_tear_sheet_pdf(html_fragment: str) -> Tuple[Optional[bytes], Optional[str]]:
     """Render the Tear Sheet's existing HTML fragment to PDF bytes via WeasyPrint.
 
@@ -63,7 +115,14 @@ def generate_tear_sheet_pdf(html_fragment: str) -> Tuple[Optional[bytes], Option
             "on macOS, `apt-get install libpango-1.0-0` on Debian/Ubuntu)."
         )
 
-    document = f"<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>{html_fragment}</body></html>"
+    # The PDF stylesheet goes LAST, after the fragment's own <style>, so it
+    # wins on document order as well as on !important.
+    document = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>"
+        f"{html_fragment}"
+        f"<style>{_PDF_CSS}</style>"
+        "</body></html>"
+    )
     try:
         return HTML(string=document).write_pdf(), None
     except Exception as e:
