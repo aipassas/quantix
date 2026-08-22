@@ -45,3 +45,8 @@ digest_cron.log
 portfolio_store.json
 api_keys_usage.json
 slack_alert_state.json
+
+# Local account records: scrypt password hashes and reset-token digests.
+# Nothing replayable, but it is a credential store and per-instance state,
+# so it never belongs in the repository.
+accounts_store.json

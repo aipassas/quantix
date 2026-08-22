@@ -231,7 +231,7 @@ def log_input_changes(**current):
 
 # --- Page Configuration ---
 st.set_page_config(page_title=brand().name, layout="wide", page_icon=None)
-st.title(brand().title)
+# The app title renders AFTER the authentication gate — see below.
 
 # ==========================================
 # IDENTITY SWITCH GUARD
@@ -655,6 +655,27 @@ st.markdown(f"""
     }}
     </style>
     """, unsafe_allow_html=True)
+
+# ==========================================
+# AUTHENTICATION GATE
+# ==========================================
+# Everything below this line assumes a signed-in user. The gate sits here
+# rather than at the top of the file because it needs st.set_page_config
+# and the theme CSS to have run — a login page rendered before those is
+# unstyled and flashes white — and above every st.* call that draws the
+# app itself, so a signed-out visitor never sees a frame of it.
+#
+# require_sign_in() calls st.stop() when signed out, so nothing after this
+# executes for an anonymous visitor. Both sign-in paths satisfy it: a
+# local email/password account or the existing OIDC provider.
+import login_page
+
+login_page.require_sign_in()
+
+# Only now does the app itself begin. The title sits below the gate so a
+# signed-out visitor sees the login page alone rather than the app's
+# masthead stacked on top of it.
+st.title(brand().title)
 
 # ==========================================
 # INSTITUTIONAL WATCHLIST SUGGESTIONS (CHRONOLOGICAL PORTFOLIOS)
@@ -1399,7 +1420,17 @@ with st.sidebar.expander(
                 st.rerun()
 
         if st.button("Sign out", key="auth_logout"):
-            st.logout()
+            # Two sign-in paths, two ways out. st.logout() only clears
+            # Streamlit's own OIDC cookie and does nothing to a local
+            # session, so a password user clicking Sign out would have
+            # stayed signed in. Clear the local session either way, then
+            # hand off to st.logout() only when OIDC is what's active.
+            auth.sign_out_local()
+            login_page.reset_state()
+            if auth.is_logged_in():
+                st.logout()
+            else:
+                st.rerun()
     elif _auth_reason:
         st.caption(
             "Sign in to keep your watchlists, favourites, theme, thresholds and alert "

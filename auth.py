@@ -304,15 +304,84 @@ def key_for(issuer: str, subject: str, email: str = "") -> str:
 def _issuer_slug(issuer: str) -> str:
     """A short readable hint from an issuer URL: accounts.google.com ->
     'google', login.microsoftonline.com -> 'microsoftonline'."""
-    host = re.sub(r"^https?://", "", (issuer or "").strip()).split("/")[0]
+    issuer = (issuer or "").strip()
+    # Local accounts are not a URL and would slugify to "urnquantixlo",
+    # defeating the point of a readable prefix.
+    if issuer == LOCAL_ISSUER:
+        return "local"
+    host = re.sub(r"^https?://", "", issuer).split("/")[0]
     parts = [p for p in host.split(".") if p not in ("com", "org", "net", "www", "io")]
     return (parts[-1] if parts else "").lower()
 
 
-def current_user() -> Optional[AuthUser]:
-    """The signed-in identity, or None. Never raises."""
-    if not is_logged_in():
+# Issuer for local email+password accounts. A URN rather than a URL so it
+# can never collide with a real OIDC issuer, and so key_for() produces a
+# visibly distinct namespace prefix (quantixlocal-…) from a Google one.
+LOCAL_ISSUER = "urn:quantix:local"
+
+# Where a signed-in local account lives for the duration of the browser
+# session. Streamlit gives the app no way to SET a cookie (st.context.cookies
+# is read-only), so this is session state and nothing more — see
+# login_page.py, where that limit is disclosed to the user rather than
+# papered over with a "remember me" that does not.
+_LOCAL_SESSION_KEY = "_quantix_local_session"
+
+
+def sign_in_local(account) -> None:
+    """Record a successful local sign-in for this session."""
+    st.session_state[_LOCAL_SESSION_KEY] = {
+        "user_id": account.user_id,
+        "email": account.email,
+        "name": account.name,
+    }
+
+
+def sign_out_local() -> None:
+    st.session_state.pop(_LOCAL_SESSION_KEY, None)
+
+
+def local_user() -> Optional[AuthUser]:
+    """The local account signed in on this session, or None.
+
+    The session holds only an id; the account itself is re-read from the
+    store on every call so that a deletion or an email change takes effect
+    immediately rather than persisting until the tab is closed.
+    """
+    try:
+        session = st.session_state.get(_LOCAL_SESSION_KEY)
+    except Exception:
+        return None                      # no script run context
+    if not isinstance(session, dict):
         return None
+    user_id = session.get("user_id") or ""
+    if not user_id:
+        return None
+
+    try:
+        import accounts
+
+        account = accounts.get_by_id(user_id)
+    except Exception:
+        return None
+    if account is None:
+        return None
+
+    key = key_for(LOCAL_ISSUER, account.user_id, account.email)
+    if not key:
+        return None
+    return AuthUser(key=key, subject=account.user_id, issuer=LOCAL_ISSUER,
+                    email=account.email, name=account.name)
+
+
+def current_user() -> Optional[AuthUser]:
+    """The signed-in identity, or None. Never raises.
+
+    Both sign-in paths land here, so everything downstream — namespacing,
+    the adoption offer, Team Notes attribution — works identically whether
+    someone used Google or an email and password.
+    """
+    if not is_logged_in():
+        return local_user()
     subject = _safe_claim("sub")
     issuer = _safe_claim("iss")
     email = _safe_claim("email")
