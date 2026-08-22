@@ -316,3 +316,177 @@ def test_workbook_carries_the_disclosure():
 def test_workbook_filename_follows_the_brand():
     name = export_workbook.filename_for("AAPL", datetime.date(2026, 8, 22))
     assert name.endswith("-aapl-20260822.xlsx")
+
+
+# --- the exported look ---------------------------------------------------------
+#
+# Exports are always dark, independent of the app's light/dark toggle: the
+# toggle is a personal viewing preference, but an export is a document that
+# leaves the building and its look is a house style. The failure these tests
+# guard is the quiet one — python-pptx defaults a blank slide to a white
+# background and its runs to black text, so "forgot to set a colour" produces
+# a deck that is unreadable rather than one that errors.
+
+import export_theme
+
+
+def test_every_slide_has_a_dark_background():
+    payload, _ = export_deck.build_deck(_deck_data())
+    colours = export_theme.palette()
+    for index, slide in enumerate(_slides(payload), start=1):
+        rgb = str(slide.background.fill.fore_color.rgb)
+        assert rgb == colours.background, f"slide {index} background is {rgb}"
+
+
+def test_no_run_is_left_on_powerpoints_default_black():
+    """A run with no explicit colour renders black — invisible here."""
+    payload, _ = export_deck.build_deck(_deck_data())
+    for slide in _slides(payload):
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    assert run.font.color.rgb is not None
+                    assert str(run.font.color.rgb) != "000000", run.text[:40]
+
+
+def test_table_cells_are_filled_and_legible():
+    payload, _ = export_deck.build_deck(_deck_data())
+    colours = export_theme.palette()
+    table = next(shape.table for slide in _slides(payload)
+                 for shape in slide.shapes if shape.has_table)
+    header = table.cell(0, 0)
+    body = table.cell(1, 0)
+    assert str(header.fill.fore_color.rgb) == colours.surface_alt
+    assert str(body.fill.fore_color.rgb) == colours.surface
+    # and the header must be distinguishable from the body
+    assert colours.surface_alt != colours.surface
+
+
+def test_the_brand_accent_reaches_the_deck(monkeypatch):
+    """Configuring a licensee's colour restyles the deck with no work here."""
+    import branding
+
+    monkeypatch.setattr(branding, "brand",
+                        lambda: branding.Brand(name="Meridian Capital",
+                                               accent_color="#AA3366"))
+    payload, _ = export_deck.build_deck(_deck_data())
+    used = {str(run.font.color.rgb)
+            for slide in _slides(payload) for shape in slide.shapes
+            if shape.has_text_frame
+            for paragraph in shape.text_frame.paragraphs for run in paragraph.runs}
+    assert "AA3366" in used
+
+
+def test_charts_are_pinned_dark_even_when_the_app_is_light():
+    """The app styles charts from the CURRENT theme; an export is not a
+    screenshot of that. In light mode the axis labels come out dark and
+    would be invisible on these slides."""
+    pd = pytest.importorskip("pandas")
+    go = pytest.importorskip("plotly.graph_objects")
+    pytest.importorskip("kaleido")
+    Image = pytest.importorskip("PIL.Image")
+
+    dates = pd.date_range("2025-01-01", periods=60, freq="D")
+    fig = go.Figure(go.Scatter(x=dates, y=list(range(60))))
+    fig.update_layout(template="plotly_white", paper_bgcolor="white",
+                      plot_bgcolor="white")
+
+    png = export_deck.chart_png(fig, 700, 350)
+    assert png
+    image = Image.open(io.BytesIO(png)).convert("RGBA")
+
+    # Transparent, so the slide colour shows through instead of a white
+    # box. This alone proves the override was applied, since the source
+    # figure asked for an opaque white background.
+    assert image.getpixel((4, 4))[3] == 0
+
+    # And the text itself must be light. Measured over the whole image
+    # rather than a fixed strip: where the axis labels land moves with the
+    # requested size, and a hard-coded crop silently stops testing anything
+    # the first time those margins change.
+    ink = [p for p in image.getdata() if p[3] > 40]
+    assert ink, "nothing rendered"
+    bright = [p for p in ink if (p[0] + p[1] + p[2]) / 3 > 200]
+    assert len(bright) > 100, (
+        f"only {len(bright)} light pixels — labels look dark, "
+        "as though the source template leaked through")
+
+
+def test_the_callers_figure_is_not_restyled():
+    """Exporting must not repaint the chart still on screen behind the button."""
+    go = pytest.importorskip("plotly.graph_objects")
+
+    fig = go.Figure(go.Scatter(x=[1, 2, 3], y=[1, 2, 3]))
+    fig.update_layout(paper_bgcolor="white")
+    export_deck.chart_png(fig, 200, 100)
+    assert fig.layout.paper_bgcolor == "white"
+
+
+def test_palette_survives_a_missing_or_broken_accent(monkeypatch):
+    import branding
+
+    for bad in (None, "", "not-a-colour", "#12"):
+        monkeypatch.setattr(branding, "brand",
+                            lambda bad=bad: branding.Brand(name="X", accent_color=bad))
+        colours = export_theme.palette()
+        assert len(colours.accent) == 6
+        int(colours.accent, 16)          # a usable hex triplet either way
+
+
+def test_shorthand_accent_is_expanded(monkeypatch):
+    import branding
+
+    monkeypatch.setattr(branding, "brand",
+                        lambda: branding.Brand(name="X", accent_color="#0f0"))
+    assert export_theme.palette().accent == "00FF00"
+
+
+def test_the_pdf_really_comes_out_dark():
+    """Browsers strip backgrounds when printing to save ink, which would
+    put this sheet's light text onto white paper — unreadable. The
+    print-color-adjust rule prevents that, and this checks the rendered
+    PDF rather than trusting the CSS."""
+    import re
+    import zlib
+
+    # NOT importorskip("weasyprint"): report_export sets up the native
+    # library search path at call time, so importing weasyprint first
+    # loads it before Pango can be found and fails on machines where the
+    # app itself works fine. Go through the module's own entry point,
+    # which reports unavailability instead of raising.
+    from report_export import generate_tear_sheet_pdf
+
+    colours = export_theme.palette()
+    fragment = f"""
+    <div class="tear-sheet">
+      <h1 class="ts-title">AAPL</h1>
+      <p>Not investment advice.</p>
+    </div>
+    <style>
+      .tear-sheet {{ background-color: {colours.css('background')};
+                     color: {colours.css('text')}; padding: 40px;
+                     -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+      .ts-title {{ color: {colours.css('text_strong')}; }}
+    </style>
+    """
+    pdf, error = generate_tear_sheet_pdf(fragment)
+    if pdf is None and "isn't available" in (error or ""):
+        pytest.skip("WeasyPrint's native Pango dependency is missing here")
+    assert error is None and pdf
+
+    streams = []
+    for match in re.finditer(rb"stream\r?\n(.*?)endstream", pdf, re.S):
+        try:
+            streams.append(zlib.decompress(match.group(1)).decode("latin-1"))
+        except Exception:
+            streams.append(match.group(1).decode("latin-1", "replace"))
+    body = "\n".join(streams)
+
+    fills = [tuple(round(float(v) * 255) for v in found.split())
+             for found in re.findall(r"([\d.]+ [\d.]+ [\d.]+) rg", body)]
+    assert fills, "no fill colours in the PDF"
+    luminance = [sum(rgb) / 3 for rgb in fills]
+    assert min(luminance) < 40, f"no dark background painted: {fills}"
+    assert max(luminance) > 150, f"no light text painted: {fills}"

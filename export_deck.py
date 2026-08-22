@@ -129,6 +129,24 @@ def chart_png(fig, width: int = None, height: int = None,
     """
     width = width or _CHART_PX[0]
     height = height or _CHART_PX[1]
+
+    # Pin the figure to the export look before rendering. The app styles
+    # its charts from whatever theme the user is currently viewing in, and
+    # an export is not a screenshot of that: with the app in light mode the
+    # axis labels come out dark and would be invisible on these slides.
+    # Copied first — mutating the caller's figure would restyle the chart
+    # still on screen behind the export button.
+    try:
+        import copy
+
+        from export_theme import plotly_overrides
+
+        fig = copy.deepcopy(fig)
+        fig.update_layout(**plotly_overrides())
+    except Exception:
+        # A figure that cannot be restyled is still worth exporting.
+        pass
+
     try:
         return fig.to_image(format="png", width=width, height=height, scale=scale)
     except Exception:
@@ -187,14 +205,33 @@ def charts_available() -> bool:
 # --- slide construction -------------------------------------------------------
 
 def _theme():
-    """Brand colours for the deck, falling back to this app's own."""
+    """Brand name plus the shared export palette (see export_theme.py)."""
     from branding import brand
+    from export_theme import palette
 
-    current = brand()
-    accent = (current.accent_color or "#1F6FEB").lstrip("#")
-    if len(accent) == 3:                       # expand #abc -> #aabbcc
-        accent = "".join(c * 2 for c in accent)
-    return current.name, accent
+    return brand().name, palette()
+
+
+def _paint(slide, colours):
+    """Fill the slide background.
+
+    A blank PowerPoint layout is white, and white is not the absence of a
+    background — it is a background that fights every light-coloured run
+    on top of it. Set explicitly on each slide rather than on the master,
+    because the deck is built from the blank layout and a master edit
+    would not survive a recipient changing the theme.
+    """
+    from pptx.dml.color import RGBColor
+
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor.from_string(colours.background)
+    return slide
+
+
+def _blank(prs, colours):
+    slide = prs.slides.add_slide(prs.slide_layouts[_BLANK_LAYOUT])
+    return _paint(slide, colours)
 
 
 def _add_text(slide, text, left, top, width, height, size=18, bold=False,
@@ -210,8 +247,11 @@ def _add_text(slide, text, left, top, width, height, size=18, bold=False,
     run.text = text
     run.font.size = Pt(size)
     run.font.bold = bold
-    if colour:
-        run.font.color.rgb = RGBColor.from_string(colour)
+    # Default to the palette's body colour: PowerPoint's own default is
+    # black, which is invisible on these slides.
+    from export_theme import palette
+
+    run.font.color.rgb = RGBColor.from_string(colour or palette().text)
     if align is not None:
         paragraph.alignment = align
     return box
@@ -230,17 +270,18 @@ def _add_bullets(slide, items, left, top, width, height, size=16, colour=None,
         run = paragraph.add_run()
         run.text = f"{bullet_char} {item}"
         run.font.size = Pt(size)
-        if colour:
-            run.font.color.rgb = RGBColor.from_string(colour)
+        from export_theme import palette
+
+        run.font.color.rgb = RGBColor.from_string(colour or palette().text)
         paragraph.space_after = Pt(8)
     return box
 
 
-def _title_slide(prs, data: DeckData, brand_name: str, accent: str):
+def _title_slide(prs, data: DeckData, brand_name: str, colours):
     from pptx.util import Inches
 
-    slide = prs.slides.add_slide(prs.slide_layouts[_BLANK_LAYOUT])
-    _add_text(slide, brand_name, 0.8, 0.7, 6, 0.5, size=16, bold=True, colour=accent)
+    slide = _blank(prs, colours)
+    _add_text(slide, brand_name, 0.8, 0.7, 6, 0.5, size=16, bold=True, colour=colours.accent)
     _add_text(slide, data.headline, 0.8, 1.5, 11.5, 1.2, size=40, bold=True)
 
     subtitle_bits = [b for b in (data.sector, data.alignment_verdict.title()) if b]
@@ -254,15 +295,16 @@ def _title_slide(prs, data: DeckData, brand_name: str, accent: str):
 
     # The disclosure ships on the title slide, where it cannot be missed
     # by someone flicking to the numbers.
-    _add_text(slide, DISCLOSURE, 0.8, 6.4, 11.5, 0.8, size=11)
+    _add_text(slide, DISCLOSURE, 0.8, 6.4, 11.5, 0.8, size=11,
+              colour=colours.text_muted)
     return slide
 
 
-def _synthesis_slide(prs, data: DeckData, accent: str):
+def _synthesis_slide(prs, data: DeckData, colours):
     """Strengths and concerns straight from the Executive Digest, so the
     deck says exactly what the app says."""
-    slide = prs.slides.add_slide(prs.slide_layouts[_BLANK_LAYOUT])
-    _add_text(slide, "Executive Synthesis", 0.8, 0.5, 11.5, 0.7, size=30, bold=True, colour=accent)
+    slide = _blank(prs, colours)
+    _add_text(slide, "Executive Synthesis", 0.8, 0.5, 11.5, 0.7, size=30, bold=True, colour=colours.accent)
 
     if data.alignment_verdict:
         headline = f"{data.alignment_verdict.title()} alignment"
@@ -270,24 +312,24 @@ def _synthesis_slide(prs, data: DeckData, accent: str):
             headline += f" — {data.alignment_pct:.0f}% of evaluable checks passed"
         _add_text(slide, headline, 0.8, 1.3, 11.5, 0.5, size=18, bold=True)
 
-    _add_text(slide, "Strengths", 0.8, 2.1, 5.5, 0.4, size=18, bold=True, colour="1B7F37")
+    _add_text(slide, "Strengths", 0.8, 2.1, 5.5, 0.4, size=18, bold=True, colour=colours.positive)
     _add_bullets(slide, data.strengths or ("No standout strengths flagged.",),
                  0.8, 2.6, 5.5, 3.4)
 
-    _add_text(slide, "Concerns", 7.0, 2.1, 5.5, 0.4, size=18, bold=True, colour="B42318")
+    _add_text(slide, "Concerns", 7.0, 2.1, 5.5, 0.4, size=18, bold=True, colour=colours.negative)
     _add_bullets(slide, data.concerns or ("No material concerns flagged.",),
                  7.0, 2.6, 5.5, 3.4)
 
     _add_text(slide,
               "Strengths and concerns are the same ranked signals shown in the app's Executive "
               "Digest. A neutral reading contributes nothing to either column.",
-              0.8, 6.4, 11.5, 0.6, size=11)
+              0.8, 6.4, 11.5, 0.6, size=11, colour=colours.text_muted)
     return slide
 
 
-def _valuation_slide(prs, data: DeckData, accent: str):
-    slide = prs.slides.add_slide(prs.slide_layouts[_BLANK_LAYOUT])
-    _add_text(slide, "Valuation", 0.8, 0.5, 11.5, 0.7, size=30, bold=True, colour=accent)
+def _valuation_slide(prs, data: DeckData, colours):
+    slide = _blank(prs, colours)
+    _add_text(slide, "Valuation", 0.8, 0.5, 11.5, 0.7, size=30, bold=True, colour=colours.accent)
 
     if not data.dcf_available:
         _add_text(slide,
@@ -296,7 +338,7 @@ def _valuation_slide(prs, data: DeckData, accent: str):
                   0.8, 1.5, 11.5, 1.0, size=16)
         _add_text(slide,
                   "No intrinsic value is shown rather than an estimate built on missing inputs.",
-                  0.8, 6.4, 11.5, 0.6, size=11)
+                  0.8, 6.4, 11.5, 0.6, size=11, colour=colours.text_muted)
         return slide
 
     cards = [
@@ -307,7 +349,7 @@ def _valuation_slide(prs, data: DeckData, accent: str):
     for index, (label, value) in enumerate(cards):
         left = 0.8 + index * 4.1
         _add_text(slide, label, left, 1.6, 3.8, 0.4, size=14)
-        _add_text(slide, value, left, 2.1, 3.8, 0.9, size=32, bold=True, colour=accent)
+        _add_text(slide, value, left, 2.1, 3.8, 0.9, size=32, bold=True, colour=colours.accent)
 
     if data.dcf_status:
         _add_text(slide, data.dcf_status, 0.8, 3.4, 11.5, 0.6, size=18, bold=True)
@@ -318,16 +360,16 @@ def _valuation_slide(prs, data: DeckData, accent: str):
     _add_text(slide,
               "A DCF is a model, not a measurement: it is only as good as its growth and "
               "discount-rate assumptions, which are shown in the app.",
-              0.8, 6.4, 11.5, 0.6, size=11)
+              0.8, 6.4, 11.5, 0.6, size=11, colour=colours.text_muted)
     return slide
 
 
-def _health_slide(prs, data: DeckData, accent: str):
+def _health_slide(prs, data: DeckData, colours):
     from pptx.util import Inches, Pt
 
-    slide = prs.slides.add_slide(prs.slide_layouts[_BLANK_LAYOUT])
+    slide = _blank(prs, colours)
     _add_text(slide, "Financial Health & Risk", 0.8, 0.5, 11.5, 0.7,
-              size=30, bold=True, colour=accent)
+              size=30, bold=True, colour=colours.accent)
 
     header_bits = []
     if data.altman_z is not None:
@@ -350,25 +392,40 @@ def _health_slide(prs, data: DeckData, accent: str):
         for index, metric in enumerate(rows, start=1):
             table.cell(index, 0).text = metric.label
             table.cell(index, 1).text = metric.display
-        for row in table.rows:
+
+        # PowerPoint's default table style is a blue-and-white banded
+        # theme. Left alone it puts white cells on a black slide — the one
+        # element that would still look like it came from a different
+        # document. Every cell is filled explicitly, which overrides the
+        # style without having to swap the style GUID.
+        from pptx.dml.color import RGBColor
+
+        for row_index, row in enumerate(table.rows):
+            header = row_index == 0
             for cell in row.cells:
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = RGBColor.from_string(
+                    colours.surface_alt if header else colours.surface)
                 for paragraph in cell.text_frame.paragraphs:
                     for run in paragraph.runs:
                         run.font.size = Pt(12)
+                        run.font.bold = header
+                        run.font.color.rgb = RGBColor.from_string(
+                            colours.accent if header else colours.text)
 
     _add_text(slide,
               "Values shown as “not reported” were unavailable for this company — "
               "commonly the case for financials, where several corporate ratios do not apply. "
               "They are not zeros.",
-              0.8, 6.4, 11.5, 0.6, size=11)
+              0.8, 6.4, 11.5, 0.6, size=11, colour=colours.text_muted)
     return slide
 
 
-def _chart_slide(prs, title: str, png: bytes, accent: str):
+def _chart_slide(prs, title: str, png: bytes, colours):
     from pptx.util import Inches
 
-    slide = prs.slides.add_slide(prs.slide_layouts[_BLANK_LAYOUT])
-    _add_text(slide, title, 0.8, 0.5, 11.5, 0.7, size=28, bold=True, colour=accent)
+    slide = _blank(prs, colours)
+    _add_text(slide, title, 0.8, 0.5, 11.5, 0.7, size=28, bold=True, colour=colours.accent)
     slide.shapes.add_picture(io.BytesIO(png), Inches(0.8), Inches(1.4), width=Inches(11.7))
     return slide
 
@@ -389,19 +446,19 @@ def build_deck(data: DeckData) -> Tuple[Optional[bytes], Optional[str]]:
         from pptx import Presentation
         from pptx.util import Inches
 
-        brand_name, accent = _theme()
+        brand_name, colours = _theme()
 
         prs = Presentation()
         prs.slide_width = Inches(_SLIDE_WIDTH_IN)
         prs.slide_height = Inches(_SLIDE_HEIGHT_IN)
 
-        _title_slide(prs, data, brand_name, accent)
-        _synthesis_slide(prs, data, accent)
-        _valuation_slide(prs, data, accent)
-        _health_slide(prs, data, accent)
+        _title_slide(prs, data, brand_name, colours)
+        _synthesis_slide(prs, data, colours)
+        _valuation_slide(prs, data, colours)
+        _health_slide(prs, data, colours)
         for title, png in data.charts:
             if png:
-                _chart_slide(prs, title, png, accent)
+                _chart_slide(prs, title, png, colours)
 
         buffer = io.BytesIO()
         prs.save(buffer)

@@ -5669,9 +5669,25 @@ else:
         # Brand identity for the exported sheet. A white-label licensee's
         # report must not carry this app's name out of the building.
         from branding import brand as _brand
+        from export_theme import palette as _export_palette
         _brand_now = _brand()
         _brand_name = _brand_now.name
-        _accent = _brand_now.accent_color or "#3b82f6"
+        # The tear sheet is an exported document, so it takes the export
+        # palette rather than the viewer's current theme (see export_theme).
+        # It is the same palette the PowerPoint deck uses, so a PDF and a
+        # deck of the same company look like the same document.
+        _ec = _export_palette()
+        _accent = _ec.css("accent")
+        _ec_bg = _ec.css("background")
+        _ec_surface = _ec.css("surface")
+        _ec_text = _ec.css("text")
+        _ec_strong = _ec.css("text_strong")
+        _ec_muted = _ec.css("text_muted")
+        _ec_border = _ec.css("border")
+        # Lifted for contrast on black — the #16a34a/#dc2626 pair this sheet
+        # used is tuned for a white page and reads as mud here.
+        _ec_positive = _ec.css("positive")
+        _ec_negative = _ec.css("negative")
 
         # 2. Determine the CIO Verdict
         if macro_risk_flag:
@@ -5712,7 +5728,7 @@ else:
 
         website = standardized.website or ''
         domain = website.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
-        logo_html = f'<img src="https://logo.clearbit.com/{domain}" onerror="this.style.display=\'none\'" style="height: 55px; width: 55px; object-fit: contain; margin-right: 20px; border-radius: 8px; border: 1px solid #e2e8f0; padding: 2px; background: white;">' if domain else ''
+        logo_html = f'<img src="https://logo.clearbit.com/{domain}" onerror="this.style.display=\'none\'" style="height: 55px; width: 55px; object-fit: contain; margin-right: 20px; border-radius: 8px; border: 1px solid {_ec_border}; padding: 2px; background: white;">' if domain else ''
 
         # 3. Build the HTML Template
         tear_sheet_html = f"""
@@ -5723,27 +5739,27 @@ else:
                     {logo_html}
                     <div>
                         <div style="font-size: 0.8rem; font-weight: 700; color: {_accent}; letter-spacing: 2px; margin-bottom: 4px;">POWERED BY {_brand_name.upper()}</div>
-                        <h1 style="margin:0; font-size: 2.5rem; color: #0f172a; letter-spacing: -1px;">{ticker_symbol}</h1>
-                        <p style="margin:4px 0 0 0; color: #64748b; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 1px;">Institutional Tear Sheet • {report_date}</p>
+                        <h1 style="margin:0; font-size: 2.5rem; color: {_ec_strong}; letter-spacing: -1px;">{ticker_symbol}</h1>
+                        <p style="margin:4px 0 0 0; color: {_ec_muted}; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 1px;">Institutional Tear Sheet • {report_date}</p>
                     </div>
                 </div>
                 <div style="text-align: right;">
-                    <h2 style="margin:0; font-size: 2.2rem; color: #0f172a;">${current_price:.2f}</h2>
+                    <h2 style="margin:0; font-size: 2.2rem; color: {_ec_strong};">${current_price:.2f}</h2>
                     <span style="background-color: {verdict_color}; color: white; padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 0.9rem; display: inline-block; margin-top: 8px; letter-spacing: 0.5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{verdict}</span>
                 </div>
             </div>
 
             <div class="ts-section">
                 <h3 class="ts-title">Chief Investment Officer Thesis</h3>
-                <p style="font-size: 1.05rem; color: #1e293b; line-height: 1.7;"><strong>Primary Driver:</strong> {reason}</p>
-                <p style="font-size: 0.95rem; color: #475569; line-height: 1.6; border-left: 3px solid #e2e8f0; padding-left: 15px; margin-top: 15px;">{(standardized.business_summary or 'Business summary not available.')[:450]}...</p>
+                <p style="font-size: 1.05rem; color: {_ec_text}; line-height: 1.7;"><strong>Primary Driver:</strong> {reason}</p>
+                <p style="font-size: 0.95rem; color: {_ec_muted}; line-height: 1.6; border-left: 3px solid {_accent}; padding-left: 15px; margin-top: 15px;">{(standardized.business_summary or 'Business summary not available.')[:450]}...</p>
             </div>
 
             <div class="ts-grid">
                 <div class="ts-card">
                     <h4>Valuation & DCF</h4>
                     <div class="ts-metric"><span class="ts-label">Intrinsic Value</span> <span class="ts-value">{_money(_intrinsic)}</span></div>
-                    <div class="ts-metric"><span class="ts-label">Margin of Safety</span> <span class="ts-value" style="color: {'#64748b' if _mos is None else ('#16a34a' if _mos > 0 else '#dc2626')};">{_pct(_mos)}</span></div>
+                    <div class="ts-metric"><span class="ts-label">Margin of Safety</span> <span class="ts-value" style="color: {_ec_muted if _mos is None else (_ec_positive if _mos > 0 else _ec_negative)};">{_pct(_mos)}</span></div>
                     <div class="ts-metric"><span class="ts-label">FCF Yield</span> <span class="ts-value">{fmt_num(fcf_yield_val, "%")}</span></div>
                 </div>
                 <div class="ts-card">
@@ -5762,7 +5778,7 @@ else:
 
             <div class="ts-footer">
                 <p>Generated by <strong>{_brand_name}</strong> | Not investment advice. Produced from public market data for research purposes. Algorithmic execution carries inherent risk; verify all execution parameters via broker.</p>
-                <p style="margin-top:6px; font-size:0.78rem; color:#94a3b8;">Figures shown as &ldquo;Not reported&rdquo; were unavailable at export time. They are never assumed to be zero.</p>
+                <p style="margin-top:6px; font-size:0.78rem; color:{_ec_muted};">Figures shown as &ldquo;Not reported&rdquo; were unavailable at export time. They are never assumed to be zero.</p>
             </div>
         </div>
 
@@ -5770,16 +5786,21 @@ else:
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 
             .tear-sheet {{
-                background-color: #ffffff;
-                color: #0f172a;
+                background-color: {_ec_bg};
+                color: {_ec_text};
                 padding: 40px 50px;
                 border-radius: 12px;
                 margin-top: 20px;
                 font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+                box-shadow: 0 10px 30px rgba(0,0,0,0.45);
                 position: relative;
                 overflow: hidden;
-                border: 1px solid #e2e8f0;
+                border: 1px solid {_ec_border};
+                /* Without this the background is dropped when printing —
+                   browsers strip backgrounds to save ink by default, which
+                   would put this document's light text on white paper. */
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
             }}
             .ts-top-accent {{
                 position: absolute;
@@ -5787,21 +5808,21 @@ else:
                 left: 0;
                 width: 100%;
                 height: 6px;
-                background: linear-gradient(90deg, {_accent}, #0f172a);
+                background: linear-gradient(90deg, {_accent}, {_ec_bg});
             }}
             .ts-header {{
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                border-bottom: 2px solid #f1f5f9;
+                border-bottom: 2px solid {_ec_border};
                 padding-bottom: 25px;
                 margin-bottom: 25px;
             }}
             .ts-section {{ margin-bottom: 35px; }}
             .ts-title {{
-                border-bottom: 2px solid #e2e8f0;
+                border-bottom: 2px solid {_ec_border};
                 padding-bottom: 10px;
-                color: #0f172a;
+                color: {_ec_strong};
                 text-transform: uppercase;
                 font-size: 0.85rem;
                 letter-spacing: 1.5px;
@@ -5814,20 +5835,21 @@ else:
                 margin-bottom: 30px;
             }}
             .ts-card {{
-                background-color: #f8fafc;
+                background-color: {_ec_surface};
                 padding: 20px;
-                border-top: 3px solid #0f172a;
+                border-top: 3px solid {_accent};
                 border-radius: 0 0 8px 8px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+                border: 1px solid {_ec_border};
+                border-top-width: 3px;
             }}
             .ts-card h4 {{
                 margin-top: 0;
-                color: #475569;
+                color: {_ec_muted};
                 margin-bottom: 15px;
                 font-size: 0.85rem;
                 text-transform: uppercase;
                 letter-spacing: 1px;
-                border-bottom: 1px solid #e2e8f0;
+                border-bottom: 1px solid {_ec_border};
                 padding-bottom: 8px;
             }}
             .ts-metric {{
@@ -5837,13 +5859,13 @@ else:
                 margin-bottom: 8px;
                 font-size: 0.95rem;
             }}
-            .ts-label {{ color: #64748b; }}
-            .ts-value {{ font-weight: 600; color: #0f172a; }}
+            .ts-label {{ color: {_ec_muted}; }}
+            .ts-value {{ font-weight: 600; color: {_ec_strong}; }}
             .ts-footer {{
                 text-align: center;
                 font-size: 0.75rem;
-                color: #94a3b8;
-                border-top: 1px solid #f1f5f9;
+                color: {_ec_muted};
+                border-top: 1px solid {_ec_border};
                 padding-top: 20px;
                 letter-spacing: 0.5px;
             }}
