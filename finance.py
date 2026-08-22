@@ -15,6 +15,8 @@ from technical_indicators import compute_sma_lines, detect_sma_crossovers, compu
 from risk_analytics import compute_rolling_volatility, compute_annualized_volatility, compute_historical_var, compute_parametric_var, compute_expected_shortfall, interpret_tail_risk, compute_log_returns, compute_max_drawdown, compute_drawdown_series, compute_annualized_return, compute_sharpe_ratio, interpret_sharpe_ratio, compute_sortino_ratio, compute_downside_deviation, compute_calmar_ratio, interpret_calmar_ratio, compute_risk_score, compute_hurst_exponent
 from portfolio_analytics import build_aligned_returns, compute_correlation_matrix, compute_portfolio_diversification, compute_capm_beta, compute_performance_attribution, compute_efficient_frontier
 from report_export import generate_tear_sheet_pdf
+import export_deck
+import export_workbook
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS
@@ -3787,16 +3789,34 @@ else:
                         st.warning("Missing market capitalization data. Cannot compute WACC/DCF reliably.")
                     else:
                         st.warning("Negative Free Cash Flow or missing shares. Cannot compute DCF reliably.")
+                    # PLACEHOLDERS ONLY — these keep the names bound for code
+                    # further down that would otherwise raise NameError. They are
+                    # NOT a valuation. Every consumer must gate on
+                    # `dcf_result is not None and dcf_result.ok` before reading
+                    # them; rendering these zeroes is how the tear sheet once
+                    # told a client Rivian's intrinsic value was $0.00.
                     intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
 
             except ZeroDivisionError:
                 # Terminal value is undefined when WACC exactly equals the terminal
                 # growth rate used in the Gordon Growth model.
                 st.error(f"DCF Engine Error: the discount rate (WACC) came out equal to the terminal growth rate ({DCF.terminal_growth_rate*100:.0f}%), which makes the terminal value mathematically undefined. Try adjusting the WACC or growth sliders.")
+                # PLACEHOLDERS ONLY — these keep the names bound for code
+                # further down that would otherwise raise NameError. They are
+                # NOT a valuation. Every consumer must gate on
+                # `dcf_result is not None and dcf_result.ok` before reading
+                # them; rendering these zeroes is how the tear sheet once
+                # told a client Rivian's intrinsic value was $0.00.
                 intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
             except Exception as e:
                 log_exception(logger, "calc.error", section="dcf_engine", ticker=ticker_symbol)
                 st.error(f"Unexpected DCF Engine error: {type(e).__name__}: {e}")
+                # PLACEHOLDERS ONLY — these keep the names bound for code
+                # further down that would otherwise raise NameError. They are
+                # NOT a valuation. Every consumer must gate on
+                # `dcf_result is not None and dcf_result.ok` before reading
+                # them; rendering these zeroes is how the tear sheet once
+                # told a client Rivian's intrinsic value was $0.00.
                 intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
 
         # ==========================================
@@ -5320,8 +5340,14 @@ else:
                 # 1. Gather variables from previous sections dynamically to feed the logic
                 # (Using fallback values if previous sections haven't fully executed)
                 current_p = standardized.current_price if standardized.current_price is not None else 0
-                target_v = intrinsic_value if 'intrinsic_value' in locals() else 0
-                mos_val = margin_of_safety if 'margin_of_safety' in locals() else 0
+                # Same rule as the tear sheet below: a DCF that could not be
+                # computed must not become a $0.00 intrinsic value. It is
+                # worse here than in a metric card, because this section
+                # states it as prose — "its calculated intrinsic value of
+                # $0.00" reads as a finding rather than as missing data.
+                _briefing_dcf_ok = dcf_result is not None and dcf_result.ok
+                target_v = intrinsic_value if (_briefing_dcf_ok and 'intrinsic_value' in locals()) else None
+                mos_val = margin_of_safety if (_briefing_dcf_ok and 'margin_of_safety' in locals()) else None
 
                 # Smart money proxies (reuse the values computed in Path 4 instead of re-deriving them)
                 insider_own = insider_pct if 'insider_pct' in locals() and insider_pct is not None else 0
@@ -5337,7 +5363,14 @@ else:
 
                 # 2. Algorithmic Narrative Logic Block
                 # Valuation Pillar
-                if mos_val > 0:
+                if mos_val is None:
+                    valuation_narrative = (
+                        f"No discounted cash flow valuation could be produced for this company, so "
+                        f"there is no intrinsic value or margin of safety to compare the market "
+                        f"price of ${current_p:.2f} against. This section therefore makes no claim "
+                        f"about whether the asset is cheap or expensive."
+                    )
+                elif mos_val > 0:
                     valuation_narrative = f"The asset displays a positive margin of safety ({mos_val:.1f}%), suggesting it is currently underpriced relative to its intrinsic value of ${target_v:.2f} derived via discounted free cash flows."
                 else:
                     valuation_narrative = f"The asset trades at a premium relative to its calculated intrinsic value of ${target_v:.2f}. The current market price of ${current_p:.2f} reflects an baked-in growth premium, narrowing the statistical margin of safety ({mos_val:.1f}%)."
@@ -5348,6 +5381,15 @@ else:
                 else:
                     ownership_narrative = f"The equity profile is highly institutionalized with {inst_own:.2f}% controlled by major asset managers, while structural insider ownership sits at a lean {insider_own:.2f}%. Capital allocation decisions will be heavily policed by external institutional blocks."
 
+                # The entry-window claim is derived from the DCF's projected
+                # cash flows. Without a DCF it has nothing behind it, so it is
+                # dropped rather than restated with missing inputs.
+                _entry_window_sentence = (
+                    " If the default projected cash flow compound annual growth rate holds true, "
+                    "current price levels represent a calculated entry window for risk-adjusted "
+                    "accounts." if mos_val is not None else ""
+                )
+
                 # Synthesis Construction
                 briefing_text = f"""### **INVESTMENT MEMORANDUM**
                 **Ticker Target:** {ticker_symbol} | **Generated:** {pd.Timestamp.now().strftime('%B %d, %Y')}
@@ -5355,7 +5397,7 @@ else:
                 ---
 
                 #### **1. Core Valuation & Pricing Discrepancy**
-                {valuation_narrative} {peer_text} the asset's structural return profile requires consistent capital efficiency to sustain its trading multiple. If the default projected cash flow compound annual growth rate holds true, current price levels represent a calculated entry window for risk-adjusted accounts.
+                {valuation_narrative} {peer_text} the asset's structural return profile requires consistent capital efficiency to sustain its trading multiple.{_entry_window_sentence}
 
                 #### **2. Market Microstructure & Ownership Alignment**
                 {ownership_narrative} Recent regulatory filings indicate that the supply dynamics are tightly controlled by long-term capital allocators, reducing the probability of erratic, retail-driven liquidity drawdowns.
@@ -5598,17 +5640,56 @@ else:
         st.header("Quantitative Tear Sheet")
         st.markdown("Press **Command + P** (Mac) or **Ctrl + P** (Windows) to save this final report as a PDF, or use the **Generate PDF** button below for a direct download.")
 
-        # 1. Safely extract variables
-        _intrinsic = intrinsic_price if 'intrinsic_price' in locals() else 0.0
-        _mos = margin_of_safety if 'margin_of_safety' in locals() else 0.0
-        _kelly = final_allocation if 'final_allocation' in locals() else 0.0
+        # 1. Safely extract variables.
+        #
+        # A FAILED DCF MUST NOT RENDER AS $0.00. This block used to fall back
+        # to 0.0 for intrinsic value and margin of safety, which printed a
+        # fabricated valuation onto the most client-facing artefact this app
+        # produces — and then fed that same fabricated 0.0 into the verdict
+        # logic below, so a company with no valuation still got classified as
+        # though it had one. Negative free cash flow is ordinary rather than
+        # exotic, so this fired on real companies, not edge cases.
+        # Availability is read off dcf_result exactly the way the Executive
+        # Digest reads it (see the dcf_ok argument to collect_flags).
+        _dcf_ok = dcf_result is not None and dcf_result.ok
+        _intrinsic = intrinsic_price if (_dcf_ok and 'intrinsic_price' in locals()) else None
+        _mos = margin_of_safety if (_dcf_ok and 'margin_of_safety' in locals()) else None
+        _kelly = final_allocation if 'final_allocation' in locals() else None
         _altman_display = fmt_num(altman_z)
+
+        def _money(value):
+            return f"${value:,.2f}" if value is not None else "Not reported"
+
+        def _pct(value, decimals=2):
+            return f"{value:.{decimals}f}%" if value is not None else "Not reported"
+
+        def _plain(value, decimals=2):
+            return f"{value:.{decimals}f}" if value is not None else "Not reported"
+
+        # Brand identity for the exported sheet. A white-label licensee's
+        # report must not carry this app's name out of the building.
+        from branding import brand as _brand
+        _brand_now = _brand()
+        _brand_name = _brand_now.name
+        _accent = _brand_now.accent_color or "#3b82f6"
 
         # 2. Determine the CIO Verdict
         if macro_risk_flag:
             verdict = "STRONG AVOID"
             verdict_color = "#dc2626"
             reason = f"Systemic market risk (VIX > {effective_risk().vix_high_risk_threshold:.0f}). Capital preservation prioritized over individual asset alpha."
+        elif not _dcf_ok:
+            # Every branch below compares a margin of safety against a
+            # threshold. Without a DCF there is no margin of safety, so the
+            # honest answer is to grade the business and say plainly that the
+            # price has not been judged — not to grade it against zero.
+            verdict = "NO VALUATION"
+            verdict_color = "#64748b"
+            reason = (
+                f"Fundamental checks scored {score_pct:.0f}%, but a discounted cash flow "
+                "valuation could not be computed for this company, so there is no margin of "
+                "safety to judge the current price against. This assesses the business only."
+            )
         elif score_pct >= TEAR_SHEET.strong_buy_min_score_pct and _mos > TEAR_SHEET.strong_buy_min_margin_of_safety:
             verdict = "STRONG BUY"
             verdict_color = "#16a34a"
@@ -5641,7 +5722,7 @@ else:
                 <div style="display: flex; align-items: center;">
                     {logo_html}
                     <div>
-                        <div style="font-size: 0.8rem; font-weight: 700; color: #3b82f6; letter-spacing: 2px; margin-bottom: 4px;">POWERED BY QUANTIX</div>
+                        <div style="font-size: 0.8rem; font-weight: 700; color: {_accent}; letter-spacing: 2px; margin-bottom: 4px;">POWERED BY {_brand_name.upper()}</div>
                         <h1 style="margin:0; font-size: 2.5rem; color: #0f172a; letter-spacing: -1px;">{ticker_symbol}</h1>
                         <p style="margin:4px 0 0 0; color: #64748b; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 1px;">Institutional Tear Sheet • {report_date}</p>
                     </div>
@@ -5661,8 +5742,8 @@ else:
             <div class="ts-grid">
                 <div class="ts-card">
                     <h4>Valuation & DCF</h4>
-                    <div class="ts-metric"><span class="ts-label">Intrinsic Value</span> <span class="ts-value">${_intrinsic:.2f}</span></div>
-                    <div class="ts-metric"><span class="ts-label">Margin of Safety</span> <span class="ts-value" style="color: {'#16a34a' if _mos > 0 else '#dc2626'};">{_mos:.2f}%</span></div>
+                    <div class="ts-metric"><span class="ts-label">Intrinsic Value</span> <span class="ts-value">{_money(_intrinsic)}</span></div>
+                    <div class="ts-metric"><span class="ts-label">Margin of Safety</span> <span class="ts-value" style="color: {'#64748b' if _mos is None else ('#16a34a' if _mos > 0 else '#dc2626')};">{_pct(_mos)}</span></div>
                     <div class="ts-metric"><span class="ts-label">FCF Yield</span> <span class="ts-value">{fmt_num(fcf_yield_val, "%")}</span></div>
                 </div>
                 <div class="ts-card">
@@ -5673,14 +5754,15 @@ else:
                 </div>
                 <div class="ts-card">
                     <h4>Execution & Risk</h4>
-                    <div class="ts-metric"><span class="ts-label">Kelly-Style Sizing</span> <span class="ts-value">{_kelly:.2f}%</span></div>
-                    <div class="ts-metric"><span class="ts-label">Z-Score (Trend)</span> <span class="ts-value">{current_z_score:.2f}</span></div>
+                    <div class="ts-metric"><span class="ts-label">Kelly-Style Sizing</span> <span class="ts-value">{_pct(_kelly)}</span></div>
+                    <div class="ts-metric"><span class="ts-label">Z-Score (Trend)</span> <span class="ts-value">{_plain(current_z_score)}</span></div>
                     <div class="ts-metric"><span class="ts-label">1-Day VaR ({var_confidence:.0%})</span> <span class="ts-value">{f"{historical_var * 100:.2f}%" if historical_var is not None else "N/A"}</span></div>
                 </div>
             </div>
 
             <div class="ts-footer">
-                <p>Generated by <strong>Quantix Terminal</strong> | Algorithmic execution carries inherent risk. Verify all execution parameters via broker.</p>
+                <p>Generated by <strong>{_brand_name}</strong> | Not investment advice. Produced from public market data for research purposes. Algorithmic execution carries inherent risk; verify all execution parameters via broker.</p>
+                <p style="margin-top:6px; font-size:0.78rem; color:#94a3b8;">Figures shown as &ldquo;Not reported&rdquo; were unavailable at export time. They are never assumed to be zero.</p>
             </div>
         </div>
 
@@ -5705,7 +5787,7 @@ else:
                 left: 0;
                 width: 100%;
                 height: 6px;
-                background: linear-gradient(90deg, #3b82f6, #0f172a); /* Updated gradient to match Quantix blue */
+                background: linear-gradient(90deg, {_accent}, #0f172a);
             }}
             .ts-header {{
                 display: flex;
@@ -5765,7 +5847,7 @@ else:
                 padding-top: 20px;
                 letter-spacing: 0.5px;
             }}
-            .ts-footer strong {{ color: #3b82f6; font-weight: 700; }}
+            .ts-footer strong {{ color: {_accent}; font-weight: 700; }}
 
             @media print {{
                 body * {{ visibility: hidden; }}
@@ -5786,14 +5868,170 @@ else:
         """
         st.html(tear_sheet_html)
 
-        if st.button("Generate PDF Report"):
-            with st.spinner("Rendering PDF..."):
-                pdf_bytes, pdf_error = generate_tear_sheet_pdf(tear_sheet_html)
-            if pdf_bytes is not None:
-                st.session_state["_tear_sheet_pdf"] = {"ticker": ticker_symbol, "bytes": pdf_bytes}
-            else:
-                st.session_state.pop("_tear_sheet_pdf", None)
-                st.warning(pdf_error)
+        # --- EXPORTS -------------------------------------------------------
+        # Three formats because they are for three different jobs, not three
+        # skins on one: the PDF is what you send, the deck is what you
+        # present and finish editing, the workbook is what you re-model.
+        # Each is generated on demand — building all three on every rerun
+        # would cost seconds of chart rendering for exports nobody clicked.
+        st.markdown("---")
+        st.subheader("Export this analysis")
+        _export_cols = st.columns(3)
+
+        with _export_cols[0]:
+            st.caption("**PDF** — fixed layout, for sending.")
+            if st.button("Generate PDF Report", key="_export_pdf_btn"):
+                with st.spinner("Rendering PDF..."):
+                    pdf_bytes, pdf_error = generate_tear_sheet_pdf(tear_sheet_html)
+                if pdf_bytes is not None:
+                    st.session_state["_tear_sheet_pdf"] = {"ticker": ticker_symbol, "bytes": pdf_bytes}
+                else:
+                    st.session_state.pop("_tear_sheet_pdf", None)
+                    st.warning(pdf_error)
+
+        with _export_cols[1]:
+            st.caption("**PowerPoint** — native editable slides.")
+            _deck_ok, _deck_reason = export_deck.is_available()
+            if not _deck_ok:
+                st.info(_deck_reason)
+            elif st.button("Generate PowerPoint", key="_export_pptx_btn"):
+                with st.spinner("Building deck..."):
+                    _charts = []
+                    for _title, _figure in (("Price & Technicals", locals().get("fig")),
+                                            ("Risk Profile", locals().get("fig_risk_gauge"))):
+                        if _figure is None:
+                            continue
+                        _png = export_deck.chart_png(_figure)
+                        if _png:
+                            _charts.append((_title, _png))
+
+                    _deck_data = export_deck.DeckData(
+                        ticker=ticker_symbol,
+                        company_name=standardized.long_name or "",
+                        sector=standardized.sector or "",
+                        alignment_verdict=fundamentals.alignment_verdict,
+                        alignment_pct=score_pct,
+                        # The SAME ranked narrative the Executive Digest shows.
+                        strengths=tuple(f.text for f in _digest_strengths),
+                        concerns=tuple(f.text for f in _digest_concerns),
+                        current_price=current_price,
+                        intrinsic_price=_intrinsic,
+                        margin_of_safety_pct=_mos,
+                        dcf_status=(dcf_result.status if _dcf_ok else ""),
+                        dcf_unavailable_reason=(
+                            "" if _dcf_ok else
+                            (dcf_result.reason if dcf_result is not None and dcf_result.reason
+                             else "A discounted cash flow valuation could not be computed.")
+                        ),
+                        wacc=(dcf_result.wacc if _dcf_ok else None),
+                        altman_z=fundamentals.altman_z,
+                        altman_verdict=fundamentals.altman_verdict,
+                        risk_grade=risk_score_result.grade,
+                        metrics=tuple(
+                            export_deck.Metric(
+                                c.label,
+                                None if c.value is None else (
+                                    c.value * 100 if c.key in ("net_margin",) else c.value),
+                                "%" if c.key in ("net_margin", "roic", "fcf_yield") else "",
+                            )
+                            for c in fundamentals.scorecard_checks
+                        ),
+                        charts=tuple(_charts),
+                    )
+                    _deck_bytes, _deck_error = export_deck.build_deck(_deck_data)
+                if _deck_bytes is not None:
+                    st.session_state["_tear_sheet_deck"] = {
+                        "ticker": ticker_symbol, "bytes": _deck_bytes,
+                        "charts": len(_charts),
+                    }
+                else:
+                    st.session_state.pop("_tear_sheet_deck", None)
+                    st.warning(_deck_error)
+
+        with _export_cols[2]:
+            st.caption("**Excel** — real numbers, re-modellable.")
+            _wb_ok, _wb_reason = export_workbook.is_available()
+            if not _wb_ok:
+                st.info(_wb_reason)
+            elif st.button("Generate Excel", key="_export_xlsx_btn"):
+                with st.spinner("Building workbook..."):
+                    _scorecard_rows = tuple(
+                        export_workbook.Row(
+                            label=c.label,
+                            value=None if c.value is None else (
+                                c.value * 100 if c.key in ("net_margin",) else c.value),
+                            unit="%" if c.key in ("net_margin", "roic", "fcf_yield") else "",
+                            percent=c.key in ("net_margin", "roic", "fcf_yield"),
+                            detail=(
+                                f"{'passes' if c.passed else 'fails' if c.passed is not None else 'not evaluable'}"
+                                f" — benchmark: {c.benchmark}"
+                            ),
+                        )
+                        for c in fundamentals.scorecard_checks
+                    )
+                    _valuation_rows = (
+                        export_workbook.Row("Market price", current_price, "USD"),
+                        export_workbook.Row("Intrinsic value (2-stage DCF)", _intrinsic, "USD",
+                                            detail="" if _dcf_ok else "DCF could not be computed"),
+                        export_workbook.Row("Margin of safety", _mos, "%", percent=True),
+                        export_workbook.Row("WACC", (dcf_result.wacc * 100) if _dcf_ok else None,
+                                            "%", percent=True),
+                    )
+                    _risk_rows = (
+                        export_workbook.Row("Altman Z-Score", fundamentals.altman_z, "",
+                                            detail=fundamentals.altman_verdict),
+                        export_workbook.Row("Kelly-style position size", _kelly, "%", percent=True),
+                        export_workbook.Row("Trend Z-Score", current_z_score, ""),
+                    )
+                    _wb_data = export_workbook.WorkbookData(
+                        ticker=ticker_symbol,
+                        company_name=standardized.long_name or "",
+                        sector=standardized.sector or "",
+                        summary_lines=(
+                            f"Verdict: {verdict}",
+                            reason,
+                            f"Blueprint alignment: {score_pct:.0f}% of evaluable checks passed.",
+                        ),
+                        sheets=(
+                            export_workbook.Sheet(
+                                "Scorecard", rows=_scorecard_rows,
+                                note="Benchmarks are those in effect at export time; "
+                                     "a metric with no value was not reported by the filing."),
+                            export_workbook.Sheet("Valuation", rows=_valuation_rows),
+                            export_workbook.Sheet("Risk", rows=_risk_rows),
+                        ),
+                    )
+                    _wb_bytes, _wb_error = export_workbook.build_workbook(_wb_data)
+                if _wb_bytes is not None:
+                    st.session_state["_tear_sheet_workbook"] = {
+                        "ticker": ticker_symbol, "bytes": _wb_bytes}
+                else:
+                    st.session_state.pop("_tear_sheet_workbook", None)
+                    st.warning(_wb_error)
+
+        _cached_deck = st.session_state.get("_tear_sheet_deck")
+        if _cached_deck and _cached_deck["ticker"] == ticker_symbol:
+            st.download_button(
+                "Download PowerPoint",
+                data=_cached_deck["bytes"],
+                file_name=export_deck.filename_for(ticker_symbol),
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="_export_pptx_dl",
+            )
+            if not _cached_deck["charts"]:
+                st.caption(
+                    "Chart slides were skipped — rendering Plotly figures to images needs the "
+                    "`kaleido` package. The rest of the deck is complete.")
+
+        _cached_wb = st.session_state.get("_tear_sheet_workbook")
+        if _cached_wb and _cached_wb["ticker"] == ticker_symbol:
+            st.download_button(
+                "Download Excel",
+                data=_cached_wb["bytes"],
+                file_name=export_workbook.filename_for(ticker_symbol),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="_export_xlsx_dl",
+            )
 
         cached_pdf = st.session_state.get("_tear_sheet_pdf")
         if cached_pdf and cached_pdf["ticker"] == ticker_symbol:

@@ -25,3 +25,17 @@ httpx>=0.27
 # measured at 17/20 on a labelled set of financial headlines against 9/20
 # unmodified. Pure Python, no model download, no heavyweight ML stack.
 vaderSentiment>=3.3
+
+# Advanced exports. python-pptx writes native PowerPoint — real text frames
+# and real table cells, so a recipient can edit the deck rather than receive
+# a picture of one. openpyxl does the same for Excel: numbers land as
+# numbers, which is what separates a workbook from a spreadsheet-shaped PDF.
+# Both are pure Python and local; nothing is uploaded to a conversion service.
+python-pptx>=1.0
+openpyxl>=3.1
+
+# Renders Plotly figures to PNG for the chart slides. Kept optional on
+# purpose — it ships a browser binary and is the piece most likely to fail
+# on a locked-down machine, so export_deck degrades to a deck without chart
+# slides rather than failing the whole export.
+kaleido>=1.0
