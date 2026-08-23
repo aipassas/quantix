@@ -510,3 +510,75 @@ def test_the_pdf_really_comes_out_dark():
     # Nothing may be wider than the paper, or it is trimmed at the edge.
     widest = max((r[2] for r in rects), default=0)
     assert widest <= page_w + 2, f"content is {widest:.0f}px wide on a {page_w:.0f}px page"
+
+
+def test_the_rendered_pdf_page_has_no_white_edges(tmp_path):
+    """Rasterise the PDF and look at it.
+
+    The strongest form of this check, and the one that would have caught
+    the shipped bug on sight: the reported file had a correctly-black card
+    sitting on a white page, which satisfied every structural assertion
+    above while looking obviously wrong to a person. Sampling the actual
+    edge pixels cannot be satisfied by a black box in the middle.
+
+    Skips where poppler isn't installed, so this stays a bonus check on
+    machines that can do it rather than a hard dependency.
+    """
+    import shutil
+    import subprocess
+
+    pdftoppm = shutil.which("pdftoppm")
+    if not pdftoppm:
+        pytest.skip("poppler (pdftoppm) not installed — structural checks still ran")
+    Image = pytest.importorskip("PIL.Image")
+
+    from report_export import generate_tear_sheet_pdf
+
+    colours = export_theme.palette()
+    fragment = f"""
+    <div class="tear-sheet">
+      <h1 class="ts-title">AAPL</h1>
+      <p>Not investment advice.</p>
+    </div>
+    <style>
+      .tear-sheet {{ background-color: {colours.css('background')};
+                     color: {colours.css('text')}; padding: 40px 50px;
+                     border-radius: 12px; margin-top: 20px;
+                     border: 1px solid {colours.css('border')};
+                     -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+      .ts-title {{ color: {colours.css('text_strong')}; }}
+      /* The rules that broke it: written for Cmd+P in the browser, but
+         WeasyPrint renders in print media and picked them up too. */
+      @media print {{
+        body * {{ visibility: hidden; }}
+        .tear-sheet, .tear-sheet * {{ visibility: visible; }}
+        .tear-sheet {{ position: absolute; left: 0; top: 0; width: 100%;
+                       padding: 0; box-shadow: none; border: none; }}
+      }}
+    </style>
+    """
+    pdf, error = generate_tear_sheet_pdf(fragment)
+    if pdf is None and "isn't available" in (error or ""):
+        pytest.skip("WeasyPrint's native Pango dependency is missing here")
+    assert error is None and pdf
+
+    source = tmp_path / "sheet.pdf"
+    source.write_bytes(pdf)
+    subprocess.run([pdftoppm, "-png", "-r", "60", "-f", "1", "-l", "1",
+                    str(source), str(tmp_path / "page")], check=True)
+    rendered = sorted(tmp_path.glob("page*.png"))
+    assert rendered, "pdftoppm produced no image"
+
+    image = Image.open(rendered[0]).convert("RGB")
+    width, height = image.size
+    edges = {
+        "top-right": (width - 3, 2),
+        "bottom-left": (2, height - 3),
+        "bottom-right": (width - 3, height - 3),
+        "mid-left": (2, height // 2),
+        "mid-right": (width - 3, height // 2),
+        "mid-bottom": (width // 2, height - 3),
+    }
+    light = {name: image.getpixel(xy) for name, xy in edges.items()
+             if sum(image.getpixel(xy)) / 3 > 200}
+    assert not light, f"page has white edges at {light} — the sheet is not full bleed"
