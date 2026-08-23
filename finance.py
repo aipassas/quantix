@@ -69,6 +69,7 @@ import screener as screener_module
 import screener_templates
 import quick_stats
 import profile_menu
+import alignment_card
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -419,7 +420,7 @@ st.markdown(f"""
         border-left: 4px solid {_theme.card_accent}; /* Neon Green Action Border */
         border-radius: 6px;
         padding: 15px 20px;
-        transition: border-left-color 0.3s ease, transform 0.2s ease;
+        transition: border-left-color 200ms ease, transform 200ms ease;
     }}
 
     /* Hover state */
@@ -591,6 +592,9 @@ st.markdown(f"""
     }}
     [data-testid="stExpander"] summary {{
         color: {_theme.expander_text} !important;
+        border-radius: 6px;
+        transition: background-color 200ms ease, color 200ms ease,
+                    box-shadow 200ms ease;
     }}
     /* Streamlit renders the label as a <p>, which inherits the body colour
        and weight rather than the summary's — so the colour above alone
@@ -603,6 +607,111 @@ st.markdown(f"""
     }}
     [data-testid="stExpander"] summary:hover p {{
         color: {_theme.card_accent} !important;
+    }}
+
+    /* --- Micro-interactions ------------------------------------------
+       Three things the app was missing, and one it only half had.
+
+       SIDEBAR PANELS ARE THE MENU. This app has no nav rail; the eight
+       st.sidebar.expander panels (Branding, Slack Alerts, Email Digest,
+       Help & Support, API Keys, Find a ticker, Manage Watchlists and the
+       thresholds panel) are what "sidebar menu items" means here. They
+       already changed the title's COLOUR on hover, which on a near-black
+       ground is easy to miss — so the whole header now takes a surface
+       and a left rail, which is legible peripherally.
+
+       THE WATCHLIST ✕ RECEDES, IT DOES NOT DISAPPEAR. The brief asks to
+       "hover to show edit/delete options". Delete already exists and is
+       always visible; there is no edit operation on a watchlist row at
+       all (the only per-row mutation in the model is remove). Hiding the
+       one working control behind :hover would make it unreachable on
+       touch — and this app's sidebar becomes a full-screen overlay on a
+       phone, so that is not a hypothetical. It is de-emphasised at rest
+       and comes fully forward on row hover or keyboard focus instead:
+       the same "the row has actions" feel, without a control that only
+       a mouse can find. Red only on the button's own hover, where the
+       meaning is destruction rather than loss.
+
+       200ms EVERYWHERE. The app had exactly one transition (the metric
+       card, at 300ms/200ms); every other hover state snapped. These are
+       property-scoped rather than `all`, which would animate layout and
+       fight Plotly's own resizing. */
+    [data-testid="stExpander"] summary:hover,
+    [data-testid="stExpander"] summary:focus-visible {{
+        background-color: {_theme.tab_hover_bg} !important;
+        box-shadow: inset 3px 0 0 0 {_theme.card_accent};
+    }}
+    [data-testid="stExpander"] summary:focus-visible p {{
+        color: {_theme.card_accent} !important;
+    }}
+
+    /* Watchlist rows. The chip nudges toward the pointer; the remove
+       button fades up from 0.45. */
+    [data-testid="stSidebar"] [class*="st-key-wl_go_"] button:hover {{
+        transform: translateX(2px);
+    }}
+    /* The accent border is for UNSELECTED chips only. The active chip's
+       "you are here" is deliberately hueless (see the block above), and
+       an unscoped hover rule here out-specifies its white border and
+       repaints it cyan — measured in-browser, where the current ticker
+       stopped looking current the moment the pointer touched it. */
+    [data-testid="stSidebar"] [class*="st-key-wl_go_"] button[kind="secondary"]:hover {{
+        border-color: {_theme.card_accent} !important;
+    }}
+    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button {{
+        opacity: 0.45;   /* transition supplied by the blanket rule above */
+    }}
+    /* :has() on the row wrapper is what makes hovering the TICKER light
+       up its ✕ — the two are separate st.columns children with no shared
+       hoverable ancestor otherwise. */
+    [data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has([class*="st-key-wl_rm_"]):hover
+        [class*="st-key-wl_rm_"] button,
+    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button:focus-visible {{
+        opacity: 1;
+    }}
+    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button:hover {{
+        opacity: 1;
+        border-color: #ef4444 !important;
+    }}
+    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button:hover p {{
+        color: #ef4444 !important;
+    }}
+
+    /* Every button and tab, main area and sidebar alike. */
+    button[data-testid="stBaseButton-secondary"],
+    button[data-testid="stBaseButton-primary"],
+    button[kind="secondary"],
+    button[kind="primary"] {{
+        /* !important, so this is the ONE list that applies to a button —
+           a per-widget `transition:` further down is silently shadowed by
+           it. Every property any hover state changes must therefore be
+           named here, including the watchlist chip's transform and the
+           remove button's opacity. Verified in-browser via
+           getComputedStyle, not by reading the rule. */
+        transition: background-color 200ms ease, border-color 200ms ease,
+                    color 200ms ease, box-shadow 200ms ease,
+                    opacity 200ms ease, transform 200ms ease !important;
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        transition: background-color 200ms ease, color 200ms ease,
+                    border-color 200ms ease;
+    }}
+
+    /* Motion is decoration; the colour changes carry the meaning on
+       their own for anyone who has asked the OS to stop it. */
+    @media (prefers-reduced-motion: reduce) {{
+        [data-testid="stExpander"] summary,
+        [data-testid="stSidebar"] [class*="st-key-wl_go_"] button,
+        [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button,
+        button[kind="secondary"], button[kind="primary"],
+        .stTabs [data-baseweb="tab"],
+        div[data-testid="metric-container"] {{
+            transition-duration: 1ms !important;
+        }}
+        [data-testid="stSidebar"] [class*="st-key-wl_go_"] button:hover,
+        div[data-testid="metric-container"]:hover {{
+            transform: none !important;
+        }}
     }}
 
     /* --- Top-level panel navigation ---------------------------------
@@ -857,6 +966,18 @@ def process_ticker_data(ticker):
             "status": screened.status,
             "pe": screened.pe_ratio,
             "margin": screened.net_margin_pct,
+            # Everything below is for the card's hover panel only. It costs
+            # no extra request: the bundle above is already loaded and
+            # cached, and these were simply being discarded. EPS and revenue
+            # growth are not on StandardizedFinancials, so they come off the
+            # raw info dict — .get() rather than [] because a thinly covered
+            # ticker reports neither, and the panel says "Not reported".
+            "eps": bundle.info.get("trailingEps"),
+            "revenue_growth": bundle.info.get("revenueGrowth"),
+            "earnings_growth": std.earnings_growth,
+            "return_on_equity": std.return_on_equity,
+            "dividend_yield_pct": std.dividend_yield_pct,
+            "market_cap": std.market_cap,
         }
     except Exception as e:
         # load_ticker_bundle/standardize_financials already handle routine
@@ -889,13 +1010,19 @@ def scan_split_watchlists():
 with st.spinner("Analyzing macro sectors and grouping asset classes..."):
     tech_picks, other_picks = scan_split_watchlists()
 
+    # The cards are markup rather than st.info() so they can carry a hover
+    # panel — see alignment_card's docstring. Injected here rather than in
+    # the global CSS block because the styles are meaningless on any page
+    # that has not drawn a card.
+    st.markdown(alignment_card.css(_theme, _theme.card_accent), unsafe_allow_html=True)
+
     # --- SECTION 1: TECH & GROWTH PORTFOLIO ---
     st.subheader("Top Tech & Growth Alignments")
     if tech_picks:
         t_cols = st.columns(WATCHLIST.cards_shown)
         for i, data in enumerate(tech_picks[:WATCHLIST.cards_shown]):
             with t_cols[i]:
-                st.info(f"**{data['ticker']}**  \n  \nAlignment: {data['status']} ({data['score']:.0f}%)  \nP/E: {data['pe']:.1f}  \nMargin: {data['margin']:.1f}%")
+                st.markdown(alignment_card.card_html(data), unsafe_allow_html=True)
     else:
         st.write("No tech leaders currently pass basic filters.")
 
@@ -907,7 +1034,7 @@ with st.spinner("Analyzing macro sectors and grouping asset classes..."):
         o_cols = st.columns(WATCHLIST.cards_shown)
         for i, data in enumerate(other_picks[:WATCHLIST.cards_shown]):
             with o_cols[i]:
-                st.info(f"**{data['ticker']}**  \n  \nAlignment: {data['status']} ({data['score']:.0f}%)  \nP/E: {data['pe']:.1f}  \nMargin: {data['margin']:.1f}%")
+                st.markdown(alignment_card.card_html(data), unsafe_allow_html=True)
     else:
         st.write("No diversified sector leaders currently pass basic filters.")
 

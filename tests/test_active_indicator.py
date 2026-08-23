@@ -56,9 +56,29 @@ def test_the_active_style_is_scoped_to_selection_keys_only():
     for prefix in SELECTION_PREFIXES:
         assert f'[class*="st-key-{prefix}"] button[kind="primary"]' in SOURCE, prefix
 
-    # No unscoped primary rule that would catch the action buttons too.
-    unscoped = re.findall(r'^\s*button\[kind="primary"\]', CODE, re.M)
-    assert not unscoped, f"unscoped primary rule(s) found: {unscoped}"
+    # No unscoped primary rule that would REPAINT the action buttons too.
+    # Checked by declaration rather than by the selector's mere presence:
+    # the hover work added a blanket `transition:` to every button, which
+    # is unscoped on purpose and changes nothing about how one looks. What
+    # must never be unscoped is appearance — and phrasing it this way also
+    # catches a stBaseButton-primary rule, which the old presence check
+    # would have missed entirely.
+    APPEARANCE = ("background", "border", "color", "font-weight", "box-shadow")
+    for match in re.finditer(r'^\s*button\[(?:kind|data-testid)="(?:st(?:BaseButton-)?)?primary"\]\s*(?:,|\{\{)',
+                             CODE, re.M):
+        body = CODE[CODE.index("{{", match.start()):]
+        body = body[:body.index("}}")]
+        # Property NAMES, not substrings: `transition: background-color
+        # 200ms, border-color 200ms, color 200ms` mentions three of these
+        # inside its value list while declaring none of them.
+        declared = []
+        for chunk in body.lstrip("{").split(";"):
+            name = chunk.split(":", 1)[0].strip() if ":" in chunk else ""
+            if re.fullmatch(r"[a-z-]+", name):   # skips value continuations
+                declared.append(name)
+        painted = [d for d in declared if d.startswith(APPEARANCE)]
+        assert not painted, (
+            f"unscoped primary rule sets {painted} at offset {match.start()}")
 
 
 def test_action_buttons_are_not_restyled_as_selections():
@@ -74,8 +94,13 @@ def test_no_selector_matches_a_wider_key_prefix_than_intended():
     for selector in set(selectors):
         # Every other widget key in the file that would also be caught.
         others = re.findall(r'key=(?:f)?"([a-z_][a-z0-9_]*)', CODE)
+        # Strictly longer, because a selector catching its OWN key family
+        # is the point of the selector — st-key-wl_rm_ is meant to match
+        # wl_rm_{ticker}. The bug this guards was st-key-quick_ reaching
+        # quick_stats_save: a LONGER key belonging to a different widget.
         caught = {k for k in others
-                  if k.startswith(selector) and not k.startswith(tuple(SELECTION_PREFIXES))}
+                  if k.startswith(selector) and len(k) > len(selector)
+                  and not k.startswith(tuple(SELECTION_PREFIXES))}
         assert not caught, f'selector st-key-{selector} also catches {sorted(caught)}'
 
 

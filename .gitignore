@@ -50,3 +50,12 @@ slack_alert_state.json
 # Nothing replayable, but it is a credential store and per-instance state,
 # so it never belongs in the repository.
 accounts_store.json
+
+# Saved screeners and the quick-stats picker: the user's own configuration,
+# same never-committed class as the stores above. Missed when those two
+# features landed, which is how screener_templates.json turned up untracked
+# in a later working tree.
+screener_templates.json
+screener_templates.tmp
+quick_stats.json
+quick_stats.tmp
