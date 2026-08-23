@@ -107,6 +107,46 @@ TRIGGER_LABELS: Dict[str, str] = {
     "fundamental": "Fundamental / risk metric threshold",
 }
 
+# Triggers grouped for the rule builder. Nine flat options in one dropdown
+# is the density the UI task is about: the list mixes "tell me when the
+# price hits X" with "tell me when MACD crosses" with "tell me when Altman
+# Z drops", which are three different questions someone arrives with.
+#
+# Deliberately three groups and not the brief's Fundamental/Technical/Risk:
+# there is no fundamental trigger to put in a Fundamental group. The
+# "fundamental" trigger type reuses risk_alerts.METRICS, which is five RISK
+# metrics — Composite Risk Score, Altman Z, VaR, Expected Shortfall, Max
+# Drawdown. Naming a group Fundamental and filling it with risk metrics
+# would misfile them; naming it honestly leaves the fundamentals for
+# whenever P/E and ROE become alertable.
+TRIGGER_CATEGORIES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("Price", ("price_above", "price_below")),
+    ("Technical signals", ("sma_cross_bullish", "sma_cross_bearish",
+                           "macd_bullish_cross", "macd_bearish_cross",
+                           "rsi_overbought", "rsi_oversold")),
+    ("Risk thresholds", ("fundamental",)),
+)
+
+CATEGORY_NAMES: Tuple[str, ...] = tuple(name for name, _ in TRIGGER_CATEGORIES)
+
+
+def triggers_in(category: str) -> Tuple[str, ...]:
+    """The trigger types offered under one category heading."""
+    for name, triggers in TRIGGER_CATEGORIES:
+        if name == category:
+            return triggers
+    return ()
+
+
+def category_of(trigger_type: str) -> str:
+    """Which heading a trigger belongs under. Falls back to the first
+    category so an unknown type is still reachable rather than orphaned."""
+    for name, triggers in TRIGGER_CATEGORIES:
+        if trigger_type in triggers:
+            return name
+    return CATEGORY_NAMES[0]
+
+
 
 @dataclass
 class AlertRule:

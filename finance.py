@@ -99,6 +99,9 @@ from realtime_alerts import (
     FUNDAMENTAL_TRIGGER_TYPE as RT_FUNDAMENTAL_TRIGGER_TYPE,
     PRICE_TRIGGER_TYPES as RT_PRICE_TRIGGER_TYPES,
     TRIGGER_LABELS as RT_TRIGGER_LABELS,
+    CATEGORY_NAMES as RT_CATEGORY_NAMES,
+    category_of as rt_category_of,
+    triggers_in as rt_triggers_in,
     AlertRule as RealtimeAlertRule,
     TriggerEvent as RealtimeTriggerEvent,
     detect_new_triggers as rt_detect_new_triggers,
@@ -1336,13 +1339,26 @@ if _screener_state:
 # ==========================================
 st.markdown("---")
 st.header("Smart Risk-Aware Alerts")
+# The limitation that changes what someone expects stays on screen; the
+# rest of the explanation moves into the expander. Collapsing the whole
+# caption would bury "this is not a push notification", which is the one
+# sentence that stops someone relying on an alert that will never arrive.
 st.caption(
-    "Alerts built from Quantix's own risk engine (Composite Risk Score, Altman Z-Score, 1-Day VaR, Expected Shortfall, "
-    "Max Drawdown) across your Institutional Watchlist — checked when you click \"Check Alerts\", not a real-time push "
-    "notification. Quantix is a stateless app with no background worker, so this is an on-load snapshot check "
-    "(\"triggered right now\"), not a historical crossing event; live push delivery (email/SMS) would need new "
-    "infrastructure and isn't built here."
+    "Snapshot check across your Institutional Watchlist, run when you click **Check Alerts** — "
+    "not a push notification."
 )
+with st.expander("How these alerts work", expanded=False):
+    st.markdown(
+        "Built from Quantix's own risk engine — Composite Risk Score, Altman Z-Score, 1-Day VaR, "
+        "Expected Shortfall and Max Drawdown — evaluated across every ticker in your Institutional "
+        "Watchlist.\n\n"
+        "Quantix is a stateless app with no background worker, so this is an **on-load snapshot** "
+        "(\"triggered right now\") rather than a historical crossing event: a threshold that was "
+        "breached yesterday and has since recovered will not show. Live push delivery by email or "
+        "SMS would need infrastructure that isn't built here.\n\n"
+        "For continuous per-ticker monitoring while a tab is open, use the Real-Time Alert Engine "
+        "below instead."
+    )
 
 if "risk_alert_rules" not in st.session_state:
     _persisted_alert_rules = load_rules()
@@ -1525,13 +1541,20 @@ def _rt_md_escape_dollar(text: str) -> str:
 st.markdown("---")
 st.header("Real-Time Alert Engine")
 st.caption(
-    "Per-ticker rules on price, technical crossovers, and fundamental/risk thresholds, rechecked automatically "
-    f"every {REALTIME_ALERTS.poll_interval_seconds}s while this tab stays open. Not a background service: closing "
-    "the tab stops monitoring, same as everything else in this stateless app. Delivery is in-app only (no "
-    "email/SMS/push — this app has no messaging credentials to send them with). Rules and trigger history ARE "
-    "saved to a local file and survive a restart, unlike the rest of this app's session-only state. Signed in, "
-    "those rules are private to your account; signed out they're shared by whoever runs this instance."
+    f"Per-ticker rules rechecked every {REALTIME_ALERTS.poll_interval_seconds}s **while this tab stays open** — "
+    "closing it stops monitoring. Delivery is in-app only."
 )
+with st.expander("How these alerts work", expanded=False):
+    st.markdown(
+        f"Rules cover price levels, technical crossovers and risk thresholds, rechecked automatically every "
+        f"{REALTIME_ALERTS.poll_interval_seconds} seconds while this tab is open.\n\n"
+        "**Not a background service.** Closing the tab stops monitoring, same as everything else in this "
+        "stateless app. Delivery is in-app only — no email, SMS or push, because this app has no messaging "
+        "credentials to send them with.\n\n"
+        "Rules and trigger history **are** saved to a local file and survive a restart, unlike the rest of "
+        "this app's session-only state. Signed in, those rules are private to your account; signed out "
+        "they're shared by whoever runs this instance."
+    )
 
 if "rt_alert_rules" not in st.session_state:
     _rt_init_rules, _rt_init_history = rt_load_store()
@@ -1553,13 +1576,38 @@ if "rt_new_ticker" not in st.session_state:
 if "rt_new_price_threshold" not in st.session_state:
     st.session_state["rt_new_price_threshold"] = 100.0
 
-_rt_r1c1, _rt_r1c2 = st.columns([1, 2])
+# Trigger choice is two steps: a category, then the triggers inside it.
+# Nine flat options mixed "price hits X" with "MACD crosses" with "Altman
+# Z drops" — three different questions someone arrives with.
+#
+# The category box keeps its key because its options never change. The
+# trigger box must NOT have one: its options change with the category, and
+# a stored value outside the new list raises on selection. The selected
+# trigger is therefore held in session_state under a non-widget key and
+# passed back as a computed index — the pattern the screener's criteria
+# rows already use for the same reason.
+if "rt_new_type_value" not in st.session_state:
+    st.session_state["rt_new_type_value"] = RT_ALL_TRIGGER_TYPES[0]
+
+_rt_r1c1, _rt_r1c2, _rt_r1c3 = st.columns([1, 1.2, 1.8])
 with _rt_r1c1:
     _rt_new_ticker = st.text_input("Ticker", key="rt_new_ticker", placeholder="e.g. AAPL").strip().upper()
 with _rt_r1c2:
-    _rt_new_type = st.selectbox(
-        "Trigger Condition", RT_ALL_TRIGGER_TYPES, format_func=lambda k: RT_TRIGGER_LABELS[k], key="rt_new_type",
+    _rt_category = st.selectbox(
+        "Alert type", RT_CATEGORY_NAMES,
+        index=RT_CATEGORY_NAMES.index(rt_category_of(st.session_state["rt_new_type_value"])),
+        key="rt_new_category",
+        help="Narrows the trigger list below to one kind of alert.",
     )
+with _rt_r1c3:
+    _rt_choices = list(rt_triggers_in(_rt_category))
+    _rt_current = st.session_state["rt_new_type_value"]
+    _rt_new_type = st.selectbox(
+        "Trigger Condition", _rt_choices,
+        index=_rt_choices.index(_rt_current) if _rt_current in _rt_choices else 0,
+        format_func=lambda k: RT_TRIGGER_LABELS[k],
+    )
+    st.session_state["rt_new_type_value"] = _rt_new_type
 
 _rt_new_threshold = None
 _rt_new_metric = None
