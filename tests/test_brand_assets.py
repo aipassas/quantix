@@ -92,8 +92,30 @@ def test_a_licensee_accent_still_wins():
     assert branding.Brand(name="X", accent_color="#AA3366").accent_color == "#AA3366"
 
 
+def test_the_default_variant_is_the_dark_one():
+    """Every Quantix surface is dark, so the white-ground file renders as
+    a white tile wherever it has been tried. Nothing should reach for it
+    by accident."""
+    assert brand_assets.data_uri() == brand_assets.data_uri("dark")
+    assert brand_assets.data_uri() != brand_assets.data_uri("light")
+
+
+def test_nothing_in_the_app_asks_for_the_light_logo():
+    """A regression guard, not a style rule: the light variant put a white
+    tile in the PDF masthead, caught only by rasterising the page."""
+    import pathlib as _pathlib
+
+    root = _pathlib.Path(__file__).resolve().parent.parent
+    for module in ("finance.py", "export_deck.py"):
+        source = (root / module).read_text()
+        code = "\n".join(line for line in source.splitlines()
+                         if not line.lstrip().startswith("#"))
+        assert 'data_uri("light")' not in code, module
+        assert "light_logo()" not in code, module
+
+
 def test_data_uri_is_a_real_decodable_png():
-    uri = brand_assets.data_uri("light")
+    uri = brand_assets.data_uri("dark")
     assert uri and uri.startswith("data:image/png;base64,")
     raw = base64.b64decode(uri.split(",", 1)[1])
     assert raw[:8] == b"\x89PNG\r\n\x1a\n"
@@ -106,6 +128,7 @@ def test_a_missing_assets_directory_degrades_to_none(tmp_path, monkeypatch):
     assert brand_assets.light_logo() is None
     assert brand_assets.mark() is None
     assert brand_assets.data_uri("light") is None
+    assert brand_assets.data_uri() is None
     assert brand_assets.missing()          # and it says which
 
 

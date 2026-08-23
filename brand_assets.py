@@ -13,12 +13,18 @@ degrade to no logo, never to a broken analysis: the tear sheet, the deck
 and the page config are all things people reach for at the end of a piece
 of work, and losing the work to a decorative asset would be absurd.
 
-THE VARIANTS ARE NOT INTERCHANGEABLE. The full logo exists on a black
-ground and on a white one, and picking the wrong one puts a black slab on
-a white page or a white slab on a dark slide. dark_logo() is for dark
-surfaces, light_logo() for documents and anything printed. The
-transparent mark is separate again and is the only one safe to place on
-an unknown background.
+THE DARK-GROUND LOGO IS THE ONE THIS APP USES. Every Quantix surface is
+dark — the sidebar, the slides, and the tear sheet, which is black on
+purpose (see export_theme: exports do not follow the viewer's light/dark
+preference, because a document that leaves the building should not change
+colour with a personal setting). The white-ground file therefore renders
+as a white tile everywhere it has been tried, so dark is the default and
+light_logo() is kept only because the asset exists and a future white
+document might want it. If you reach for it, check the rendered output
+first — that is how the white tile was caught.
+
+The transparent mark is separate again and is the only variant safe on a
+surface whose colour we do not control, which is exactly the browser tab.
 """
 import base64
 import functools
@@ -92,7 +98,7 @@ def _encode(path: Path, _stamp: float) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def data_uri(which: str = "light") -> Optional[str]:
+def data_uri(which: str = "dark") -> Optional[str]:
     """A `data:image/png;base64,...` URI, or None.
 
     Needed because the PDF is rendered by WeasyPrint from an HTML string
@@ -100,7 +106,7 @@ def data_uri(which: str = "light") -> Optional[str]:
     because the file is ~57 KB and the tear sheet re-renders on every
     interaction with the page.
     """
-    path = {"dark": dark_logo, "light": light_logo, "mark": mark}.get(which, light_logo)()
+    path = {"dark": dark_logo, "light": light_logo, "mark": mark}.get(which, dark_logo)()
     if path is None:
         return None
     try:

@@ -6165,7 +6165,12 @@ else:
             reason = "Fails fundamental safety checks, carries extreme debt, or is severely overvalued relative to cash flow."
 
         # --- DEFINE DATE AND LOGO ---
-        report_date = datetime.date.today().strftime("%B %d, %Y")
+        # "23 Aug 2026", not "August 23, 2026". The masthead is tight now
+        # that the logo is legible at 150px, and the long form wrapped onto
+        # a second line beside it. The short form is also the unambiguous
+        # one internationally, which a document that leaves the building
+        # ought to prefer anyway.
+        report_date = datetime.date.today().strftime("%d %b %Y")
 
         # The masthead carries OUR mark, not the analysed company's.
         #
@@ -6186,10 +6191,16 @@ else:
         _ts_logo_uri = brand_assets.data_uri("dark")
         logo_html = (
             f'<img src="{_ts_logo_uri}" alt="{_brand_name}" '
-            f'style="height: 82px; object-fit: contain; margin-right: 22px;">'
-            # 82px, not 58: the artwork is a SQUARE lockup (mark above
-            # wordmark), so its height is shared between the two and at
-            # 58px the "QUANTIX" line was too small to read in print.
+            f'style="height: 150px; object-fit: contain; margin-right: 26px; '
+            f'flex: 0 0 auto;">'
+            # 150px. The artwork is a SQUARE lockup — mark stacked above
+            # the wordmark — so the height is shared between the two and
+            # only about a fifth of it is the "QUANTIX / INSTITUTIONAL
+            # STOCK ANALYSIS" line. At 58px and again at 82px that line
+            # was illegible in print. Chosen by rendering the masthead at
+            # 82, 130 and 170 and looking at the pages: 130 is the floor
+            # for legibility, 170 makes the logo taller than the ticker
+            # block beside it.
             if _ts_logo_uri else ''
         )
 
@@ -6198,17 +6209,17 @@ else:
         <div class="tear-sheet">
             <div class="ts-top-accent"></div>
             <div class="ts-header">
-                <div style="display: flex; align-items: center;">
+                <div style="display: flex; align-items: center; min-width: 0;">
                     {logo_html}
-                    <div>
+                    <div style="min-width: 0;">
                         <div style="font-size: 0.8rem; font-weight: 700; color: {_accent}; letter-spacing: 2px; margin-bottom: 4px;">POWERED BY {_brand_name.upper()}</div>
                         <h1 style="margin:0; font-size: 2.5rem; color: {_ec_strong}; letter-spacing: -1px;">{ticker_symbol}</h1>
-                        <p style="margin:4px 0 0 0; color: {_ec_muted}; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 1px;">Institutional Tear Sheet • {report_date}</p>
+                        <p style="margin:4px 0 0 0; color: {_ec_muted}; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.6px;">Institutional Tear Sheet • {report_date}</p>
                     </div>
                 </div>
-                <div style="text-align: right;">
+                <div style="text-align: right; flex: 0 0 auto; padding-left: 18px;">
                     <h2 style="margin:0; font-size: 2.2rem; color: {_ec_strong};">${current_price:.2f}</h2>
-                    <span style="background-color: {verdict_color}; color: white; padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 0.9rem; display: inline-block; margin-top: 8px; letter-spacing: 0.5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{verdict}</span>
+                    <span style="background-color: {verdict_color}; color: white; padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 0.9rem; display: inline-block; margin-top: 8px; letter-spacing: 0.5px; white-space: nowrap;">{verdict}</span>
                 </div>
             </div>
 
