@@ -68,6 +68,7 @@ from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_MET
 import screener as screener_module
 import screener_templates
 import quick_stats
+import profile_menu
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -1972,7 +1973,11 @@ with st.sidebar.expander("Email Digest", expanded=False):
 # chat here despite the originating task asking for one: nobody is
 # staffing a chat on a locally-run instance, and an unanswered box is a
 # promise the app can't keep.
-with st.sidebar.expander("Help & Support", expanded=False):
+# expanded= is driven by the account menu's Help item: a popover cannot
+# expand something inside the sidebar, so it sets a flag that this reads
+# once. help_requested() consumes it, so the panel opens on that run and
+# behaves normally afterwards rather than being pinned open.
+with st.sidebar.expander("Help & Support", expanded=profile_menu.help_requested()):
     if "support_index" not in st.session_state:
         st.session_state["support_index"] = support_build_index()
     _sp_index = st.session_state["support_index"]
@@ -2478,24 +2483,16 @@ with side_portfolio:
 
 with side_system:
     st.caption("Appearance")
-    # No index= alongside key= here: st.session_state["theme_choice"] was
-    # already seeded (from the persisted file, or a prior click on this
-    # same widget) before this widget renders, on the same "pre-seed the
-    # key, let the widget pick it up automatically" pattern debug_mode
-    # uses below — passing both would risk the value=/key= conflict this
-    # codebase has already hit and fixed elsewhere (a widget's `index=`
-    # computed from something other than its own current session_state
-    # value can silently stomp a user's just-made edit back to the old
-    # default on the next rerun).
-    _theme_choice = st.radio(
-        "Theme", list(PALETTES.keys()), key="theme_choice",
-        format_func=lambda name: PALETTES[name].label, horizontal=True,
-        help="Applies to the app's own chrome and charts. The CIO Tear Sheet stays a fixed white printed-report style regardless.",
+    # The theme control MOVED to the account menu's Preferences section
+    # (top right). It is a personal preference and that is where the brief
+    # puts it — and it can only live in one place: two widgets sharing
+    # key="theme_choice" raise DuplicateWidgetID, and a second widget on a
+    # different key would need to write theme_choice after the first had
+    # already instantiated it, which Streamlit refuses outright.
+    st.caption(
+        f"Theme is **{PALETTES[st.session_state['theme_choice']].label}** — change it in "
+        "the account menu at the top right."
     )
-    if _theme_choice != load_theme():
-        save_theme(_theme_choice)
-        log_event(logger, logging.INFO, "user.theme_changed", theme=_theme_choice)
-        st.rerun()
 
     st.markdown("---")
     st.caption("Diagnostics")
@@ -2637,6 +2634,15 @@ with symbol_header_container:
     # engine uses above. The interval matches the quote cache's TTL:
     # polling faster would re-render an identical cached number and buy
     # nothing but Yahoo requests.
+    # --- Account menu -------------------------------------------------
+    # Top-right of the sticky header, which is as close to "top right
+    # corner" as a Streamlit app gets: the framework owns the page chrome
+    # and gives an app no bar of its own, and this block is the one thing
+    # always on screen. A wide spacer column pushes it right.
+    _pm_spacer, _pm_slot = st.columns([9, 1])
+    with _pm_slot:
+        profile_menu.render()
+
     _qs_selected = quick_stats.selected()
 
     @st.fragment(run_every=quick_stats.REFRESH_SECONDS)
