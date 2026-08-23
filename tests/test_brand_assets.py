@@ -36,14 +36,34 @@ def test_the_brief_filenames_are_accepted_and_so_are_the_shipped_ones():
     assert "2.png" in brand_assets._LIGHT_LOGO_NAMES
 
 
-def test_the_mark_is_transparent_and_the_full_logos_are_not():
-    """The favicon sits on a background whose colour we don't control, so
-    only the transparent variant is safe there."""
-    Image = pytest.importorskip("PIL.Image")
+def test_the_favicon_image_is_transparent():
+    """The favicon sits on browser chrome whose colour we don't control,
+    so a white card behind the mark reads as a bug in dark mode.
 
-    mark = Image.open(brand_assets.mark()).convert("RGBA")
-    transparent = sum(1 for pixel in mark.getdata() if pixel[3] < 10)
-    assert transparent / (mark.width * mark.height) > 0.5, "mark is not mostly transparent"
+    Asserts mark_image(), not the file: the shipped 4.png is exported on
+    a white ground and the transparent asset that used to sit beside it
+    is gone, so the transparency is produced in memory.
+    """
+    pytest.importorskip("PIL.Image")
+
+    image = brand_assets.mark_image()
+    assert image is not None
+    rgba = image.convert("RGBA")
+    transparent = sum(1 for pixel in rgba.getdata() if pixel[3] == 0)
+    assert transparent / (rgba.width * rgba.height) > 0.5, "favicon is not mostly transparent"
+
+
+def test_keying_the_mark_keeps_the_artwork_intact():
+    """The white key must remove the card and nothing else — an aggressive
+    threshold would eat the light edges of the glyph."""
+    pytest.importorskip("PIL.Image")
+    from collections import Counter
+
+    rgba = brand_assets.mark_image().convert("RGBA")
+    opaque = [p for p in rgba.getdata() if p[3] > 200]
+    assert len(opaque) > 10_000, "the key removed most of the mark, not just the card"
+    (red, green, blue), _ = Counter((p[0], p[1], p[2]) for p in opaque).most_common(1)[0]
+    assert (red, green, blue) == brand_assets.BRAND_CYAN_RGB
 
 
 def test_the_dark_and_light_logos_are_not_the_same_file():
@@ -67,9 +87,12 @@ def test_the_brand_colour_matches_the_artwork():
     Image = pytest.importorskip("PIL.Image")
     from collections import Counter
 
-    image = Image.open(brand_assets.mark()).convert("RGBA")
-    opaque = [p for p in image.getdata() if p[3] > 200]
-    (red, green, blue), _ = Counter((p[0], p[1], p[2]) for p in opaque).most_common(1)[0]
+    # The dark lockup, whose ground is black — so the most common non-black
+    # colour is the brand cyan. Using the mark's own file would just return
+    # its white export card.
+    image = Image.open(brand_assets.dark_logo()).convert("RGB")
+    coloured = [p for p in image.getdata() if sum(p) > 90 and max(p) - min(p) > 40]
+    (red, green, blue), _ = Counter(coloured).most_common(1)[0]
     assert (red, green, blue) == brand_assets.BRAND_CYAN_RGB
     assert brand_assets.BRAND_CYAN.lower() == f"#{red:02x}{green:02x}{blue:02x}"
 

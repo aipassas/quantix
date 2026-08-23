@@ -206,14 +206,20 @@ import brand_assets
 # question. Page title and icon are read at import time, so they are the
 # first thing a browser tab shows rather than appearing a beat later.
 #
-# The icon is the TRANSPARENT mark: a browser tab's background colour is
-# the browser's, not ours, so the boxed variants would show a black or
-# white tile. brand_assets returns None when a file is absent, and
-# page_icon=None is exactly Streamlit's "use the default" — so a missing
-# asset costs the favicon and nothing else.
+# The icon is the mark with its white export card keyed out: a browser
+# tab's background is the browser's colour, not ours, so a boxed variant
+# shows as a white tile in dark mode. mark_image() returns a PIL image
+# rather than a path — page_icon takes anything st.image does — so nothing
+# derived gets written into the designer's source folder.
+#
+# Falls back to the raw file, then to None, which is exactly Streamlit's
+# "use the default": a missing asset costs the favicon and nothing else.
+_page_icon = brand_assets.mark_image()
+if _page_icon is None and brand_assets.mark() is not None:
+    _page_icon = str(brand_assets.mark())
 st.set_page_config(
     page_title="Quantix | Institutional Analysis",
-    page_icon=str(brand_assets.mark()) if brand_assets.mark() else None,
+    page_icon=_page_icon,
     layout="wide",
 )
 

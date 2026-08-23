@@ -59,6 +59,12 @@ _DARK_LOGO_NAMES = ("1_2.png", "1.png")
 _LIGHT_LOGO_NAMES = ("2_2.png", "2.png")
 _MARK_NAMES = ("4-removebg-preview.png", "4.png")
 
+# Above what mean channel value a pixel counts as "the white card the mark
+# was exported on" rather than part of the artwork. The mark is saturated
+# cyan (#00F2FE) and the ground is #FEFEFE, so anything near-white is
+# background — a wide margin, not a delicate threshold.
+_WHITE_KEY_CUTOFF = 236
+
 # The brand colour, verified against the artwork rather than taken on
 # trust: the mark is exactly #00F2FE in all three files.
 BRAND_CYAN = "#00f2fe"
@@ -88,6 +94,59 @@ def mark() -> Optional[Path]:
     variant safe on a surface whose colour isn't known, which is exactly
     the browser tab's situation."""
     return _first_existing(_MARK_NAMES)
+
+
+def _keyed_transparent(path: Path, _stamp: float):
+    """The mark with its white export card removed, as a PIL image.
+
+    The transparent asset that used to ship (4-removebg-preview.png) is no
+    longer in the directory, and a favicon sits on a browser-chrome colour
+    we do not control — a white tile there looks like a bug in dark mode.
+    Keying the ground out in memory avoids writing a derived file into the
+    designer's source folder, where it would be mistaken for an original
+    and would drift the next time the artwork is replaced.
+
+    Safe because the artwork is two flat colours: saturated cyan on a
+    near-white card. Anything at or above the cutoff becomes transparent.
+    """
+    from PIL import Image
+
+    image = Image.open(path).convert("RGBA")
+    pixels = image.load()
+    width, height = image.size
+    for x in range(width):
+        for y in range(height):
+            red, green, blue, alpha = pixels[x, y]
+            if (red + green + blue) / 3 >= _WHITE_KEY_CUTOFF:
+                pixels[x, y] = (red, green, blue, 0)
+    return image
+
+
+@functools.lru_cache(maxsize=None)
+def _cached_mark_image(path_text: str, _stamp: float):
+    return _keyed_transparent(Path(path_text), _stamp)
+
+
+def mark_image():
+    """The mark for the browser tab, transparent, or None.
+
+    Returns a PIL image rather than a path so nothing derived is written
+    to disk. st.set_page_config accepts anything st.image does. If the
+    file already has real transparency it is returned untouched; if PIL is
+    unavailable the caller falls back to mark().
+    """
+    path = mark()
+    if path is None:
+        return None
+    try:
+        from PIL import Image
+
+        image = Image.open(path)
+        if image.mode in ("RGBA", "LA") and image.convert("RGBA").getextrema()[3][0] < 255:
+            return image                      # already transparent
+        return _cached_mark_image(str(path), path.stat().st_mtime)
+    except Exception:
+        return None
 
 
 @functools.lru_cache(maxsize=None)
