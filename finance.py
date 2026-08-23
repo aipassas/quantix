@@ -467,6 +467,60 @@ st.markdown(f"""
         opacity: 0.45 !important;
     }}
 
+    /* --- The active ticker -------------------------------------------
+       "You are here" was Streamlit's stock primary red (#FF4B4B), which
+       in a financial app is already the colour of a loss. The active
+       watchlist row therefore rendered as "▼ AAPL · -0.63%" on a red
+       pill, where the red meant "selected" and the ▼ meant "down" and
+       nothing distinguished them — while "Send report" and "Create key"
+       wore the identical red for an entirely different meaning.
+
+       Selection is now hueless: a bright border, a lifted surface and
+       bolder text. Red and green are spoken for by loss and gain, so the
+       third state borrows neither and the label keeps its own up/down
+       colour underneath.
+
+       Scoped by widget key rather than to button[kind="primary"] at
+       large, because primary is doing two unrelated jobs in this app —
+       selection state here, and genuine call-to-action on Run Screen,
+       Save and Create key, where Streamlit's red is right. Streamlit
+       stamps each widget's container with st-key-<key>, which is what
+       makes the two separable. The chip key is qa_chip_ rather than the
+       shorter quick_ it used to be: a [class*="st-key-quick_"] selector
+       also matches quick_stats_save and quick_stats_reset in the stats
+       picker, which are a different control entirely. */
+    [class*="st-key-wl_go_"] button[kind="primary"],
+    [class*="st-key-qa_chip_"] button[kind="primary"],
+    [class*="st-key-peer_switch_"] button[kind="primary"] {{
+        background-color: {_theme.tab_selected_bg} !important;
+        border: 2px solid {_theme.header_text} !important;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.06) !important;
+        font-weight: 700 !important;
+    }}
+    [class*="st-key-wl_go_"] button[kind="primary"] p,
+    [class*="st-key-qa_chip_"] button[kind="primary"] p,
+    [class*="st-key-peer_switch_"] button[kind="primary"] p {{
+        font-weight: 700 !important;
+    }}
+    /* The ticker name stays bright; any :red[]/:green[] span in the label
+       keeps its own colour, so direction still reads on a neutral chip. */
+    [class*="st-key-wl_go_"] button[kind="primary"] p,
+    [class*="st-key-qa_chip_"] button[kind="primary"] p {{
+        color: {_theme.header_text} !important;
+    }}
+    [class*="st-key-wl_go_"] button[kind="primary"]:hover,
+    [class*="st-key-qa_chip_"] button[kind="primary"]:hover,
+    [class*="st-key-peer_switch_"] button[kind="primary"]:hover {{
+        background-color: {_theme.button_hover_bg} !important;
+        border-color: {_theme.header_text} !important;
+    }}
+    /* The peer switcher disables its own active chip. Left enabled-looking
+       elsewhere on purpose (see the watchlist comment), so here the dim
+       is removed rather than letting the current ticker read as broken. */
+    [class*="st-key-peer_switch_"] button[kind="primary"]:disabled {{
+        opacity: 1 !important;
+    }}
+
     /* Quick-access chips are single short ticker labels in fixed-width
        columns, so a label that doesn't quite fit should ellipsise rather
        than break mid-word ("AAP / L"), which is what it did before the
@@ -2279,9 +2333,18 @@ else:
         _wl_is_active = _wl_snap.ticker == ticker_symbol
         with _wl_row:
             if _wl_snap.status == "ok":
-                _wl_label = f"{_wl_snap.direction_icon} {_wl_snap.ticker} · {_wl_snap.change_pct:+.2f}%"
+                # The direction is coloured on the LABEL rather than by the
+                # chip, because the chip's colour now means "selected".
+                # Button labels take markdown, so :green[]/:red[] survives
+                # inside the neutral active pill and up/down still reads.
+                _wl_move = f"{_wl_snap.direction_icon} {_wl_snap.change_pct:+.2f}%".strip()
+                if _wl_snap.change_pct > 0:
+                    _wl_move = f":green[{_wl_move}]"
+                elif _wl_snap.change_pct < 0:
+                    _wl_move = f":red[{_wl_move}]"
+                _wl_label = f"{_wl_snap.ticker} · {_wl_move}"
             else:
-                _wl_label = f"{_wl_snap.direction_icon} {_wl_snap.ticker} · n/a"
+                _wl_label = f"{_wl_snap.ticker} · n/a"
             # The active ticker gets the accent style so it's obvious which
             # row you're looking at. Deliberately NOT disabled: a disabled
             # primary button renders as a washed-out pill that reads as
@@ -2621,7 +2684,7 @@ with symbol_header_container:
             _is_current = _qa_ticker == ticker_symbol
             _qa_label = f"★ {_qa_ticker}" if _qa_is_fav else _qa_ticker
             if st.button(
-                _qa_label, key=f"quick_{_qa_ticker}", width="stretch",
+                _qa_label, key=f"qa_chip_{_qa_ticker}", width="stretch",
                 type="primary" if _is_current else "secondary",
                 help="Currently analysed" if _is_current else f"Switch analysis to {_qa_ticker}",
             ):
