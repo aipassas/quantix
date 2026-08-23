@@ -203,3 +203,17 @@ def test_the_refresh_interval_matches_the_quote_cache(qs):
 
     source = inspect.getsource(watchlist_panel)
     assert f"ttl={qs.REFRESH_SECONDS}" in source or str(qs.REFRESH_SECONDS) in source
+
+
+def test_price_and_day_are_offered_but_not_defaults(qs):
+    """The symbol header already shows both in larger type immediately
+    above the strip, so defaulting to them repeats what the eye has just
+    read. They stay available in the picker."""
+    assert "price" not in qs.DEFAULT_KEYS
+    assert "change_pct" not in qs.DEFAULT_KEYS
+    assert "price" in qs.STATS_BY_KEY
+    assert "change_pct" in qs.STATS_BY_KEY
+
+
+def test_the_default_strip_is_the_brief_minus_the_duplicates(qs):
+    assert qs.DEFAULT_KEYS == ("pe_ratio", "market_cap", "dividend_yield_pct")

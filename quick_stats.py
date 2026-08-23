@@ -88,9 +88,13 @@ STATS: Tuple[StatSpec, ...] = (
 )
 STATS_BY_KEY: Dict[str, StatSpec] = {s.key: s for s in STATS}
 
-# The brief's example line: Price | P/E | Market Cap | Dividend.
-DEFAULT_KEYS: Tuple[str, ...] = ("price", "change_pct", "pe_ratio",
-                                 "market_cap", "dividend_yield_pct")
+# Price and day change are deliberately NOT here, though the brief's
+# example line led with price: the symbol header renders both directly
+# above this strip in much larger type, so defaulting to them spends two
+# of the row's slots repeating what the eye has already read. Both remain
+# in STATS and are one click away in the picker for anyone who wants the
+# strip to stand alone.
+DEFAULT_KEYS: Tuple[str, ...] = ("pe_ratio", "market_cap", "dividend_yield_pct")
 
 
 # --- formatting ---------------------------------------------------------------
