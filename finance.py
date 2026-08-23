@@ -67,6 +67,7 @@ from logging_setup import setup_logging, get_logger, log_event, log_exception, r
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
 import screener as screener_module
 import screener_templates
+import quick_stats
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -2483,6 +2484,75 @@ with symbol_header_container:
         f'</div>',
         unsafe_allow_html=True,
     )
+
+    # --- Quick stats strip ------------------------------------------------
+    # One compact row of key metrics under the symbol, inside the same
+    # sticky block. Each stat is an st.popover rather than styled text:
+    # custom HTML in st.markdown cannot call back into Streamlit, so a
+    # text-rendered metric can never satisfy the brief's "click to expand".
+    #
+    # Wrapped in st.fragment so the timer refreshes THIS strip instead of
+    # rerunning the whole page — the same mechanism the real-time alert
+    # engine uses above. The interval matches the quote cache's TTL:
+    # polling faster would re-render an identical cached number and buy
+    # nothing but Yahoo requests.
+    _qs_selected = quick_stats.selected()
+
+    @st.fragment(run_every=quick_stats.REFRESH_SECONDS)
+    def _render_quick_stats():
+        _qs_quote = load_quote_snapshots((ticker_symbol,))[0]
+        _qs_specs = [quick_stats.STATS_BY_KEY[k] for k in _qs_selected
+                     if k in quick_stats.STATS_BY_KEY]
+        _qs_cols = st.columns(len(_qs_specs) + 1)
+
+        for _qs_i, _qs_spec in enumerate(_qs_specs):
+            _qs_text = quick_stats.display(_qs_spec, _qs_quote, standardized)
+            with _qs_cols[_qs_i]:
+                with st.popover(f"{_qs_spec.label} · {_qs_text}", width="stretch"):
+                    st.markdown(f"**{_qs_spec.label}** — {_qs_text}")
+                    if _qs_spec.help_key:
+                        st.caption(help_for(_qs_spec.help_key))
+                    if _qs_spec.note:
+                        st.caption(_qs_spec.note)
+                    if _qs_text == quick_stats.NOT_REPORTED:
+                        st.caption(
+                            "This ticker doesn't report the figure. Shown as "
+                            "unavailable rather than as a zero.")
+
+        with _qs_cols[-1]:
+            with st.popover("Customize", width="stretch"):
+                st.caption(
+                    f"Pick up to {quick_stats.MAX_SELECTED}. The order you choose is "
+                    "the order they appear. Clearing them all hides the strip.")
+                _qs_choice = st.multiselect(
+                    "Stats shown", [s.key for s in quick_stats.STATS],
+                    default=list(_qs_selected),
+                    format_func=lambda k: quick_stats.STATS_BY_KEY[k].label,
+                    key="quick_stats_choice", label_visibility="collapsed",
+                )
+                _qs_save, _qs_reset = st.columns(2)
+                with _qs_save:
+                    if st.button("Save", key="quick_stats_save", width="stretch"):
+                        _qs_ok, _qs_err = quick_stats.set_selected(_qs_choice)
+                        if _qs_ok:
+                            # scope="app": the strip's column count changes
+                            # with the selection, and a fragment-only rerun
+                            # would redraw the old layout.
+                            st.rerun(scope="app")
+                        else:
+                            st.warning(_qs_err)
+                with _qs_reset:
+                    if st.button("Reset", key="quick_stats_reset", width="stretch"):
+                        quick_stats.reset()
+                        st.session_state.pop("quick_stats_choice", None)
+                        st.rerun(scope="app")
+
+                st.caption(
+                    f"Refreshes about every {quick_stats.REFRESH_SECONDS // 60} minutes, "
+                    "which is how often the underlying quote is re-fetched. It is not a "
+                    "tick-by-tick feed.")
+
+    _render_quick_stats()
 
     # --- Quick access: favorites (starred, curated) + recently viewed
     # (automatic), merged into ONE row of one-click switch chips.
