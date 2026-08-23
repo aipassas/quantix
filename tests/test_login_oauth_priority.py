@@ -164,36 +164,63 @@ def _panel_body(source: str) -> str:
     return ast.get_source_segment(source, func)
 
 
-def test_single_sign_on_is_offered_before_the_password_form(source):
-    """The task's headline item. Burying SSO under a password form trains
-    people to type a password they did not need."""
+@pytest.mark.parametrize("panel", ["signin", "signup"])
+def test_single_sign_on_is_offered_before_the_password_form(source, panel):
+    """The task's headline item, and it applies to BOTH panels: burying
+    SSO under a password form trains people to type a password they did
+    not need, and that is as true when creating an account as when
+    returning to one."""
     body = _panel_body(source)
-    assert "_oauth_block()" in body and "_signin_form()" in body
-    assert body.index("_oauth_block()") < body.index("_signin_form()")
+    assert body.index("_oauth_block()") < body.index(f"_{panel}_form()")
 
 
-def test_the_heading_still_comes_first(source):
-    """The title had to lift out of _signin_form when SSO moved between
-    them, or the panel would open with an unlabelled row of buttons."""
+@pytest.mark.parametrize("panel", ["signin", "signup"])
+def test_the_heading_still_comes_first(source, panel):
+    """Each title had to lift out of its form when SSO moved between them,
+    or the panel would open with an unlabelled row of buttons."""
     body = _panel_body(source)
-    assert body.index("_signin_heading()") < body.index("_oauth_block()")
-    assert "qx-panel-title" not in ast.get_source_segment(
+    assert body.index(f"_{panel}_heading()") < body.index(f"_{panel}_form()")
+    form = ast.get_source_segment(
         source, next(n for n in ast.walk(ast.parse(source))
-                     if isinstance(n, ast.FunctionDef) and n.name == "_signin_form"))
+                     if isinstance(n, ast.FunctionDef) and n.name == f"_{panel}_form"))
+    assert "qx-panel-title" not in form, (
+        f"_{panel}_form still draws its own title")
 
 
-def test_the_email_divider_is_suppressed_when_no_provider_exists(source):
+@pytest.mark.parametrize("panel,wording", [("signin", "sign in"), ("signup", "sign up")])
+def test_the_email_divider_is_suppressed_when_no_provider_exists(source, panel, wording):
     """Otherwise an instance without SSO gets a rule labelled "or sign in
-    with email" separating the form from nothing above it."""
-    body = _panel_body(source)
-    assert "drew_sso" in body
-    assert re.search(r"if drew_sso:\s*\n\s*st\.markdown\([^\n]*qx-or", body)
+    with email" separating the form from nothing above it. The rule is
+    drawn only inside `if _oauth_block():`, whose truthiness is exactly
+    "something was drawn"."""
+    func = next(n for n in ast.walk(ast.parse(source))
+                if isinstance(n, ast.FunctionDef) and n.name == "_auth_panel")
+    guarded = [
+        n for n in ast.walk(func)
+        if isinstance(n, ast.If) and "_oauth_block()" in ast.unparse(n.test)
+        and any(f'"or {wording} with email"' in ast.unparse(c).replace("'", '"')
+                for c in n.body)
+    ]
+    assert guarded, f"the {panel} rule is not guarded by _oauth_block()"
+
     # And the block reports whether it drew, rather than returning None.
     oauth = next(n for n in ast.walk(ast.parse(source))
                  if isinstance(n, ast.FunctionDef) and n.name == "_oauth_block")
     returns = [n for n in ast.walk(oauth) if isinstance(n, ast.Return)]
     assert returns and all(isinstance(r.value, ast.Constant) for r in returns)
     assert {r.value.value for r in returns} == {True, False}
+
+
+def test_the_sso_button_wording_stays_neutral(source):
+    """There is no separate "sign up with Google": the first OIDC sign-in
+    creates the workspace. One shared block, one neutral label — only the
+    rule beneath it changes between the panels."""
+    oauth = ast.get_source_segment(
+        source, next(n for n in ast.walk(ast.parse(source))
+                     if isinstance(n, ast.FunctionDef) and n.name == "_oauth_block"))
+    assert "Continue with" in oauth
+    for wrong in ("Sign up with", "Sign in with"):
+        assert wrong not in code_only(oauth)
 
 
 def test_providers_are_not_hard_coded(source):

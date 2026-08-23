@@ -448,6 +448,11 @@ def _value_column() -> None:
 
 # --- the auth panel -----------------------------------------------------------
 
+def _or_rule(text: str) -> None:
+    """The labelled separator between single sign-on and the email form."""
+    st.markdown(f'<div class="qx-or">{text}</div>', unsafe_allow_html=True)
+
+
 def _oauth_block() -> bool:
     """Single sign-on, offered FIRST. Returns whether anything was drawn.
 
@@ -528,11 +533,15 @@ def _signin_form() -> None:
             st.rerun()
 
 
-def _signup_form() -> None:
+def _signup_heading() -> None:
+    """Separate from _signup_form for the same reason as the sign-in one:
+    single sign-on now sits between the title and the fields."""
     st.markdown('<div class="qx-panel-title">Create your account</div>'
                 '<p class="qx-panel-sub">Your workspace stays private to you.</p>',
                 unsafe_allow_html=True)
 
+
+def _signup_form() -> None:
     with st.form("login_signup", clear_on_submit=False):
         name = st.text_input("Name", key="signup_name",
                              placeholder="How your notes should be signed")
@@ -681,22 +690,30 @@ def _auth_panel() -> None:
         if error:
             st.error(error)
 
+        # SSO above the form on BOTH panels: it is the faster and safer
+        # path for anyone who has it, and burying it under a password form
+        # trains people to type a password they did not need. There is no
+        # separate "sign up with Google" — the first OIDC sign-in creates
+        # the workspace — which is why the button keeps its neutral
+        # "Continue with" wording on the signup panel too, and why only
+        # the rule beneath it changes.
+        #
+        # The two branches are mutually exclusive, so _oauth_block's widget
+        # keys are never registered twice in one run.
         mode = _mode()
         if mode == "signup":
+            _signup_heading()
+            if _oauth_block():
+                _or_rule("or sign up with email")
             _signup_form()
         elif mode == "forgot":
             _forgot_form()
         elif mode == "reset":
             _reset_form()
         else:
-            # SSO above the form: it is the faster and safer path for
-            # anyone who has it, and burying it under a password form
-            # trains people to type a password they did not need.
             _signin_heading()
-            drew_sso = _oauth_block()
-            if drew_sso:
-                st.markdown('<div class="qx-or">or sign in with email</div>',
-                            unsafe_allow_html=True)
+            if _oauth_block():
+                _or_rule("or sign in with email")
             _signin_form()
 
     st.markdown(
