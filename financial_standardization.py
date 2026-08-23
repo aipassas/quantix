@@ -173,9 +173,56 @@ class StandardizedFinancials:
     depreciation_history: Tuple[Tuple[datetime.date, float], ...] = ()
     capex_history: Tuple[Tuple[datetime.date, float], ...] = ()
     change_in_working_capital_history: Tuple[Tuple[datetime.date, float], ...] = ()
+    # Percent-valued (2.33 means 2.33%), NOT a fraction. Measured against
+    # this yfinance version: AAPL 0.35, KO 2.33, JNJ 1.98 — each matching
+    # dividendRate/price computed independently. Assuming a fraction, which
+    # is the common expectation for this field, would report KO at 233%.
+    dividend_yield_pct: Optional[float] = None
 
 
 @st.cache_data(ttl=3600)
+def _dividend_yield_pct(info: dict, current_price: Optional[float]) -> Optional[float]:
+    """Trailing dividend yield as a percentage, or None.
+
+    Yahoo's `dividendYield` is already percent-valued in this client
+    version. Rather than trust that across versions, the value is
+    sanity-checked against dividendRate/price — the same figure derived
+    from two independent fields. A `dividendYield` that looks like a
+    fraction (0.023 where the rate implies 2.3) is scaled; one that looks
+    like a percentage is left alone. Falls back to the derived figure when
+    Yahoo reports no yield at all, and returns None rather than guessing
+    when neither is available.
+    """
+    reported = info.get('dividendYield')
+    rate = info.get('dividendRate')
+    derived = None
+    if rate is not None and current_price:
+        try:
+            derived = float(rate) / float(current_price) * 100.0
+        except (TypeError, ValueError, ZeroDivisionError):
+            derived = None
+
+    if reported is None:
+        return derived
+    try:
+        reported = float(reported)
+    except (TypeError, ValueError):
+        return derived
+    if reported <= 0:
+        return derived
+
+    if derived is not None and derived > 0:
+        # Whichever interpretation lands closer to the independently
+        # derived figure is the right one.
+        as_percent = abs(reported - derived)
+        as_fraction = abs(reported * 100.0 - derived)
+        return reported * 100.0 if as_fraction < as_percent else reported
+
+    # No cross-check available. A "yield" under 0.5 is far more likely to
+    # be a fraction (0.023 = 2.3%) than a real 0.02% payout.
+    return reported * 100.0 if reported < 0.5 else reported
+
+
 def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
     """Convert a TickerBundle's raw, Yahoo-shaped data into one canonical,
     unit-consistent object. Safe to call on deep=False bundles (watchlist
@@ -316,6 +363,7 @@ def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
         market_cap=info.get('marketCap') or None,
         shares_outstanding=info.get('sharesOutstanding') or None,
         current_price=current_price,
+        dividend_yield_pct=_dividend_yield_pct(info, current_price),
 
         total_assets=get_field(balance_sheet, ("Total Assets",)),
         current_assets=get_field(balance_sheet, ("Current Assets",)),

@@ -12,7 +12,7 @@ technical_indicators.py) — no parallel metric-calculation logic here.
 """
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import pandas as pd
 import streamlit as st
@@ -36,6 +36,15 @@ logger = get_logger("screener")
 MAX_UNIVERSE_SIZE = 30  # Yahoo Finance rate limits scale with universe size (see task notes)
 
 
+# Yahoo's own sector vocabulary. Listed rather than derived so the picker
+# is populated before any ticker has been fetched; an unrecognised sector
+# still screens correctly, it just is not offered as a suggestion.
+SECTORS: Tuple[str, ...] = (
+    "Basic Materials", "Communication Services", "Consumer Cyclical",
+    "Consumer Defensive", "Energy", "Financial Services", "Healthcare",
+    "Industrials", "Real Estate", "Technology", "Utilities",
+)
+
 @dataclass(frozen=True)
 class MetricSpec:
     key: str
@@ -43,6 +52,14 @@ class MetricSpec:
     tier: str  # "shallow" (info-only), "deep" (statements), or "price" (OHLCV)
     unit: str = ""
     decimals: int = 2
+    # "numeric" compares with > < >= <=; "categorical" compares a string
+    # with is / is not. Sector is the reason this exists: it is the one
+    # screenable property that is a name rather than a quantity, and
+    # forcing it through a numeric operator would mean inventing a
+    # meaningless ordering over industries.
+    kind: str = "numeric"
+    # For categorical metrics: the values worth offering in a picker.
+    choices: Tuple[str, ...] = ()
 
 
 # Every metric usable as a screen criterion. Tiers determine which fetch(es)
@@ -70,6 +87,16 @@ METRICS: Tuple[MetricSpec, ...] = (
     MetricSpec("annual_volatility_pct", "Annualized Volatility", "price", "%"),
     MetricSpec("max_drawdown_pct", "Max Drawdown", "price", "%"),
     MetricSpec("altman_z", "Altman Z-Score", "deep"),
+    # Added so the saved-screener templates can express the screens people
+    # actually reach for — "under $100", "yield above 2%", "growing 20%
+    # a year", "technology only". Price, sector and dividend yield all
+    # ride the info-only fetch a P/E criterion already pays for; revenue
+    # growth needs the income statement, so it is a deep metric.
+    MetricSpec("price", "Share Price", "shallow", "$"),
+    MetricSpec("dividend_yield_pct", "Dividend Yield", "shallow", "%"),
+    MetricSpec("revenue_growth_pct", "Revenue Growth (YoY)", "deep", "%"),
+    MetricSpec("sector", "Sector", "shallow", kind="categorical",
+               choices=SECTORS),
 )
 METRICS_BY_KEY: Dict[str, MetricSpec] = {m.key: m for m in METRICS}
 
@@ -80,12 +107,32 @@ OPERATORS: Dict[str, "callable"] = {
     "<=": lambda v, t: v <= t,
 }
 
+def _same_text(value, target) -> bool:
+    """Case- and whitespace-insensitive, so "technology" matches the
+    "Technology" Yahoo reports."""
+    return str(value).strip().casefold() == str(target).strip().casefold()
+
+
+CATEGORICAL_OPERATORS: Dict[str, "callable"] = {
+    "is": _same_text,
+    "is not": lambda v, t: not _same_text(v, t),
+}
+
+
+def operators_for(metric_key: str) -> Dict[str, "callable"]:
+    """The operator table a given metric can use."""
+    spec = METRICS_BY_KEY.get(metric_key)
+    if spec is not None and spec.kind == "categorical":
+        return CATEGORICAL_OPERATORS
+    return OPERATORS
+
 
 @dataclass(frozen=True)
 class ScreenCriterion:
     metric: str    # key into METRICS_BY_KEY
-    operator: str  # key into OPERATORS
-    threshold: float
+    operator: str  # key into OPERATORS, or CATEGORICAL_OPERATORS for a
+                   # categorical metric — see operators_for()
+    threshold: Union[float, str]   # a name, for categorical metrics
 
 
 @dataclass
@@ -96,7 +143,7 @@ class ScreenResult:
     ticker — a missing metric is never silently treated as a failure, per
     this codebase's "never fabricate, always disclose" convention."""
     ticker: str
-    values: Dict[str, Optional[float]] = field(default_factory=dict)
+    values: Dict[str, Any] = field(default_factory=dict)
     criteria_passes: List[Optional[bool]] = field(default_factory=list)
     status: str = "ok"   # "ok" | "insufficient_data" | "fetch_error"
     detail: str = ""
@@ -128,12 +175,51 @@ def _shallow_values(std, wanted: set) -> Dict[str, Optional[float]]:
         out["current_ratio"] = std.current_ratio
     if "beta" in wanted:
         out["beta"] = std.beta
+    if "price" in wanted:
+        out["price"] = std.current_price
+    if "dividend_yield_pct" in wanted:
+        # Already percent-valued by standardize_financials, which
+        # cross-checks Yahoo's field against dividendRate/price.
+        out["dividend_yield_pct"] = std.dividend_yield_pct
+    if "sector" in wanted:
+        out["sector"] = std.sector
     return out
+
+
+def _revenue_growth_pct(std) -> Tuple[Optional[float], Optional[str]]:
+    """Year-over-year revenue growth from the income statement.
+
+    Returns (value, note). Uses the two most recent periods rather than a
+    multi-year CAGR: the point of a "growing 20%" screen is the latest
+    reading, and a CAGR over a history that may be two points long would
+    dress up the same number as something more considered.
+
+    A non-positive base is refused rather than reported. Growth from a
+    negative or zero revenue is not a percentage anyone can act on, and
+    dividing by it produces a large positive number that reads as a
+    thriving company.
+    """
+    history = list(getattr(std, "revenue_history", ()) or ())
+    if len(history) < 2:
+        return None, "Revenue Growth needs two periods of revenue history"
+    # _field_history is newest-first; sort explicitly rather than trust it.
+    history.sort(key=lambda row: row[0], reverse=True)
+    (_, latest), (_, prior) = history[0], history[1]
+    if prior is None or latest is None:
+        return None, "Revenue Growth unavailable (a period reported no revenue)"
+    if prior <= 0:
+        return None, "Revenue Growth unavailable (prior-period revenue was not positive)"
+    return (latest - prior) / prior * 100.0, None
 
 
 def _deep_values(std, wanted: set) -> Tuple[Dict[str, Optional[float]], List[str]]:
     out: Dict[str, Optional[float]] = {}
     notes: List[str] = []
+    if "revenue_growth_pct" in wanted:
+        value, note = _revenue_growth_pct(std)
+        out["revenue_growth_pct"] = value
+        if note:
+            notes.append(note)
     if "altman_z" in wanted:
         z, verdict, missing = FundamentalAnalysisEngine(std).altman_z_score()
         out["altman_z"] = z
@@ -191,7 +277,7 @@ def _screen_one(ticker: str, criteria: Sequence[ScreenCriterion], start, end, ri
                              criteria_passes=[None] * len(criteria))
 
     std = standardize_financials(bundle)
-    values: Dict[str, Optional[float]] = {}
+    values: Dict[str, Any] = {}
     notes: List[str] = []
 
     values.update(_shallow_values(std, wanted_by_tier["shallow"] | wanted_by_tier["deep"]))
@@ -212,7 +298,15 @@ def _screen_one(ticker: str, criteria: Sequence[ScreenCriterion], start, end, ri
     criteria_passes: List[Optional[bool]] = []
     for c in criteria:
         v = values.get(c.metric)
-        criteria_passes.append(OPERATORS[c.operator](v, c.threshold) if v is not None else None)
+        table = operators_for(c.metric)
+        op = table.get(c.operator)
+        if v is None or op is None:
+            # An unknown operator is treated exactly like a missing value:
+            # not evaluable, never a silent pass or fail. A template saved
+            # by a newer version could name an operator this one lacks.
+            criteria_passes.append(None)
+        else:
+            criteria_passes.append(op(v, c.threshold))
 
     status = "ok" if all(p is not None for p in criteria_passes) else "insufficient_data"
     return ScreenResult(ticker=ticker, values=values, criteria_passes=criteria_passes, status=status, detail="; ".join(notes))

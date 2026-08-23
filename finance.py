@@ -65,6 +65,8 @@ from favorites import (
 from fundamental_analysis import FundamentalAnalysisEngine
 from logging_setup import setup_logging, get_logger, log_event, log_exception, recent_logs, log_file_path
 from screener import METRICS as SCREENER_METRICS, METRICS_BY_KEY as SCREENER_METRICS_BY_KEY, OPERATORS as SCREENER_OPERATORS, MAX_UNIVERSE_SIZE as SCREENER_MAX_UNIVERSE_SIZE, ScreenCriterion, run_screen
+import screener as screener_module
+import screener_templates
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -958,37 +960,160 @@ st.header("Stock Screener")
 st.caption("Screen an arbitrary ticker universe against your own fundamental, technical, and risk criteria — not just the fixed thresholds above.")
 
 _screener_default_universe = ", ".join(WATCHLIST.tech_basket + WATCHLIST.diversified_basket)
-screener_universe_input = st.text_input(
-    "Ticker Universe (comma-separated)", value=_screener_default_universe,
-    help=f"Up to {SCREENER_MAX_UNIVERSE_SIZE} tickers — Yahoo Finance rate limits scale with universe size, so larger universes get truncated with a warning.",
-)
+
+# The universe box is keyed so a saved screener can load its own ticker
+# list into it. Seeded first and rendered with key= only: passing both
+# value= and key= makes Streamlit restore the old value on the next run,
+# silently undoing the template that was just applied.
+if "screener_universe_text" not in st.session_state:
+    st.session_state["screener_universe_text"] = _screener_default_universe
 
 if "screener_criteria" not in st.session_state:
     st.session_state["screener_criteria"] = [{"metric": "pe_ratio", "operator": "<", "threshold": 25.0}]
 
+# Deferred clear of the save-name box, executed before that widget renders.
+# A compose box still holding what you just saved reads as "nothing
+# happened" and gets clicked again.
+if st.session_state.pop("screener_save_clear", False):
+    st.session_state["screener_save_name"] = ""
+_screener_saved_name = st.session_state.pop("screener_save_done", None)
+if _screener_saved_name:
+    st.success(f"Saved “{_screener_saved_name}”.")
+
+
+def _screener_apply_template(_tpl) -> None:
+    """Load a saved screener into the builder."""
+    st.session_state["screener_criteria"] = [dict(c) for c in _tpl.criteria]
+    if _tpl.universe:
+        st.session_state["screener_universe_text"] = ", ".join(_tpl.universe)
+    st.session_state["screener_applied_template"] = _tpl.name
+
+
+# --- Saved screeners ---------------------------------------------------
+_screener_templates = screener_templates.load()
+if screener_templates.store_is_corrupt():
+    # An empty list here would be a lie: there may be saved screens in a
+    # file we cannot parse. Nothing is overwritten until it's resolved.
+    st.warning(
+        f"Your saved screeners file ({screener_templates.STORE_FILENAME}) can't be read, "
+        "so none are listed and saving is disabled. Nothing has been overwritten — move "
+        "or delete that file to start fresh."
+    )
+if _screener_templates:
+    st.markdown("**Saved screeners**")
+    st.caption(
+        "One click loads a screen's filters and its ticker list. The list travels with "
+        "the screen because this screener filters the universe you give it rather than "
+        "searching the whole market."
+    )
+    _tpl_cols = st.columns(4)
+    for _tpl_i, _tpl in enumerate(_screener_templates):
+        with _tpl_cols[_tpl_i % 4]:
+            if st.button(_tpl.name, key=f"screener_tpl_{_tpl_i}",
+                         width="stretch", help=_tpl.summary):
+                _screener_apply_template(_tpl)
+                st.rerun()
+
+_screener_applied = st.session_state.pop("screener_applied_template", None)
+if _screener_applied:
+    st.success(f"Loaded “{_screener_applied}”. Press Run Screen to execute it.")
+
+with st.expander("Manage saved screeners", expanded=False):
+    st.caption(
+        "Reordering is up/down rather than drag-and-drop: Streamlit has no native "
+        "dragging, and buttons work with a keyboard, which dragging does not."
+    )
+    for _tpl_i, _tpl in enumerate(_screener_templates):
+        _m1, _m2, _m3, _m4 = st.columns([6, 1, 1, 1])
+        with _m1:
+            st.markdown(f"**{_tpl.name}**")
+            st.caption(f"{_tpl.summary} · {len(_tpl.universe)} tickers")
+            for _tpl_problem in _tpl.unknown_parts():
+                st.warning(
+                    f"This version can't evaluate {_tpl_problem}. The filter is kept in "
+                    "the saved screen but will show as not evaluable rather than being "
+                    "silently ignored."
+                )
+        with _m2:
+            if st.button("↑", key=f"screener_tpl_up_{_tpl_i}", help="Move up",
+                         disabled=_tpl_i == 0):
+                screener_templates.move(_tpl.name, -1)
+                st.rerun()
+        with _m3:
+            if st.button("↓", key=f"screener_tpl_down_{_tpl_i}", help="Move down",
+                         disabled=_tpl_i == len(_screener_templates) - 1):
+                screener_templates.move(_tpl.name, +1)
+                st.rerun()
+        with _m4:
+            if st.button("Delete", key=f"screener_tpl_del_{_tpl_i}"):
+                screener_templates.delete(_tpl.name)
+                st.rerun()
+
+    if not _screener_templates:
+        st.caption("No saved screeners. Build a screen below and save it.")
+        if st.button("Restore the built-in screeners", key="screener_tpl_reset"):
+            screener_templates.reset_to_starters()
+            st.rerun()
+
+screener_universe_input = st.text_input(
+    "Ticker Universe (comma-separated)", key="screener_universe_text",
+    help=f"Up to {SCREENER_MAX_UNIVERSE_SIZE} tickers — Yahoo Finance rate limits scale with universe size, so larger universes get truncated with a warning.",
+)
+
 st.markdown("**Filter Criteria**")
 _screener_metric_options = [m.key for m in SCREENER_METRICS]
-_screener_operator_options = list(SCREENER_OPERATORS.keys())
 
 _screener_remove_index = None
 for _i, _crit in enumerate(st.session_state["screener_criteria"]):
     _c1, _c2, _c3, _c4 = st.columns([3, 1, 2, 1])
+    _spec = SCREENER_METRICS_BY_KEY.get(_crit.get("metric"))
+    _is_categorical = _spec is not None and _spec.kind == "categorical"
+    _ops = list(screener_module.operators_for(_crit.get("metric", "")))
+
+    # None of these three widgets take a key. The criteria list IS the
+    # source of truth, and a keyed widget would fight it: applying a saved
+    # screener changes metric/operator/threshold underneath the widget,
+    # and Streamlit would restore the stored widget value on the next run
+    # and undo it. Worse for the operator box, whose OPTIONS change when
+    # the metric is categorical — a stored "<" is not in ["is", "is not"]
+    # and selecting it raises.
     with _c1:
         _crit["metric"] = st.selectbox(
-            "Metric", _screener_metric_options, index=_screener_metric_options.index(_crit["metric"]),
-            format_func=lambda k: SCREENER_METRICS_BY_KEY[k].label, key=f"screener_metric_{_i}",
+            "Metric", _screener_metric_options,
+            index=_screener_metric_options.index(_crit["metric"]) if _crit.get("metric") in _screener_metric_options else 0,
+            format_func=lambda k: SCREENER_METRICS_BY_KEY[k].label,
             label_visibility="visible" if _i == 0 else "collapsed",
         )
+        if _crit["metric"] != (_spec.key if _spec else None):
+            # Metric just changed kind; reset the operator/threshold to
+            # something valid for the new metric before they render.
+            _new_spec = SCREENER_METRICS_BY_KEY[_crit["metric"]]
+            _new_ops = list(screener_module.operators_for(_crit["metric"]))
+            if _crit.get("operator") not in _new_ops:
+                _crit["operator"] = _new_ops[0]
+            if _new_spec.kind == "categorical" and not isinstance(_crit.get("threshold"), str):
+                _crit["threshold"] = _new_spec.choices[0] if _new_spec.choices else ""
+            elif _new_spec.kind != "categorical" and isinstance(_crit.get("threshold"), str):
+                _crit["threshold"] = 0.0
+            _spec, _is_categorical, _ops = _new_spec, _new_spec.kind == "categorical", _new_ops
     with _c2:
         _crit["operator"] = st.selectbox(
-            "Op", _screener_operator_options, index=_screener_operator_options.index(_crit["operator"]),
-            key=f"screener_operator_{_i}", label_visibility="visible" if _i == 0 else "collapsed",
-        )
-    with _c3:
-        _crit["threshold"] = st.number_input(
-            "Threshold", value=float(_crit["threshold"]), key=f"screener_threshold_{_i}",
+            "Op", _ops, index=_ops.index(_crit["operator"]) if _crit.get("operator") in _ops else 0,
             label_visibility="visible" if _i == 0 else "collapsed",
         )
+    with _c3:
+        if _is_categorical:
+            _choices = list(_spec.choices) or [str(_crit.get("threshold", ""))]
+            _crit["threshold"] = st.selectbox(
+                "Value", _choices,
+                index=_choices.index(_crit["threshold"]) if _crit.get("threshold") in _choices else 0,
+                label_visibility="visible" if _i == 0 else "collapsed",
+            )
+        else:
+            _crit["threshold"] = st.number_input(
+                "Threshold", value=float(_crit["threshold"]) if isinstance(_crit.get("threshold"), (int, float)) else 0.0,
+                label_visibility="visible" if _i == 0 else "collapsed",
+            )
     with _c4:
         if _i == 0:
             st.markdown("&nbsp;")  # aligns the remove button with the inputs, which have a label row above them on row 0
@@ -1007,6 +1132,37 @@ with _screener_btn_col1:
 with _screener_btn_col2:
     screener_run_clicked = st.button("Run Screen", type="primary")
 
+# --- Save the current screen -------------------------------------------
+with st.expander("Save this screen", expanded=False):
+    st.caption(
+        "Saves the filters above together with the ticker universe, so clicking it "
+        "later reproduces this exact screen. Saving under an existing name overwrites "
+        "it and keeps its position in the list."
+    )
+    _save_name_col, _save_btn_col = st.columns([3, 1])
+    with _save_name_col:
+        _screener_save_name = st.text_input(
+            "Name", key="screener_save_name", placeholder="e.g. Cheap quality tech",
+        )
+    with _save_btn_col:
+        st.markdown("&nbsp;")
+        _screener_save_clicked = st.button("Save", key="screener_save_btn", width="stretch")
+
+    if _screener_save_clicked:
+        _save_universe = [t.strip().upper() for t in screener_universe_input.split(",") if t.strip()]
+        _saved_ok, _saved_err = screener_templates.save(
+            _screener_save_name, st.session_state["screener_criteria"], _save_universe)
+        if _saved_ok:
+            # Deferred clear: popping the widget's own key inside this
+            # handler does nothing, because Streamlit restores it from the
+            # widget-state layer on the next run. Set a flag, rerun, and
+            # clear it at the top of the next run before the widget draws.
+            st.session_state["screener_save_clear"] = True
+            st.session_state["screener_save_done"] = _screener_save_name.strip()
+            st.rerun()
+        else:
+            st.warning(_saved_err)
+
 if screener_run_clicked:
     _screener_universe = [t.strip().upper() for t in screener_universe_input.split(",") if t.strip()]
     _screener_universe = list(dict.fromkeys(_screener_universe))  # dedupe, preserve order
@@ -1019,8 +1175,21 @@ if screener_run_clicked:
     elif not st.session_state["screener_criteria"]:
         st.warning("Add at least one filter criterion.")
     else:
+        def _screener_threshold(_c):
+            """Categorical metrics carry a name, not a number.
+
+            This used to coerce every threshold with float(), which is
+            correct for all fourteen original metrics and raises the moment
+            a Sector criterion reaches it.
+            """
+            _spec = SCREENER_METRICS_BY_KEY.get(_c.get("metric"))
+            if _spec is not None and _spec.kind == "categorical":
+                return str(_c["threshold"])
+            return float(_c["threshold"])
+
         _screener_criteria_tuple = tuple(
-            ScreenCriterion(metric=c["metric"], operator=c["operator"], threshold=float(c["threshold"]))
+            ScreenCriterion(metric=c["metric"], operator=c["operator"],
+                            threshold=_screener_threshold(c))
             for c in st.session_state["screener_criteria"]
         )
         with st.spinner(f"Screening {len(_screener_universe)} ticker(s)..."):
@@ -1049,7 +1218,16 @@ if _screener_state:
         for c in _screener_criteria:
             spec = SCREENER_METRICS_BY_KEY[c.metric]
             v = r.values.get(c.metric)
-            row[f"{spec.label} ({c.operator} {c.threshold:g}{spec.unit})"] = round(v, spec.decimals) if v is not None else None
+            # Both the column header and the cell assumed a number here.
+            # A categorical metric carries a name in each: "{:g}" on
+            # "Technology" and round() on a sector both raise.
+            if spec.kind == "categorical":
+                header = f"{spec.label} ({c.operator} {c.threshold})"
+                row[header] = v if v is not None else None
+            else:
+                shown = f"${c.threshold:g}" if spec.unit == "$" else f"{c.threshold:g}{spec.unit}"
+                header = f"{spec.label} ({c.operator} {shown})"
+                row[header] = round(v, spec.decimals) if v is not None else None
         if r.status == "fetch_error":
             row["Result"] = "Could Not Load"
         elif r.status == "insufficient_data":
