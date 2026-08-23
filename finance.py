@@ -70,6 +70,7 @@ import screener_templates
 import quick_stats
 import profile_menu
 import alignment_card
+import ticker_discovery as td
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -2432,6 +2433,122 @@ with st.sidebar.expander("Find a ticker", expanded=False):
                     st.session_state["_pending_ticker"] = _ts_m.symbol
                     log_event(logger, logging.INFO, "user.autocomplete_search_pick", ticker=_ts_m.symbol)
                     st.rerun()
+
+    # --- discovery -----------------------------------------------------
+    # Everything below answers "I don't know what I'm looking for yet",
+    # where the two controls above answer "I know, help me type it".
+    #
+    # These render as full-width stacked buttons rather than a row of
+    # chips: the sidebar is ~300px, and the task's mock ([Tesla] [Nvidia]
+    # [Apple]) assumes a page-width strip that does not exist here.
+    #
+    # None of them switches a button to type="primary" for the ticker
+    # already on screen. That is how the watchlist rows, quick-access
+    # chips and peer switcher mark "you are here", but their styling is
+    # scoped by widget-key prefix in the CSS above — a fourth surface
+    # using primary without being added to that scope renders in
+    # Streamlit's stock red, which is exactly the bug the login page
+    # shipped. A "· current" suffix says the same thing and cannot rot.
+    def _ts_pick_button(_listing, _key_prefix: str, _note: str = "") -> None:
+        _is_current = _listing.symbol == ticker_symbol
+        _label = f"{_listing.symbol}  {_listing.change_text()}"
+        if _is_current:
+            _label += "  · current"
+        _bits = [b for b in (_listing.name, _listing.exchange, _note) if b]
+        if st.button(_label, key=f"{_key_prefix}{_listing.symbol}", width="stretch",
+                     help=" · ".join(_bits) or None):
+            st.session_state["_pending_ticker"] = _listing.symbol
+            log_event(logger, logging.INFO, "user.discovery_pick",
+                      ticker=_listing.symbol, source=_key_prefix)
+            st.rerun()
+
+    def _ts_render(_listings, _error, _key_prefix: str, _empty: str) -> None:
+        if _error:
+            st.caption(_error)
+            return
+        if not _listings:
+            st.caption(_empty)
+            return
+        for _row in _listings:
+            _ts_pick_button(_row, _key_prefix)
+
+    # Recently viewed. The symbol on screen is skipped rather than shown
+    # as the first of five: it is already in the header in 30px type, and
+    # spending a slot to repeat it is the same waste the quick-stats
+    # defaults were trimmed for.
+    st.markdown("---")
+    st.caption("**Recently viewed**")
+    _ts_recents = ()
+    if "quick_access_store" in st.session_state:
+        _ts_recents = tuple(
+            t for t in st.session_state["quick_access_store"].recents
+            if t != ticker_symbol
+        )[:td.RECENTS_LIMIT]
+    if _ts_recents:
+        for _ts_r in _ts_recents:
+            if st.button(_ts_r, key=f"ts_recent_{_ts_r}", width="stretch",
+                         help=f"Switch analysis to {_ts_r}"):
+                st.session_state["_pending_ticker"] = _ts_r
+                log_event(logger, logging.INFO, "user.discovery_pick",
+                          ticker=_ts_r, source="ts_recent_")
+                st.rerun()
+    else:
+        st.caption("Tickers you open appear here.")
+
+    # Live movers. Deliberately NOT called "trending": these are ranked by
+    # a stated, measurable quantity, and the label says which.
+    st.markdown("---")
+    _ts_screen_labels = [lbl for _, lbl, _ in td.TRENDING_SCREENS]
+    _ts_screen_choice = st.radio(
+        "Market movers", _ts_screen_labels, horizontal=True,
+        key="ts_trend_screen",
+        help="Yahoo's US screens, refreshed every ten minutes. A ranking, "
+             "not a recommendation — a stock is not worth owning because "
+             "it is heavily traded today.",
+    )
+    _ts_kind = next(k for k, lbl, _ in td.TRENDING_SCREENS if lbl == _ts_screen_choice)
+    st.caption(f"Ranked {td.TRENDING_BASIS[_ts_kind]}.")
+    with st.spinner("Loading movers…"):
+        _ts_trend, _ts_trend_err = td.trending(_ts_kind)
+    _ts_render(_ts_trend, _ts_trend_err, "ts_trend_", "No movers reported right now.")
+
+    # Browse by sector, and the same machinery behind a description box.
+    st.markdown("---")
+    _ts_sector = st.selectbox(
+        "Browse a sector", options=list(screener_module.SECTORS), index=None,
+        placeholder="Pick a sector…", key="ts_sector",
+        help="The largest US companies in that sector by market cap, from "
+             "Yahoo's screener. Secondary OTC listings of foreign names are "
+             "filtered out so the list is eight companies, not four and "
+             "their shadows.",
+    )
+    if _ts_sector:
+        with st.spinner(f"Loading {_ts_sector}…"):
+            _ts_sec_rows, _ts_sec_err = td.by_sector(_ts_sector)
+        _ts_render(_ts_sec_rows, _ts_sec_err, "ts_sect_",
+                   f"No {_ts_sector} companies came back.")
+
+    _ts_desc = st.text_input(
+        "Or describe it",
+        key="ts_describe",
+        placeholder="e.g. biotech, semiconductors, banks",
+        help="Matches KEYWORDS against a fixed table of sectors and "
+             "industries — it does not interpret language. An unrecognised "
+             "phrase says so rather than guessing.",
+    )
+    if _ts_desc and _ts_desc.strip():
+        with st.spinner("Looking that up…"):
+            _ts_d_rows, _ts_d_err, _ts_intent = td.for_description(_ts_desc)
+        if _ts_intent is None:
+            st.caption(
+                f'No keyword in "{_ts_desc.strip()}" matches a sector or industry '
+                "this understands. Try a plainer word (biotech, banks, energy) "
+                "or use the sector list above."
+            )
+        else:
+            st.caption(f'Read "{_ts_intent.matched}" as {_ts_intent.label}.')
+            _ts_render(_ts_d_rows, _ts_d_err, "ts_desc_",
+                       f"No {_ts_intent.label} companies came back.")
 
 today = datetime.date.today()
 one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_days)
