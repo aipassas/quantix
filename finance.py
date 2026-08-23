@@ -681,6 +681,47 @@ st.markdown(f"""
             font-size: 1.2rem;
         }}
     }}
+
+    /* --- Readable type scale -----------------------------------------
+       Streamlit's defaults put captions, body copy, every widget label
+       and every input at 14px. That is tuned for a compact dashboard; on
+       a large monitor, in a dense analytical app whose panels are mostly
+       label-and-control pairs, it reads as fine print. Everything here is
+       a modest step up — roughly one point — rather than a redesign, so
+       column widths and table layouts are unaffected.
+
+       Deliberately NOT touching table cell text: st.table and st.dataframe
+       size their columns from content, and widening the type there pushes
+       the wider scorecards into horizontal scroll. */
+    [data-testid="stCaptionContainer"],
+    [data-testid="stCaptionContainer"] p {{
+        font-size: 0.97rem !important;
+        line-height: 1.55 !important;
+    }}
+    [data-testid="stMain"] .stMarkdown p,
+    [data-testid="stMain"] .stMarkdown li {{
+        font-size: 1rem;
+        line-height: 1.6;
+    }}
+    /* Widget labels — every widget type at once.
+       Streamlit tags the label element with data-testid="stWidgetLabel"
+       and renders the text in a nested <p> inside it. Targeting the
+       per-widget classes (.stSelectbox label p and friends) matches
+       nothing in this version and fails silently; the testid is the
+       stable hook, and naming the <p> is required because it inherits
+       from the markdown rules above rather than from the label. */
+    [data-testid="stMain"] [data-testid="stWidgetLabel"] p {{
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+    }}
+    /* The values people actually read back and check. */
+    [data-testid="stMain"] .stTextInput input,
+    [data-testid="stMain"] .stNumberInput input,
+    [data-testid="stMain"] .stDateInput input,
+    [data-testid="stMain"] .stTextArea textarea,
+    [data-testid="stMain"] div[data-baseweb="select"] {{
+        font-size: 0.97rem !important;
+    }}
     </style>
     """, unsafe_allow_html=True)
 

@@ -107,7 +107,7 @@ def _inject_css() -> None:
       header.qx-header {{ visibility: visible !important; }}
 
       .stApp {{ background: #000000; }}
-      .block-container {{ padding-top: 1.2rem; max-width: 1180px; }}
+      .block-container {{ padding-top: 1.2rem; max-width: 1240px; }}
 
       .qx-header {{
           display: flex; align-items: center; justify-content: space-between;
@@ -116,15 +116,15 @@ def _inject_css() -> None:
       }}
       .qx-brand {{ display: flex; align-items: baseline; gap: 12px; }}
       .qx-brand .qx-name {{
-          font-size: 1.32rem; font-weight: 700; color: #FFFFFF;
+          font-size: 1.5rem; font-weight: 700; color: #FFFFFF;
           letter-spacing: -0.4px;
       }}
       .qx-brand .qx-mark {{
-          color: {colour}; font-size: 1.32rem; font-weight: 700;
+          color: {colour}; font-size: 1.5rem; font-weight: 700;
       }}
       .qx-nav {{ display: flex; gap: 26px; }}
       .qx-nav a {{
-          color: #9CA3AF; text-decoration: none; font-size: 0.9rem;
+          color: #9CA3AF; text-decoration: none; font-size: 1rem;
           font-weight: 500; padding: 4px 2px;
           border-bottom: 2px solid transparent;
       }}
@@ -142,41 +142,46 @@ def _inject_css() -> None:
       .qx-skip:focus {{ left: 0; }}
 
       .qx-eyebrow {{
-          color: {colour}; font-size: 0.76rem; font-weight: 700;
-          letter-spacing: 2.4px; text-transform: uppercase; margin-bottom: 14px;
+          color: {colour}; font-size: 0.86rem; font-weight: 700;
+          letter-spacing: 2.4px; text-transform: uppercase; margin-bottom: 16px;
       }}
       .qx-hero h1 {{
-          color: #FFFFFF; font-size: 2.5rem; line-height: 1.12;
+          color: #FFFFFF; font-size: 3.05rem; line-height: 1.1;
           letter-spacing: -1.2px; margin: 0 0 18px 0; font-weight: 700;
       }}
       .qx-hero p.qx-lede {{
-          color: #9CA3AF; font-size: 1.04rem; line-height: 1.65;
-          margin: 0 0 30px 0; max-width: 46ch;
+          color: #9CA3AF; font-size: 1.2rem; line-height: 1.62;
+          margin: 0 0 34px 0; max-width: 60ch;
       }}
-      .qx-feature {{ display: flex; gap: 13px; margin-bottom: 17px; }}
+      .qx-feature {{ display: flex; gap: 14px; margin-bottom: 20px; }}
       .qx-feature .qx-tick {{
           color: {colour}; font-weight: 700; line-height: 1.5; flex: 0 0 auto;
       }}
-      .qx-feature .qx-body {{ color: #CBD5E1; font-size: 0.94rem; line-height: 1.55; }}
+      .qx-feature .qx-body {{ color: #CBD5E1; font-size: 1.06rem; line-height: 1.6; }}
       .qx-feature .qx-body strong {{ color: #FFFFFF; font-weight: 600; }}
 
       .qx-trust {{
           border-top: 1px solid #1C2029; margin-top: 30px; padding-top: 22px;
       }}
       .qx-trust h2 {{
-          color: #7C8595; font-size: 0.72rem; letter-spacing: 1.8px;
-          text-transform: uppercase; margin: 0 0 14px 0; font-weight: 700;
+          color: #7C8595; font-size: 0.84rem; letter-spacing: 1.8px;
+          text-transform: uppercase; margin: 0 0 16px 0; font-weight: 700;
       }}
       .qx-trust li {{
-          color: #9CA3AF; font-size: 0.86rem; line-height: 1.6;
-          margin-bottom: 8px; list-style: none;
+          color: #9CA3AF; font-size: 0.98rem; line-height: 1.62;
+          margin-bottom: 10px; list-style: none;
       }}
       .qx-trust li::before {{ content: "— "; color: {colour}; }}
 
       .qx-panel-title {{
-          color: #FFFFFF; font-size: 1.3rem; font-weight: 700; margin: 0 0 6px 0;
+          color: #FFFFFF; font-size: 1.55rem; font-weight: 700; margin: 0 0 8px 0;
       }}
-      .qx-panel-sub {{ color: #9CA3AF; font-size: 0.9rem; margin: 0 0 4px 0; }}
+      /* Streamlit's own `.stMarkdown p` rule outranks a bare class here,
+         so these need the container in the selector or they silently do
+         nothing — which is exactly what happened to the first attempt. */
+      .stMarkdown p.qx-panel-sub {{
+          color: #9CA3AF; font-size: 1.02rem; margin: 0 0 6px 0;
+      }}
 
       /* The sign-in panel. A bordered surface rather than a floating card,
          which is what makes it read as a right-hand column. */
@@ -185,10 +190,31 @@ def _inject_css() -> None:
           border-radius: 14px; padding: 6px 4px;
       }}
 
+      /* Streamlit's form controls default to 14px in a 38px-tall box.
+         That is fine buried in a settings panel and too small for the
+         primary action on a landing page, so the whole control scales up
+         rather than only its label. */
       .stTextInput input {{
           background: #050505 !important; color: #FFFFFF !important;
           border: 1px solid #262B36 !important; border-radius: 9px !important;
+          font-size: 1.02rem !important;
       }}
+      .stTextInput div[data-baseweb="input"],
+      .stTextInput div[data-baseweb="base-input"] {{
+          min-height: 2.9rem !important;
+      }}
+      .stTextInput label, .stTextInput label p,
+      .stCheckbox label, .stCheckbox label p {{
+          font-size: 1rem !important;
+      }}
+      div[data-testid="stForm"] button p,
+      div[data-testid="stForm"] button {{
+          font-size: 1.05rem !important;
+      }}
+      div[data-testid="stForm"] button {{
+          padding-top: 0.6rem !important; padding-bottom: 0.6rem !important;
+      }}
+      .stButton button p {{ font-size: 1rem !important; }}
       .stTextInput input:focus {{
           border-color: {colour} !important;
           box-shadow: 0 0 0 3px {colour}33 !important;
@@ -207,14 +233,18 @@ def _inject_css() -> None:
          where the #6B7280 this started as came out at 4.34 and missed
          WCAG AA's 4.5 for body text. The disclosure is the last text
          that should be hard to read. */
-      .qx-legal {{
-          color: #7C8595; font-size: 0.76rem; line-height: 1.55;
+      /* 1rem, not the 0.88rem this started at. Until the selector above
+         was corrected, Streamlit's default was winning and rendering this
+         at 16px — so "raising" it to 0.88rem would have shrunk the one
+         paragraph on the page that is a disclosure. */
+      .stMarkdown p.qx-legal {{
+          color: #7C8595; font-size: 1rem; line-height: 1.6;
           border-top: 1px solid #1C2029; margin-top: 26px; padding-top: 16px;
       }}
 
       @media (max-width: 900px) {{
           .qx-nav {{ display: none; }}
-          .qx-hero h1 {{ font-size: 1.9rem; }}
+          .qx-hero h1 {{ font-size: 2.2rem; }}
           .block-container {{ padding-top: 0.6rem; }}
 
           /* Streamlit stacks columns in DOM order, which puts the whole
