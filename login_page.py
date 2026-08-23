@@ -111,16 +111,16 @@ def _inject_css() -> None:
 
       .qx-header {{
           display: flex; align-items: center; justify-content: space-between;
-          gap: 24px; padding: 14px 4px 18px 4px;
+          gap: 24px; padding: 18px 4px 22px 4px;
           border-bottom: 1px solid #1C2029; margin-bottom: 34px;
       }}
-      .qx-brand {{ display: flex; align-items: baseline; gap: 12px; }}
+      .qx-brand {{ display: flex; align-items: baseline; gap: 14px; }}
       .qx-brand .qx-name {{
-          font-size: 1.5rem; font-weight: 700; color: #FFFFFF;
-          letter-spacing: -0.4px;
+          font-size: 2.15rem; font-weight: 700; color: #FFFFFF;
+          letter-spacing: -0.8px;
       }}
       .qx-brand .qx-mark {{
-          color: {colour}; font-size: 1.5rem; font-weight: 700;
+          color: {colour}; font-size: 1.85rem; font-weight: 700;
       }}
       .qx-nav {{ display: flex; gap: 26px; }}
       .qx-nav a {{
@@ -244,6 +244,8 @@ def _inject_css() -> None:
 
       @media (max-width: 900px) {{
           .qx-nav {{ display: none; }}
+          .qx-brand .qx-name {{ font-size: 1.7rem; }}
+          .qx-brand .qx-mark {{ font-size: 1.5rem; }}
           .qx-hero h1 {{ font-size: 2.2rem; }}
           .block-container {{ padding-top: 0.6rem; }}
 
