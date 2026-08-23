@@ -289,8 +289,25 @@ def authenticate(email: str, password: str) -> Tuple[Optional[Account], Optional
     even though signup necessarily reveals the same fact, because signup
     requires a deliberate action and sign-in can be scripted at volume.
     """
-    generic = "That email or password isn't right."
+    generic = ("That email or password isn't right. Check both, or reset your "
+               "password if you've forgotten it.")
     email = normalise_email(email)
+
+    # Shape problems in the SUBMITTED INPUT are reported for what they are.
+    # This leaks nothing: whether a field is blank, or whether the text has
+    # an @ in it, is a fact about what the person just typed and is already
+    # known to them — no query against the store has happened yet. Saying
+    # "that email or password isn't right" to someone who left a box empty
+    # is simply false, and it sent them hunting for a typo in a password
+    # they never entered. It also burned 122ms of scrypt to say it.
+    if not email and not password:
+        return None, "Enter your email address and password."
+    if not email:
+        return None, "Enter your email address."
+    if not password:
+        return None, "Enter your password."
+    if not looks_like_email(email):
+        return None, "That doesn't look like an email address."
 
     account = get_by_email(email) if email else None
     if account is None:

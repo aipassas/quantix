@@ -228,11 +228,34 @@ def _inject_css() -> None:
       }}
       .stTextInput label, .stCheckbox label {{ color: #CBD5E1 !important; }}
 
+      /* Every leading action on this page wears the brand accent.
+         This used to be scoped to stForm, which was fine while the only
+         primary button WAS a form submit — but "Continue with Google"
+         sits outside any form, so it fell through to Streamlit's stock
+         #FF4B4B and rendered bright red directly above a cyan "Sign in".
+         Red is also spoken for in this app: it means a loss. A page-wide
+         selector is safe here because this stylesheet is only injected
+         by the signed-out login page, which then calls st.stop(). */
       div[data-testid="stForm"] .stButton button,
-      div[data-testid="stForm"] button[kind="primaryFormSubmit"] {{
+      div[data-testid="stForm"] button[kind="primaryFormSubmit"],
+      button[kind="primary"],
+      button[data-testid="stBaseButton-primary"] {{
           background: {colour} !important; color: #00131A !important;
           border: 0 !important; font-weight: 700 !important;
           border-radius: 9px !important;
+          transition: filter 200ms ease, box-shadow 200ms ease;
+      }}
+      div[data-testid="stForm"] .stButton button:hover,
+      div[data-testid="stForm"] button[kind="primaryFormSubmit"]:hover,
+      button[kind="primary"]:hover,
+      button[data-testid="stBaseButton-primary"]:hover {{
+          filter: brightness(1.12);
+          box-shadow: 0 0 0 3px {colour}33;
+      }}
+      @media (prefers-reduced-motion: reduce) {{
+          button[kind="primary"], button[data-testid="stBaseButton-primary"] {{
+              transition-duration: 1ms;
+          }}
       }}
       button:focus-visible {{ outline: 2px solid {colour} !important; outline-offset: 2px; }}
 
@@ -273,6 +296,57 @@ def _inject_css() -> None:
               width: 100% !important;
               flex: 1 1 100% !important;
               min-width: 0 !important;
+          }}
+      }}
+
+      /* --- The "or sign in with email" rule --------------------------
+         A labelled separator rather than st.divider(), because the label
+         is the whole point: it tells someone who skipped the SSO buttons
+         what the thing below them is. */
+      .stMarkdown .qx-or {{
+          display: flex; align-items: center; gap: 12px;
+          margin: 18px 0 6px;
+          font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase;
+          color: #9CA3AF;
+      }}
+      .stMarkdown .qx-or::before, .stMarkdown .qx-or::after {{
+          content: ""; flex: 1 1 auto; height: 1px; background: #1C2029;
+      }}
+
+      /* --- The password visibility toggle ----------------------------
+         Streamlit's own control, and it gives us nothing stable to grab:
+         the button carries no data-testid and only emotion-hash classes
+         (st-af st-c0 ...) that change between builds. Inspected on the
+         running page — its one dependable property is being the direct
+         child <button> of the base-input wrapper inside a text input, so
+         that is what this selects. Deliberately NOT keyed on
+         aria-label="Show password text": that string flips to "Hide ..."
+         on toggle and would be localised.
+
+         It was already white, but flat — no border, no hover, no cue that
+         it was a control rather than a decorative glyph. Now it reads as
+         a button, takes the brand accent, and meets a 44px tap target. */
+      [data-testid="stTextInputRootElement"] > div[data-baseweb="base-input"] > button {{
+          min-width: 44px; min-height: 44px;
+          border-radius: 6px;
+          border: 1px solid #1C2029;
+          background: rgba(255, 255, 255, 0.04);
+          color: {colour};
+          transition: background-color 200ms ease, border-color 200ms ease,
+                      color 200ms ease;
+      }}
+      [data-testid="stTextInputRootElement"] > div[data-baseweb="base-input"] > button svg {{
+          fill: currentColor;
+          width: 20px; height: 20px;
+      }}
+      [data-testid="stTextInputRootElement"] > div[data-baseweb="base-input"] > button:hover,
+      [data-testid="stTextInputRootElement"] > div[data-baseweb="base-input"] > button:focus-visible {{
+          background: rgba(255, 255, 255, 0.10);
+          border-color: {colour};
+      }}
+      @media (prefers-reduced-motion: reduce) {{
+          [data-testid="stTextInputRootElement"] > div[data-baseweb="base-input"] > button {{
+              transition-duration: 1ms;
           }}
       }}
     </style>
@@ -374,27 +448,47 @@ def _value_column() -> None:
 
 # --- the auth panel -----------------------------------------------------------
 
-def _oauth_block() -> None:
+def _oauth_block() -> bool:
+    """Single sign-on, offered FIRST. Returns whether anything was drawn.
+
+    The caller needs the return value to decide whether to draw a divider:
+    an instance with no provider configured would otherwise get a rule
+    labelled "or sign in with email" separating the form from nothing.
+
+    The buttons are `primary` now that they lead. On this instance only
+    Google is configured, but the list is data-driven — a GitHub or
+    Microsoft provider added to secrets.toml appears here with no code
+    change, which is why the task's three names are not hard-coded.
+    """
     providers = auth.configured_providers()
     if not providers:
-        reason = auth.unavailable_reason()
-        if reason:
+        if auth.unavailable_reason():
             st.caption(
                 "Single sign-on isn't configured on this instance, so email and "
                 "password is the way in.")
-        return
+        return False
 
-    st.caption("Or continue with")
     for provider in providers:
-        if st.button(f"Continue with {auth.provider_label(provider)}",
+        label = auth.provider_label(provider)
+        if st.button(f"Continue with {label}", type="primary",
                      key=f"login_oauth_{provider or 'default'}", width="stretch"):
-            st.login(provider) if provider else st.login()
+            # st.login() navigates away, and the round trip to the provider
+            # is the one genuinely slow step in this whole page — unlike
+            # the local password check, which measures ~140ms. Without this
+            # the button looks inert for long enough to be clicked twice.
+            with st.spinner(f"Redirecting to {label}..."):
+                st.login(provider) if provider else st.login()
+    return True
 
 
-def _signin_form() -> None:
+def _signin_heading() -> None:
+    """The panel's title. Separate from _signin_form because single
+    sign-on now sits between them."""
     st.markdown('<div class="qx-panel-title">Sign in</div>'
                 '<p class="qx-panel-sub">Welcome back.</p>', unsafe_allow_html=True)
 
+
+def _signin_form() -> None:
     with st.form("login_signin", clear_on_submit=False):
         email = st.text_input("Email", key="login_email",
                               placeholder="you@example.com")
@@ -483,16 +577,21 @@ def _forgot_form() -> None:
                                           type="primary")
 
     if submitted:
-        issued = accounts.begin_reset(email)
-        delivered_note = ""
-        if issued is not None:
-            account, token = issued
-            sent, problem = _send_reset_email(account, token)
-            if not sent:
-                # The instance has no mail configured. Say so plainly rather
-                # than claiming a link was sent that cannot arrive — but do
-                # NOT reveal whether the address had an account.
-                delivered_note = problem or ""
+        # The only step in this page that talks to a remote server: an SMTP
+        # send can take seconds, against ~140ms for the local password
+        # check. This was the submit with no feedback of any kind.
+        with st.spinner("Sending your reset link..."):
+            issued = accounts.begin_reset(email)
+            delivered_note = ""
+            if issued is not None:
+                account, token = issued
+                sent, problem = _send_reset_email(account, token)
+                if not sent:
+                    # The instance has no mail configured. Say so plainly
+                    # rather than claiming a link was sent that cannot
+                    # arrive — but do NOT reveal whether the address had
+                    # an account.
+                    delivered_note = problem or ""
         st.session_state[_RESET_EMAIL_KEY] = accounts.normalise_email(email)
         # _set_mode clears any pending notice, so the message is set after it.
         _set_mode("reset")
@@ -526,7 +625,8 @@ def _reset_form() -> None:
         if password != confirm:
             _fail("Those two passwords don't match.")
             st.rerun()
-        ok, error = accounts.complete_reset(email or remembered, token, password)
+        with st.spinner("Updating your password..."):
+            ok, error = accounts.complete_reset(email or remembered, token, password)
         if not ok:
             _fail(error or "Couldn't reset that password.")
             st.rerun()
@@ -589,9 +689,15 @@ def _auth_panel() -> None:
         elif mode == "reset":
             _reset_form()
         else:
+            # SSO above the form: it is the faster and safer path for
+            # anyone who has it, and burying it under a password form
+            # trains people to type a password they did not need.
+            _signin_heading()
+            drew_sso = _oauth_block()
+            if drew_sso:
+                st.markdown('<div class="qx-or">or sign in with email</div>',
+                            unsafe_allow_html=True)
             _signin_form()
-            st.divider()
-            _oauth_block()
 
     st.markdown(
         '<p class="qx-legal">Quantix is research software, not investment advice, '
