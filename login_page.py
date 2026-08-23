@@ -114,7 +114,14 @@ def _inject_css() -> None:
           gap: 24px; padding: 18px 4px 22px 4px;
           border-bottom: 1px solid #1C2029; margin-bottom: 34px;
       }}
-      .qx-brand {{ display: flex; align-items: baseline; gap: 14px; }}
+      /* align-items: center, not baseline — images have no baseline, so
+         baseline alignment drops them relative to the nav. */
+      .qx-brand {{ display: flex; align-items: center; gap: 14px; }}
+      /* Sized off the wordmark: the mark is square and the wordmark is
+         roughly 5.6:1, so matching their heights keeps the lockup in the
+         proportions the artwork was drawn in. */
+      .qx-brand .qx-mark-img {{ height: 44px; width: auto; display: block; }}
+      .qx-brand .qx-word-img {{ height: 30px; width: auto; display: block; }}
       .qx-brand .qx-name {{
           font-size: 2.15rem; font-weight: 700; color: #FFFFFF;
           letter-spacing: -0.8px;
@@ -274,11 +281,34 @@ def _inject_css() -> None:
 
 def _header() -> None:
     name = brand().name
+
+    # The real artwork, not a typographic stand-in: the Q mark followed by
+    # the QUANTIX wordmark. Both ship as black-or-cyan on a white card, so
+    # brand_assets keys the card out and repaints the wordmark white for
+    # this dark header — the shipped wordmark is black and would otherwise
+    # be invisible here.
+    #
+    # Inlined as data URIs because this header is raw HTML through
+    # st.markdown, where a filesystem path resolves to nothing. If either
+    # asset is missing the text lockup renders instead, so the page never
+    # loses its name.
+    import brand_assets
+
+    _mark_uri = brand_assets.mark_data_uri()
+    _word_uri = brand_assets.wordmark_data_uri("#FFFFFF")
+    if _mark_uri and _word_uri:
+        brand_block = (
+            f'<img class="qx-mark-img" src="{_mark_uri}" alt="">'
+            f'<img class="qx-word-img" src="{_word_uri}" alt="{name}">'
+        )
+    else:
+        brand_block = f'<span class="qx-name">{name}</span>'
+
     st.markdown(f"""
     <a class="qx-skip" href="#qx-signin">Skip to sign in</a>
     <header class="qx-header">
       <div class="qx-brand">
-        <span class="qx-mark">◈</span><span class="qx-name">{name}</span>
+        {brand_block}
       </div>
       <nav class="qx-nav" aria-label="Primary">
         <a href="#qx-features">Features</a>

@@ -160,3 +160,84 @@ def test_paths_are_redirectable(tmp_path, monkeypatch):
     Path(__file__) — see tests/test_auth.py."""
     monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
     assert brand_assets.assets_dir() == tmp_path / "Design_Assets"
+
+
+# --- the login-page lockup ----------------------------------------------------
+
+def test_the_wordmark_resolves():
+    assert brand_assets.wordmark() is not None
+    assert brand_assets.wordmark().is_file()
+
+
+def test_the_wordmark_is_repainted_for_a_dark_header():
+    """It ships as BLACK artwork. Keying the card alone would leave black
+    letters, invisible on the login page's black header."""
+    pytest.importorskip("PIL.Image")
+    import base64
+    import io
+    from collections import Counter
+
+    from PIL import Image
+
+    uri = brand_assets.wordmark_data_uri("#FFFFFF")
+    assert uri and uri.startswith("data:image/png;base64,")
+    image = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("RGBA")
+
+    opaque = [p for p in image.getdata() if p[3] > 200]
+    assert opaque, "the wordmark was keyed away entirely"
+    (red, green, blue), _ = Counter((p[0], p[1], p[2]) for p in opaque).most_common(1)[0]
+    assert (red, green, blue) == (255, 255, 255), "wordmark ink is not white"
+
+
+def test_both_lockup_images_are_cropped_to_their_artwork():
+    """Uncropped, each is a small glyph adrift in a 2000x2000 transparent
+    box, which cannot be sized predictably in CSS."""
+    pytest.importorskip("PIL.Image")
+    import base64
+    import io
+
+    from PIL import Image
+
+    def size_of(uri):
+        return Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).size
+
+    mark_w, mark_h = size_of(brand_assets.mark_data_uri())
+    word_w, word_h = size_of(brand_assets.wordmark_data_uri())
+    assert max(mark_w, mark_h) < 1500, "mark was not cropped"
+    assert 0.8 < mark_w / mark_h < 1.25, "the mark should be roughly square"
+    assert word_w / word_h > 3, "the wordmark should be a wide lockup"
+
+
+def test_the_mark_keeps_its_own_colour_in_the_lockup():
+    """Only the wordmark is repainted; the mark stays brand cyan."""
+    pytest.importorskip("PIL.Image")
+    import base64
+    import io
+    from collections import Counter
+
+    from PIL import Image
+
+    uri = brand_assets.mark_data_uri()
+    image = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("RGBA")
+    opaque = [p for p in image.getdata() if p[3] > 200]
+    (red, green, blue), _ = Counter((p[0], p[1], p[2]) for p in opaque).most_common(1)[0]
+    assert (red, green, blue) == brand_assets.BRAND_CYAN_RGB
+
+
+def test_the_sidebar_no_longer_renders_a_logo():
+    """Removed as unprofessional: a boxed lockup at the top of the rail
+    read as an advert inside the user's own workspace and pushed the
+    controls below the fold."""
+    import pathlib as _pathlib
+
+    source = (_pathlib.Path(__file__).resolve().parent.parent / "finance.py").read_text()
+    code = "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith("#"))
+    assert "st.sidebar.image(" not in code
+
+
+def test_the_login_header_falls_back_to_text_without_the_assets(tmp_path, monkeypatch):
+    """A missing asset must cost the artwork, never the product's name."""
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
+    assert brand_assets.mark_data_uri() is None
+    assert brand_assets.wordmark_data_uri() is None

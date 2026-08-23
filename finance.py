@@ -1698,17 +1698,11 @@ if st.session_state["rt_alert_history"]:
         st.table(pd.DataFrame(_rt_hist_rows))
 
 
-# --- Sidebar: Quantix logo ---
-# The dark-ground variant, because Streamlit's sidebar follows the
-# viewer's system colour scheme and the app's own palette is dark. The
-# white-ground file would show as a white slab here.
-#
-# Rendered above the Account expander so the rail reads brand-first, and
-# only when the file is actually present: a broken image at the very top
-# of the app would be the first thing anyone sees.
-_sidebar_logo = brand_assets.dark_logo()
-if _sidebar_logo is not None:
-    st.sidebar.image(str(_sidebar_logo), width="stretch")
+# No logo in the sidebar. A large boxed lockup at the top of the rail read
+# as an advertisement inside the user's own workspace, and it pushed the
+# controls people actually came for below the fold. The product is named
+# on the login page and on every export that leaves the building; a
+# working tool does not need to keep saying so.
 
 # --- Sidebar: Account ---
 # Top of the rail, above Target Configuration, because signing in changes

@@ -58,6 +58,8 @@ def assets_dir() -> Path:
 _DARK_LOGO_NAMES = ("1_2.png", "1.png")
 _LIGHT_LOGO_NAMES = ("2_2.png", "2.png")
 _MARK_NAMES = ("4-removebg-preview.png", "4.png")
+# The horizontal "QUANTIX" wordmark, drawn in black on a white card.
+_WORDMARK_NAMES = ("3_2.png", "3.png")
 
 # Above what mean channel value a pixel counts as "the white card the mark
 # was exported on" rather than part of the artwork. The mark is saturated
@@ -94,6 +96,11 @@ def mark() -> Optional[Path]:
     variant safe on a surface whose colour isn't known, which is exactly
     the browser tab's situation."""
     return _first_existing(_MARK_NAMES)
+
+
+def wordmark() -> Optional[Path]:
+    """The horizontal "QUANTIX" wordmark, black on a white card."""
+    return _first_existing(_WORDMARK_NAMES)
 
 
 def _keyed_transparent(path: Path, _stamp: float):
@@ -147,6 +154,78 @@ def mark_image():
         return _cached_mark_image(str(path), path.stat().st_mtime)
     except Exception:
         return None
+
+
+def _keyed_recoloured(path: Path, _stamp: float, hex_colour: Optional[str]):
+    """White card keyed out, and the remaining ink optionally recoloured.
+
+    The wordmark ships as BLACK artwork on white. Keying the card alone
+    would leave black letters, invisible on this app's dark surfaces — so
+    the ink is repainted. Alpha comes from how dark each pixel was, which
+    keeps the letterforms' anti-aliased edges smooth instead of producing
+    a jagged one-bit mask.
+    """
+    from PIL import Image
+
+    image = Image.open(path).convert("RGBA")
+    pixels = image.load()
+    width, height = image.size
+    target = None
+    if hex_colour:
+        clean = hex_colour.lstrip("#")
+        target = tuple(int(clean[i:i + 2], 16) for i in (0, 2, 4))
+
+    for x in range(width):
+        for y in range(height):
+            red, green, blue, _ = pixels[x, y]
+            brightness = (red + green + blue) / 3
+            if brightness >= _WHITE_KEY_CUTOFF:
+                pixels[x, y] = (red, green, blue, 0)
+            elif target is not None:
+                alpha = int(max(0, min(255, 255 - brightness)))
+                pixels[x, y] = (target[0], target[1], target[2], alpha)
+
+    # Crop to the artwork. Both files are 2000x2000 with the mark or the
+    # wordmark occupying a fraction of it, so an uncropped image renders
+    # as a small glyph adrift in a large transparent box — impossible to
+    # size predictably in CSS, and the reason the first header attempt
+    # looked wrong.
+    bounds = image.getbbox()
+    return image.crop(bounds) if bounds else image
+
+
+@functools.lru_cache(maxsize=None)
+def _cached_recoloured(path_text: str, _stamp: float, hex_colour: Optional[str]):
+    return _keyed_recoloured(Path(path_text), _stamp, hex_colour)
+
+
+def _transformed_data_uri(path: Optional[Path], hex_colour: Optional[str]) -> Optional[str]:
+    if path is None:
+        return None
+    try:
+        import io
+
+        image = _cached_recoloured(str(path), path.stat().st_mtime, hex_colour)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+
+def mark_data_uri() -> Optional[str]:
+    """The Q mark, transparent, in its own cyan.
+
+    A data URI rather than a path because the login header is raw HTML
+    injected through st.markdown, where a filesystem path resolves to
+    nothing.
+    """
+    return _transformed_data_uri(mark(), None)
+
+
+def wordmark_data_uri(hex_colour: str = "#FFFFFF") -> Optional[str]:
+    """The "QUANTIX" wordmark, transparent and recoloured for a dark ground."""
+    return _transformed_data_uri(wordmark(), hex_colour)
 
 
 @functools.lru_cache(maxsize=None)
