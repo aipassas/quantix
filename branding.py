@@ -74,7 +74,13 @@ _ACCENT_FIELDS: Tuple[str, ...] = (
 class Brand:
     name: str = BRANDING.name
     tagline: str = BRANDING.tagline
-    accent_color: str = ""
+    # Quantix's own brand colour, verified against Design_Assets: the mark
+    # is exactly #00F2FE in all three logo files. Defaulting it here rather
+    # than leaving it blank is what makes one value drive the login page,
+    # the tear sheet, the PDF and the PowerPoint at once — a licensee's
+    # [branding] accent_color still overrides it, which is the whole point
+    # of this module.
+    accent_color: str = "#00f2fe"
     support_email: str = ""
     footer_note: str = ""
     logo_path: str = ""

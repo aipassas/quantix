@@ -196,6 +196,26 @@ from api_keys import (
     revoke_key as revoke_api_key,
     save_store as save_api_key_store,
 )
+import brand_assets
+
+# --- Page Configuration ---
+# First Streamlit call in the file, deliberately. Streamlit requires
+# set_page_config to precede any command that affects the page, and while
+# it tolerated the session_state read the logging setup does below, that
+# is a tolerance rather than a guarantee — putting it here removes the
+# question. Page title and icon are read at import time, so they are the
+# first thing a browser tab shows rather than appearing a beat later.
+#
+# The icon is the TRANSPARENT mark: a browser tab's background colour is
+# the browser's, not ours, so the boxed variants would show a black or
+# white tile. brand_assets returns None when a file is absent, and
+# page_icon=None is exactly Streamlit's "use the default" — so a missing
+# asset costs the favicon and nothing else.
+st.set_page_config(
+    page_title="Quantix | Institutional Analysis",
+    page_icon=str(brand_assets.mark()) if brand_assets.mark() else None,
+    layout="wide",
+)
 
 
 def fmt_num(value, suffix="", decimals=2, prefix=""):
@@ -232,9 +252,7 @@ def log_input_changes(**current):
     st.session_state["_last_inputs"] = current
 
 
-# --- Page Configuration ---
-st.set_page_config(page_title=brand().name, layout="wide", page_icon=None)
-# The app title renders AFTER the authentication gate — see below.
+# --- Page Configuration --- moved to the top of the file; see above.
 
 # ==========================================
 # IDENTITY SWITCH GUARD
@@ -1673,6 +1691,18 @@ if st.session_state["rt_alert_history"]:
         ]
         st.table(pd.DataFrame(_rt_hist_rows))
 
+
+# --- Sidebar: Quantix logo ---
+# The dark-ground variant, because Streamlit's sidebar follows the
+# viewer's system colour scheme and the app's own palette is dark. The
+# white-ground file would show as a white slab here.
+#
+# Rendered above the Account expander so the rail reads brand-first, and
+# only when the file is actually present: a broken image at the very top
+# of the app would be the first thing anyone sees.
+_sidebar_logo = brand_assets.dark_logo()
+if _sidebar_logo is not None:
+    st.sidebar.image(str(_sidebar_logo), width="stretch")
 
 # --- Sidebar: Account ---
 # Top of the rail, above Target Configuration, because signing in changes
@@ -6137,9 +6167,31 @@ else:
         # --- DEFINE DATE AND LOGO ---
         report_date = datetime.date.today().strftime("%B %d, %Y")
 
-        website = standardized.website or ''
-        domain = website.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
-        logo_html = f'<img src="https://logo.clearbit.com/{domain}" onerror="this.style.display=\'none\'" style="height: 55px; width: 55px; object-fit: contain; margin-right: 20px; border-radius: 8px; border: 1px solid {_ec_border}; padding: 2px; background: white;">' if domain else ''
+        # The masthead carries OUR mark, not the analysed company's.
+        #
+        # It used to fetch the company logo from Clearbit by domain, which
+        # was wrong twice over: it made rendering the sheet depend on a
+        # third-party service being up and on the machine having outbound
+        # network at print time, and it put another firm's trademark at the
+        # top of a document Quantix signs. WeasyPrint renders a detached
+        # HTML string with no base URL, so the file is inlined as base64
+        # rather than referenced by path — a relative src resolves to
+        # nothing there. Absent asset simply means no logo.
+        # The DARK-ground variant, not the light one the brand brief named
+        # for "documents". That instruction assumed a white page; this tear
+        # sheet is deliberately black (the export palette — see
+        # export_theme), so the white-ground file renders as a white tile
+        # in the masthead. Verified by rasterising the PDF and looking at
+        # it. Swap to "light" here if the sheet ever goes back to white.
+        _ts_logo_uri = brand_assets.data_uri("dark")
+        logo_html = (
+            f'<img src="{_ts_logo_uri}" alt="{_brand_name}" '
+            f'style="height: 82px; object-fit: contain; margin-right: 22px;">'
+            # 82px, not 58: the artwork is a SQUARE lockup (mark above
+            # wordmark), so its height is shared between the two and at
+            # 58px the "QUANTIX" line was too small to read in print.
+            if _ts_logo_uri else ''
+        )
 
         # 3. Build the HTML Template
         tear_sheet_html = f"""
@@ -6219,7 +6271,7 @@ else:
                 left: 0;
                 width: 100%;
                 height: 6px;
-                background: linear-gradient(90deg, {_accent}, {_ec_bg});
+                background: linear-gradient(90deg, {_accent}, #0f172a);  /* brand cyan into slate, per the brand spec */
             }}
             .ts-header {{
                 display: flex;
@@ -6360,6 +6412,12 @@ else:
                         altman_z=fundamentals.altman_z,
                         altman_verdict=fundamentals.altman_verdict,
                         risk_grade=risk_score_result.grade,
+                        # The scorecard, plus the three execution figures the
+                        # brand brief names for the metrics slide. VaR and
+                        # Kelly are not scorecard checks — they come from the
+                        # risk panel — so they are appended rather than
+                        # derived, and each is None-safe: an unavailable
+                        # figure renders as "not reported", never as 0.00.
                         metrics=tuple(
                             export_deck.Metric(
                                 c.label,
@@ -6368,6 +6426,14 @@ else:
                                 "%" if c.key in ("net_margin", "roic", "fcf_yield") else "",
                             )
                             for c in fundamentals.scorecard_checks
+                        ) + (
+                            export_deck.Metric(
+                                f"1-Day VaR ({var_confidence:.0%})",
+                                None if historical_var is None else historical_var * 100,
+                                "%",
+                            ),
+                            export_deck.Metric("Kelly-Style Sizing", _kelly, "%"),
+                            export_deck.Metric("Trend Z-Score", current_z_score),
                         ),
                         charts=tuple(_charts),
                     )
