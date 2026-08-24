@@ -48,6 +48,46 @@ def _grade_icon(score: float) -> str:
     return ""
 
 
+# Badge colours, one per grade. The task named three — green Excellent,
+# yellow Good, red Poor — but this module has always graded on FOUR
+# levels, and Fair (55-74) is the interesting one: data good enough to
+# read but not to lean on. Collapsing it into either neighbour would
+# misreport, so it gets amber between yellow and red rather than being
+# rounded away to fit the sentence.
+#
+# These are the app's existing semantic colours, not new ones: the green
+# and red are the same pair used for gain and loss everywhere else, which
+# is correct here — this badge is a judgement about trustworthiness and
+# reads in the same direction.
+GRADE_COLOURS = {
+    "Excellent": "#00ea77",
+    "Good": "#eab308",
+    "Fair": "#f97316",
+    "Poor": "#ef4444",
+}
+
+
+def grade_colour(grade: str) -> str:
+    """The badge colour for a grade. Unknown grades read as Poor rather
+    than as a default green — an unrecognised grade is not evidence of
+    good data."""
+    return GRADE_COLOURS.get(grade, GRADE_COLOURS["Poor"])
+
+
+def grade_meaning(grade: str) -> str:
+    """One line on what the grade means for the numbers on screen."""
+    return {
+        "Excellent": "Every required field is present and current. "
+                     "Figures on this page can be read at face value.",
+        "Good": "Minor gaps or slightly stale filings. The headline "
+                "figures hold; check the detail before quoting a ratio.",
+        "Fair": "Enough is missing or out of date that some ratios are "
+                "estimates. Treat derived figures as indicative.",
+        "Poor": "Key inputs are absent or badly stale. Valuations and "
+                "ratios on this page may be unreliable.",
+    }.get(grade, "This grade is not recognised; treat the data as unverified.")
+
+
 @dataclass
 class DataQualityReport:
     score: float

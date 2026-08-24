@@ -19,6 +19,7 @@ import export_deck
 import export_workbook
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
+import data_quality
 from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS
 from metric_help import chart_help, help_for
 from ticker_search import (
@@ -3177,7 +3178,89 @@ with symbol_header_container:
     # corner" as a Streamlit app gets: the framework owns the page chrome
     # and gives an app no bar of its own, and this block is the one thing
     # always on screen. A wide spacer column pushes it right.
-    _pm_spacer, _pm_slot = st.columns([9, 1])
+    # --- Data quality badge -------------------------------------------
+    # Computed HERE rather than in the Overview tab where the full report
+    # lives, because this block is the one thing always on screen and the
+    # question it answers — "can I trust the numbers I am looking at?" —
+    # should not require finding a panel first. It is the same call the
+    # detail section makes; the result is reused rather than recomputed.
+    #
+    # A POPOVER, not markup in the header line above. That header is a
+    # single st.markdown string and custom HTML cannot call back into
+    # Streamlit, so a badge rendered there could never satisfy "click to
+    # expand" — the identical constraint the quick-stats strip below
+    # already documents.
+    #
+    # There is no refresh timer: the report is recomputed from the same
+    # bundle this page is built from on every run, so it is never staler
+    # than the figures beside it. A fragment here would re-render a value
+    # closed over from this run and only look live.
+    data_quality_report = assess_data_quality(
+        standardized, ticker_bundle, macro_bundle)
+    _dq_colour = data_quality.grade_colour(data_quality_report.grade)
+
+    _dq_slot, _pm_spacer, _pm_slot = st.columns([2, 7, 1])
+    with _dq_slot:
+        st.markdown(
+            # Qualified to (0,3,1). The obvious selector,
+            # [class*="st-key-dq_badge"] button, is only (0,1,1) and loses
+            # outright to finance.py's own (0,2,1) main-secondary rule no
+            # matter how many !importants it carries — measured live, the
+            # badge came back with the ordinary grey border. Same trap
+            # button_roles documents.
+            #
+            # And it matches on kind= rather than the stBaseButton-secondary
+            # testid that button_roles uses: a POPOVER trigger carries
+            # data-testid="stPopoverButton", so the testid form would not
+            # select it at all.
+            f"""<style>
+            [class*="st-key-dq_badge"] button,
+            [data-testid="stMain"] [class*="st-key-dq_badge"] button[kind="secondary"] {{
+                border: 1px solid {_dq_colour} !important;
+                color: {_dq_colour} !important;
+            }}
+            [class*="st-key-dq_badge"] button p,
+            [data-testid="stMain"] [class*="st-key-dq_badge"] button[kind="secondary"] p {{
+                color: {_dq_colour} !important; font-weight: 700 !important;
+            }}
+            </style>""",
+            unsafe_allow_html=True,
+        )
+        with st.popover(
+            f"Data {data_quality_report.score:.0f}/100 · {data_quality_report.grade}",
+            width="stretch", key="dq_badge",
+            help="How complete and current the data behind this page is",
+        ):
+            st.markdown(
+                f"**Data quality — {data_quality_report.score:.1f}/100 "
+                f"({data_quality_report.grade})**")
+            st.caption(data_quality.grade_meaning(data_quality_report.grade))
+            _dq_rows = {
+                "Required fields": f"{data_quality_report.required_completeness_pct:.0f}%",
+                "Optional fields": f"{data_quality_report.optional_completeness_pct:.0f}%",
+                "Freshness": f"{data_quality_report.freshness_score:.0f}/100",
+                "Fetch reliability": f"{data_quality_report.fetch_reliability_score:.0f}/100",
+            }
+            for _dq_label, _dq_value in _dq_rows.items():
+                st.caption(f"{_dq_label}: **{_dq_value}**")
+            if data_quality_report.staleness_days is not None:
+                _dq_stale = (" — past the point where a quarterly filing should have landed"
+                             if data_quality_report.is_stale else "")
+                st.caption(
+                    f"Most recent quarter: {data_quality_report.most_recent_quarter} "
+                    f"({data_quality_report.staleness_days} days ago){_dq_stale}")
+            else:
+                st.caption("No filing date reported, so freshness could not be measured.")
+            _dq_gaps = (len(data_quality_report.missing_required_fields)
+                        + len(data_quality_report.missing_optional_fields)
+                        + len(data_quality_report.fetch_warnings)
+                        + len(data_quality_report.fetch_errors))
+            st.caption(
+                f"{_dq_gaps} field-level issue(s). The full list is in "
+                "Overview → Data Quality Report."
+                if _dq_gaps else
+                "No field-level issues. The full report is in Overview.")
+
     with _pm_slot:
         profile_menu.render()
 
@@ -3610,7 +3693,8 @@ else:
         # (data_loader.py retries/warnings) into one score, run before any ratio
         # below is calculated — so it's clear up front how much to trust the
         # analysis instead of piecing it together from separate panels.
-        quality = assess_data_quality(standardized, ticker_bundle, macro_bundle)
+        # Computed once in the sticky header, where the badge lives.
+        quality = data_quality_report
 
         st.subheader(f"Data Quality Report — {quality.score}/100 ({quality.grade})")
         dq1, dq2, dq3, dq4 = st.columns(4)
