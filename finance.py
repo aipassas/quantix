@@ -3480,8 +3480,10 @@ with symbol_header_container.container():
     # bundle this page is built from on every run, so it is never staler
     # than the figures beside it. A fragment here would re-render a value
     # closed over from this run and only look live.
+    # asset_kind is passed rather than left to default, so the badge and
+    # the rest of the page cannot disagree about what this symbol is.
     data_quality_report = assess_data_quality(
-        standardized, ticker_bundle, macro_bundle)
+        standardized, ticker_bundle, macro_bundle, klass=asset_kind)
     _dq_colour = data_quality.grade_colour(data_quality_report.grade)
 
     _dq_slot, _pm_spacer, _nb_slot, _pm_slot = st.columns([2, 6, 1.4, 1])
@@ -3519,27 +3521,32 @@ with symbol_header_container.container():
             st.markdown(
                 f"**Data quality — {data_quality_report.score:.1f}/100 "
                 f"({data_quality_report.grade})**")
-            st.caption(data_quality.grade_meaning(data_quality_report.grade))
-            _dq_rows = {
-                "Required fields": f"{data_quality_report.required_completeness_pct:.0f}%",
-                "Optional fields": f"{data_quality_report.optional_completeness_pct:.0f}%",
-                "Freshness": f"{data_quality_report.freshness_score:.0f}/100",
-                "Fetch reliability": f"{data_quality_report.fetch_reliability_score:.0f}/100",
-            }
-            for _dq_label, _dq_value in _dq_rows.items():
-                st.caption(f"{_dq_label}: **{_dq_value}**")
+            st.caption(data_quality.grade_meaning(
+                data_quality_report.grade, data_quality_report.asset_class))
+            # The rows are driven by the report's OWN dimensions, not a
+            # hardcoded four. A fund is not graded on filings it never
+            # makes, so listing "Required fields: 0%" underneath its score
+            # would explain the number with a fact that carried no weight
+            # in it — which is the misreport this panel used to make.
+            for _dq_dim in data_quality_report.dimensions:
+                _dq_value = getattr(data_quality_report, _dq_dim.key)
+                st.caption(
+                    f"{_dq_dim.label}: **{_dq_value:.0f}/100** "
+                    f"({_dq_dim.weight:.0%} of the score)")
+            if data_quality_report.asset_class != asset_class.EQUITY:
+                st.caption(
+                    f"Scored as {asset_class.with_article(data_quality_report.asset_class)}: "
+                    f"{data_quality_report.scored_on}. Company filings are not "
+                    "part of this score because this instrument does not make them.")
             if data_quality_report.staleness_days is not None:
                 _dq_stale = (" — past the point where a quarterly filing should have landed"
                              if data_quality_report.is_stale else "")
                 st.caption(
                     f"Most recent quarter: {data_quality_report.most_recent_quarter} "
                     f"({data_quality_report.staleness_days} days ago){_dq_stale}")
-            else:
+            elif data_quality_report.asset_class == asset_class.EQUITY:
                 st.caption("No filing date reported, so freshness could not be measured.")
-            _dq_gaps = (len(data_quality_report.missing_required_fields)
-                        + len(data_quality_report.missing_optional_fields)
-                        + len(data_quality_report.fetch_warnings)
-                        + len(data_quality_report.fetch_errors))
+            _dq_gaps = data_quality_report.issue_count
             st.caption(
                 f"{_dq_gaps} field-level issue(s). The full list is in "
                 "Overview → Data Quality Report."
@@ -4059,34 +4066,89 @@ else:
         # Computed once in the sticky header, where the badge lives.
         quality = data_quality_report
 
+        _dq_is_equity = quality.asset_class == asset_class.EQUITY
+
         st.subheader(f"Data Quality Report — {quality.score}/100 ({quality.grade})")
-        dq1, dq2, dq3, dq4 = st.columns(4)
-        dq1.metric("Required Fields", f"{quality.required_completeness_pct:.0f}%", help="% of required balance sheet / income statement / cash flow fields present.")
-        dq2.metric("Optional Fields", f"{quality.optional_completeness_pct:.0f}%", help="% of optional statement fields present (e.g. Retained Earnings, Interest Expense).")
-        freshness_label = "N/A" if quality.staleness_days is None else f"{quality.staleness_days}d old"
-        dq3.metric("Data Freshness", freshness_label, delta="Stale" if quality.is_stale else "Fresh", delta_color="inverse" if quality.is_stale else "normal", help="Age of the most recently reported quarter. Flagged stale beyond 120 days.")
-        dq4.metric("Fetch Reliability", f"{quality.fetch_reliability_score:.0f}%", help="Penalized for retried/failed downloads and empty optional datasets.")
+        if not _dq_is_equity:
+            # Say what was measured BEFORE showing the number. A reader who
+            # assumes this score means the same thing for every symbol will
+            # otherwise compare a fund's score against a stock's and think
+            # the two were graded on the same evidence.
+            st.caption(
+                f"Scored as {asset_class.with_article(quality.asset_class)}, on "
+                f"{quality.scored_on}. "
+                f"{asset_class.spec(quality.asset_class).absence_reason} "
+                "Its filings are not scored because it does not make any — an "
+                "absent income statement here is a fact about the instrument, "
+                "not a defect in the data.")
+
+        # One column per dimension that actually carried weight.
+        _dq_cols = st.columns(len(quality.dimensions))
+        for _dq_col, _dq_dim in zip(_dq_cols, quality.dimensions):
+            _dq_val = getattr(quality, _dq_dim.key)
+            if _dq_dim.key == "freshness_score" and quality.staleness_days is not None:
+                _dq_col.metric(
+                    "Data Freshness", f"{quality.staleness_days}d old",
+                    delta="Stale" if quality.is_stale else "Fresh",
+                    delta_color="inverse" if quality.is_stale else "normal",
+                    help=_dq_dim.help)
+            else:
+                _dq_col.metric(
+                    _dq_dim.label, f"{_dq_val:.0f}%",
+                    help=f"{_dq_dim.help} Worth {_dq_dim.weight:.0%} of the score.")
 
         if quality.grade in ("Poor", "Fair"):
             st.warning(f"Data quality is {quality.grade.lower()} for {ticker_symbol} — treat derived metrics with extra caution and check the detail below.")
 
-        detail_issue_count = len(quality.missing_required_fields) + len(quality.missing_optional_fields) + len(quality.fetch_warnings) + len(quality.fetch_errors)
+        detail_issue_count = quality.issue_count
         with st.expander(f"Data Quality Detail ({detail_issue_count} issue(s))", expanded=quality.grade in ("Poor", "Fair")):
-            for stmt in standardized.validation.statements:
-                status = "Complete" if stmt.is_valid else f"{len(stmt.missing_required)} required field(s) missing"
-                st.markdown(f"**{stmt.statement_name}** — {status}")
-                for check in stmt.checks:
-                    icon = "Present" if check.present else ("Missing" if check.required else "Optional, absent")
-                    label = check.name + (" (required)" if check.required else " (optional)")
-                    st.markdown(f"&nbsp;&nbsp;{icon} {label}")
+            if _dq_is_equity:
+                for stmt in standardized.validation.statements:
+                    status = "Complete" if stmt.is_valid else f"{len(stmt.missing_required)} required field(s) missing"
+                    st.markdown(f"**{stmt.statement_name}** — {status}")
+                    for check in stmt.checks:
+                        icon = "Present" if check.present else ("Missing" if check.required else "Optional, absent")
+                        label = check.name + (" (required)" if check.required else " (optional)")
+                        st.markdown(f"&nbsp;&nbsp;{icon} {label}")
 
-            if quality.most_recent_quarter is not None:
-                st.markdown(f"**Freshness** — most recent reported quarter: {quality.most_recent_quarter.strftime('%B %d, %Y')} ({quality.staleness_days} days ago)")
+                if quality.most_recent_quarter is not None:
+                    st.markdown(f"**Freshness** — most recent reported quarter: {quality.most_recent_quarter.strftime('%B %d, %Y')} ({quality.staleness_days} days ago)")
+                else:
+                    st.markdown("**Freshness** — most recent quarter date not reported by Yahoo Finance; freshness could not be verified.")
             else:
-                st.markdown("**Freshness** — most recent quarter date not reported by Yahoo Finance; freshness could not be verified.")
+                st.markdown(
+                    "**Statements** — not applicable. "
+                    f"{asset_class.unavailable_note(quality.asset_class, asset_class.FUNDAMENTALS)}")
+                if asset_class.supports(quality.asset_class, asset_class.HOLDINGS):
+                    _dq_missing = quality.missing_fund_fields
+                    st.markdown(
+                        "**Fund profile** — "
+                        + ("every reported field present."
+                           if not _dq_missing else
+                           f"{len(_dq_missing)} field(s) not reported: "
+                           + ", ".join(_dq_missing)))
+                _dq_age = quality.price_age_days
+                st.markdown(
+                    "**Price history** — "
+                    + ("no price series returned."
+                       if _dq_age is None and quality.price_history_score == 0 else
+                       "present; last bar's date could not be read."
+                       if _dq_age is None else
+                       f"last bar {_dq_age} day(s) old."))
 
             if quality.fetch_errors or quality.fetch_warnings:
                 st.markdown("**Fetch Reliability**")
+                if not _dq_is_equity and any(
+                        data_quality._is_statement_warning(w)
+                        for w in quality.fetch_warnings):
+                    # Otherwise the header says "0 issue(s)" above a list of
+                    # three warnings, and the reader cannot tell whether
+                    # they counted.
+                    st.caption(
+                        "The statement warnings below are recorded for "
+                        "completeness and did NOT count against this score — "
+                        "this instrument files no statements, so their "
+                        "absence is expected rather than a data problem.")
                 for w in quality.fetch_errors:
                     st.error(w)
                 for w in quality.fetch_warnings:

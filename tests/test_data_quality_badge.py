@@ -167,3 +167,337 @@ def test_there_is_no_fake_refresh_timer():
     block = _badge_block()
     assert "st.fragment" not in block
     assert "run_every" not in block
+
+
+# --- what the score MEANS per asset class -------------------------------------
+#
+# The badge read "18/100 · Poor" for every ETF. That was not a low score,
+# it was a category error, and it was the same non-fact deducted three
+# separate times. These pin the shape of the fix.
+
+import copy
+import datetime
+
+import pandas as pd
+
+import asset_class
+from data_loader import STATEMENT_LABELS, MacroBundle, TickerBundle
+
+
+def _bundle(ticker="SPY", quote_type="ETF", *, info=None, price_days_old=0,
+            warnings=(), errors=()):
+    """A bundle with a current price series and a complete fund profile,
+    which individual tests then damage one field at a time."""
+    base = {"quoteType": quote_type}
+    base.update({f: 1.0 for f in data_quality.FUND_PROFILE_FIELDS})
+    if info is not None:
+        base = dict(base, **info)
+    last = datetime.date.today() - datetime.timedelta(days=price_days_old)
+    history = pd.DataFrame(
+        {"Close": [1.0, 2.0]},
+        index=pd.to_datetime([last - datetime.timedelta(days=1), last]))
+    return TickerBundle(ticker=ticker, info=base, price_history=history,
+                        warnings=list(warnings), errors=list(errors))
+
+
+class _Check:
+    def __init__(self, name, required, present):
+        self.name, self.required, self.present = name, required, present
+
+
+class _Stmt:
+    """A statement whose fields are all ABSENT — which is exactly the
+    state a fund is in, and the state that scored 0% completeness. A stub
+    with no checks at all would score 100% and quietly prove nothing."""
+    def __init__(self):
+        self.statement_name = "Balance Sheet"
+        self.checks = [_Check("Total Assets", True, False),
+                       _Check("Current Assets", True, False),
+                       _Check("Retained Earnings", False, False)]
+        self.missing_required = ["Total Assets", "Current Assets"]
+        self.missing_optional = ["Retained Earnings"]
+        self.is_valid = False
+
+
+class _Validation:
+    statements = [_Stmt()]
+
+
+class _Std:
+    """Stands in for a fund's standardized financials: no statements at
+    all, which is the state that produced 0% completeness."""
+    ticker = "SPY"
+    validation = _Validation()
+    most_recent_quarter = None
+
+
+def _assess(bundle, klass=None):
+    return data_quality.assess_data_quality(
+        _Std(), bundle, MacroBundle(), klass=klass)
+
+
+def test_a_fund_is_not_graded_poor_for_lacking_filings_it_never_makes():
+    """THE BUG. Every ETF scored 17.5/100 "Poor" — SPY and TLT alike —
+    because the module measured a fund against corporate filings. A fund
+    has no income statement; that absence is a fact about the instrument,
+    not evidence its data is untrustworthy."""
+    report = _assess(_bundle(warnings=[
+        f"SPY: {label} data unavailable." for label in STATEMENT_LABELS]))
+
+    assert report.asset_class == asset_class.ETF
+    assert report.grade == "Excellent"
+    assert report.score >= 90, report.score
+    # The statement-shaped figures are still computed for the detail
+    # panel, but must carry no weight.
+    assert report.required_completeness_pct == 0.0
+    assert "required_completeness_pct" not in [d.key for d in report.dimensions]
+
+
+def test_the_same_absence_is_not_deducted_for_three_times():
+    """Required completeness, optional completeness AND fetch reliability
+    were each docked for the one fact that a fund files nothing. The
+    statement warnings must not touch fetch reliability for a class with
+    no filings."""
+    clean = _assess(_bundle())
+    with_statement_warnings = _assess(_bundle(warnings=[
+        f"SPY: {label} data unavailable." for label in STATEMENT_LABELS]))
+
+    assert with_statement_warnings.fetch_reliability_score == 100.0
+    assert with_statement_warnings.score == clean.score
+
+
+def test_an_equity_is_still_charged_for_a_missing_statement():
+    """The exemption is per class, not global — a stock that failed to
+    return its balance sheet has a real data problem, and hiding that
+    would be the opposite bug."""
+    report = _assess(_bundle(quote_type="EQUITY", warnings=[
+        f"AAPL: {label} data unavailable." for label in STATEMENT_LABELS]))
+
+    assert report.asset_class == asset_class.EQUITY
+    assert report.fetch_reliability_score == 70.0
+
+
+def test_a_statement_warning_is_recognised_from_data_loaders_own_labels():
+    """Matched against STATEMENT_LABELS rather than a literal copied into
+    this module, so rewording the message in data_loader cannot silently
+    turn a fund's non-filing back into a fetch failure."""
+    for label in STATEMENT_LABELS:
+        assert data_quality._is_statement_warning(f"SPY: {label} data unavailable.")
+    assert not data_quality._is_statement_warning(
+        "SPY: price history failed after 3 attempt(s)")
+    # And the loader must actually emit those labels.
+    loader = (ROOT / "data_loader.py").read_text(encoding="utf-8")
+    assert "STATEMENT_LABELS" in loader
+    assert '_load_statement_field(stock, "financials", ticker, _income_label' in loader
+
+
+def test_every_classes_weights_sum_to_one():
+    """Otherwise a class is quietly graded out of less than 100 and can
+    never reach Excellent no matter how good its data is."""
+    for klass in list(data_quality.DIMENSIONS) + ["not-a-real-class"]:
+        dims = data_quality.dimensions_for(klass)
+        total = sum(d.weight for d in dims)
+        assert abs(total - 1.0) < 1e-9, (klass, total)
+        assert dims, klass
+
+
+def test_an_unrecognised_class_is_not_graded_as_an_equity():
+    """Assuming filings exist for something we could not identify is what
+    produced the original bug."""
+    dims = data_quality.dimensions_for("not-a-real-class")
+    assert "required_completeness_pct" not in [d.key for d in dims]
+    assert data_quality.dimensions_for(asset_class.UNKNOWN) == dims
+
+
+def test_every_dimension_key_is_a_real_field_on_the_report():
+    """A dimension whose key does not name a field would raise at render
+    time, in the sticky header, on every run."""
+    report = _assess(_bundle())
+    for klass in data_quality.DIMENSIONS:
+        for dim in data_quality.dimensions_for(klass):
+            assert hasattr(report, dim.key), (klass, dim.key)
+            assert isinstance(getattr(report, dim.key), float)
+
+
+def test_the_fund_score_still_falls_when_fund_data_is_actually_missing():
+    """A badge that always reads Excellent is as useless as one that
+    always read Poor. The dimensions a fund DOES have must bite."""
+    full = _assess(_bundle())
+    assert full.score == 100.0
+
+    thin = _assess(_bundle(info={"netExpenseRatio": None, "totalAssets": None}))
+    assert thin.score < full.score
+    assert set(thin.missing_fund_fields) == {"netExpenseRatio", "totalAssets"}
+
+    stale = _assess(_bundle(price_days_old=21))
+    assert stale.price_history_score < 50
+    assert stale.score < full.score
+
+    broken = _assess(_bundle(errors=["SPY: price history failed"]))
+    assert broken.fetch_reliability_score == 70.0
+    assert broken.score < full.score
+
+
+def test_price_history_is_scored_on_currency_not_on_length():
+    """The user picks the date range, so a short series is a choice, not a
+    defect — but a series whose last bar is weeks old means the
+    technicals and risk panels are drawing stale conclusions."""
+    short_and_current = _bundle(price_days_old=0)
+    assert len(short_and_current.price_history) == 2
+    assert _assess(short_and_current).price_history_score == 100.0
+
+    long_and_stale = _bundle(price_days_old=21)
+    long_and_stale.price_history = pd.DataFrame(
+        {"Close": range(500)},
+        index=pd.to_datetime([datetime.date.today() - datetime.timedelta(days=21 + i)
+                              for i in range(499, -1, -1)]))
+    assert _assess(long_and_stale).price_history_score < 50
+
+
+def test_an_empty_price_series_scores_zero_not_a_default():
+    bundle = _bundle()
+    bundle.price_history = pd.DataFrame()
+    report = _assess(bundle)
+    assert report.price_history_score == 0.0
+    assert report.price_age_days is None
+
+
+def test_a_weekend_does_not_make_the_price_series_look_stale():
+    """Equities and ETFs skip weekends while crypto does not, so the
+    threshold is tolerant rather than counting expected trading days."""
+    for days in (0, 1, 2, 3, 4):
+        assert _assess(_bundle(price_days_old=days)).price_history_score == 100.0
+
+
+# --- the badge and the panel must explain what they measured -------------------
+
+def test_the_badge_lists_the_reports_own_dimensions():
+    """Hardcoding four rows under the score is what let a fund's badge
+    explain its number with "Required fields: 0%" — a figure that carried
+    no weight in it."""
+    assert "for _dq_dim in data_quality_report.dimensions:" in FINANCE
+    assert "getattr(data_quality_report, _dq_dim.key)" in FINANCE
+    # The hardcoded row dict must not come back.
+    assert '"Required fields": f"{data_quality_report.required_completeness_pct' not in FINANCE
+
+
+def test_a_non_equity_is_told_what_it_was_scored_on():
+    """A reader who assumes the score means the same thing for every
+    symbol will compare a fund's against a stock's."""
+    assert "quality.scored_on" in FINANCE
+    assert "data_quality_report.scored_on" in FINANCE
+
+
+def test_the_badge_is_given_the_class_the_rest_of_the_page_uses():
+    """Classifying twice invites the badge and the panels disagreeing
+    about what the symbol is."""
+    assert "macro_bundle, klass=asset_kind)" in FINANCE
+
+
+def test_scored_on_names_every_weighted_dimension():
+    report = _assess(_bundle())
+    for dim in report.dimensions:
+        assert dim.label.lower() in report.scored_on
+
+
+# --- the words under the score --------------------------------------------
+
+def test_a_fund_is_not_told_its_required_fields_are_present():
+    """The Excellent line read "Every required field is present and
+    current" under a score that had not looked at a single filing — a
+    sentence about evidence that was never weighed."""
+    fund = data_quality.grade_meaning("Excellent", asset_class.ETF)
+    assert "required field" not in fund
+    assert "filing" not in fund.lower()
+    # ...while an equity keeps the filing wording, which is accurate there.
+    equity = data_quality.grade_meaning("Excellent", asset_class.EQUITY)
+    assert "required field" in equity
+    assert fund != equity
+
+
+def test_every_grade_has_wording_for_both_kinds_of_instrument():
+    grades = ["Excellent", "Good", "Fair", "Poor"]
+    for grade in grades:
+        for klass in (asset_class.EQUITY, asset_class.ETF, asset_class.CRYPTO):
+            text = data_quality.grade_meaning(grade, klass)
+            assert text and "not recognised" not in text, (grade, klass)
+    assert "not recognised" in data_quality.grade_meaning("Nonsense", asset_class.ETF)
+
+
+def test_the_badge_defaults_to_the_equity_wording():
+    """Called with one argument it must behave exactly as before."""
+    for grade in ("Excellent", "Good", "Fair", "Poor"):
+        assert (data_quality.grade_meaning(grade)
+                == data_quality.grade_meaning(grade, asset_class.EQUITY))
+
+
+def test_the_class_is_named_with_a_grammatical_article():
+    """Lowercasing the label produced "a etf / fund" on the live badge —
+    wrong article, and an acronym written as a word."""
+    assert asset_class.with_article(asset_class.ETF) == "an ETF / fund"
+    assert asset_class.with_article(asset_class.EQUITY) == "a stock"
+    assert asset_class.with_article(asset_class.INDEX) == "an index"
+    assert asset_class.with_article(asset_class.CRYPTO) == "a cryptocurrency"
+    assert asset_class.with_article("nonsense") == "an unrecognised instrument"
+    for klass in [s.key for s in asset_class.SPECS]:
+        assert asset_class.with_article(klass).startswith(("a ", "an "))
+
+
+def test_no_render_site_lowercases_a_class_label_by_hand():
+    """The article helper exists so this cannot come back in a third place."""
+    for name in ("finance.py", "asset_class.py", "data_quality.py"):
+        source = (ROOT / name).read_text(encoding="utf-8")
+        assert "label(quality.asset_class).lower()" not in source, name
+        assert "label(data_quality_report.asset_class).lower()" not in source, name
+    assert "with_article" in FINANCE
+
+
+def test_the_not_applicable_note_reads_grammatically_too():
+    note = asset_class.unavailable_note(asset_class.ETF, asset_class.FUNDAMENTALS)
+    assert note.startswith("Not applicable to an ETF / fund.")
+    assert "a etf" not in note
+
+
+def test_uncounted_warnings_are_labelled_as_uncounted():
+    """The detail header reads "0 issue(s)" above a list of three
+    statement warnings. Without a word of explanation the reader cannot
+    tell whether they counted."""
+    assert "did NOT count against this score" in FINANCE
+    assert "data_quality._is_statement_warning(w)" in FINANCE
+
+
+def test_a_crypto_is_not_charged_with_missing_fund_fields():
+    """The badge read "6 field-level issue(s)" for BTC-USD — one per fund
+    profile field, on an instrument with no expense ratio or fund family
+    to report. The original category error, one level down."""
+    report = _assess(_bundle(ticker="BTC-USD", quote_type="CRYPTOCURRENCY",
+                             info={f: None for f in data_quality.FUND_PROFILE_FIELDS}))
+    assert report.asset_class == asset_class.CRYPTO
+    assert report.missing_fund_fields          # still recorded...
+    assert report.issue_count == 0             # ...but not counted
+
+
+def test_a_fund_IS_charged_with_missing_fund_fields():
+    """The exemption is per class, not blanket — a fund that fails to
+    report its expense ratio has a real gap."""
+    report = _assess(_bundle(info={"netExpenseRatio": None}))
+    assert report.issue_count == 1
+
+
+def test_an_equity_counts_its_statement_gaps_as_before():
+    report = _assess(_bundle(quote_type="EQUITY"))
+    # The stub statement has 2 missing required + 1 missing optional.
+    assert report.issue_count == 3
+
+
+def test_a_real_fetch_error_counts_for_every_class():
+    for quote_type in ("EQUITY", "ETF", "CRYPTOCURRENCY"):
+        report = _assess(_bundle(quote_type=quote_type, errors=["boom"]))
+        assert report.issue_count >= 1, quote_type
+
+
+def test_both_render_sites_use_the_one_issue_count():
+    """Two hand-rolled sums drift apart; one of them already had the
+    crypto bug in it."""
+    assert "data_quality_report.issue_count" in FINANCE
+    assert "detail_issue_count = quality.issue_count" in FINANCE

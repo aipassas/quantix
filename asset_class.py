@@ -145,8 +145,12 @@ SPECS_BY_KEY: Dict[str, AssetClassSpec] = {s.key: s for s in SPECS}
 # What this build cannot source for a class, recorded so a later phase
 # does not have to rediscover it. Yahoo is the only provider wired up.
 MISSING_SOURCES: Dict[str, Tuple[str, ...]] = {
-    ETF: ("expense ratio and tracking error are not in Yahoo's fund data; "
-          "top holdings and sector weightings are",),
+    ETF: ("tracking error and down-capture are not in Yahoo's fund data. "
+          "The expense ratio IS — twice, 100x apart: a percent in "
+          "info.netExpenseRatio and a fraction in funds_data."
+          "fund_operations. Top holdings and sector weightings are "
+          "present for equity funds and absent by nature for bond and "
+          "commodity ones (SPY and QQQ disclose them; TLT and GLD do not)",),
     CRYPTO: ("on-chain metrics (MVRV, NVT, hashrate) need Glassnode or "
              "similar — no credentials in this build",),
     FUTURE: ("the forward curve needs quotes for every contract month; "
@@ -186,6 +190,24 @@ def label(asset_class: str) -> str:
     return spec(asset_class).label
 
 
+def with_article(asset_class: str) -> str:
+    """The class label with the right indefinite article, e.g. "an ETF /
+    fund", "a stock", "an index".
+
+    Naively lowercasing the label produced "a etf / fund" on the data
+    quality badge — wrong article, and an acronym written as a word. The
+    article is chosen on the leading letter, which gets "an ETF" right
+    because E is read as a vowel, and an all-caps first word keeps its
+    case.
+    """
+    text = label(asset_class)
+    if not text:
+        return "an instrument"
+    if not text.split()[0].isupper():
+        text = text[0].lower() + text[1:]
+    return ("an " if text[0].upper() in "AEIOU" else "a ") + text
+
+
 def unavailable_note(asset_class: str, capability: str) -> str:
     """What to show where an analysis would have gone.
 
@@ -194,7 +216,7 @@ def unavailable_note(asset_class: str, capability: str) -> str:
     missing will go looking for it.
     """
     detail = spec(asset_class).absence_reason
-    return (f"Not applicable to a {label(asset_class).lower()}. {detail}").strip()
+    return (f"Not applicable to {with_article(asset_class)}. {detail}").strip()
 
 
 def missing_sources(asset_class: str) -> Tuple[str, ...]:

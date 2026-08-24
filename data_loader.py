@@ -135,6 +135,14 @@ class MacroBundle:
     warnings: List[str] = field(default_factory=list)
 
 
+# The three corporate filings, named once. data_quality imports these to
+# tell "this fund has no income statement" (a fact about the instrument)
+# apart from "the fetch failed" (a fact about the data) — a distinction it
+# cannot draw by matching on a literal that might be reworded here.
+STATEMENT_LABELS: Tuple[str, ...] = (
+    "income statement", "balance sheet", "cash flow statement")
+
+
 def _load_statement_field(stock: "yf.Ticker", attr: str, ticker: str, label: str, warnings: List[str]) -> pd.DataFrame:
     """Load an optional financial statement. Missing/empty is a warning, not an error —
     plenty of legitimate tickers (ETFs, indices) simply don't have one."""
@@ -197,9 +205,10 @@ def _load_financial_statements(ticker: str) -> Tuple[pd.DataFrame, pd.DataFrame,
     """
     stock = yf.Ticker(ticker)
     warnings: List[str] = []
-    income_stmt = _load_statement_field(stock, "financials", ticker, "income statement", warnings)
-    balance_sheet = _load_statement_field(stock, "balance_sheet", ticker, "balance sheet", warnings)
-    cash_flow = _load_statement_field(stock, "cashflow", ticker, "cash flow statement", warnings)
+    _income_label, _balance_label, _cash_label = STATEMENT_LABELS
+    income_stmt = _load_statement_field(stock, "financials", ticker, _income_label, warnings)
+    balance_sheet = _load_statement_field(stock, "balance_sheet", ticker, _balance_label, warnings)
+    cash_flow = _load_statement_field(stock, "cashflow", ticker, _cash_label, warnings)
     return income_stmt, balance_sheet, cash_flow, warnings
 
 
