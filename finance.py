@@ -79,6 +79,7 @@ import date_range
 import notifications
 import loading_states
 import asset_class
+import etf_analysis
 import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
@@ -4020,6 +4021,147 @@ else:
             st.info(asset_class.unavailable_note(asset_kind, asset_class.FUNDAMENTALS))
             for _ac_gap in asset_class.missing_sources(asset_kind):
                 st.caption(f"Not sourced in this build: {_ac_gap}.")
+
+            # A fund has no financials of its own, but it is not opaque:
+            # what it HOLDS, what it costs and how it trades are all
+            # answerable. This is the analysis that replaces the company
+            # scorecard rather than an apology for its absence.
+            if asset_class.supports(asset_kind, asset_class.HOLDINGS):
+                _etf = etf_analysis.load_profile(ticker_symbol)
+                if not _etf.ok:
+                    st.warning(_etf.error)
+                else:
+                    st.markdown("---")
+                    st.header("Fund Decomposition")
+                    st.caption(
+                        f"{_etf.category or 'Uncategorised'}"
+                        + (f" · {_etf.family}" if _etf.family else "")
+                        + (f" · {_etf.legal_type}" if _etf.legal_type else ""))
+
+                    _etf_c1, _etf_c2, _etf_c3, _etf_c4 = st.columns(4)
+                    with _etf_c1:
+                        st.metric("Price / Earnings",
+                                  f"{_etf.price_earnings:.1f}x" if _etf.price_earnings
+                                  else "Not reported",
+                                  help="Whole-fund figure. Yahoo reports this "
+                                       "field as its reciprocal; it is inverted "
+                                       "here — see etf_analysis.")
+                    with _etf_c2:
+                        st.metric("Price / Book",
+                                  f"{_etf.price_book:.2f}x" if _etf.price_book
+                                  else "Not reported",
+                                  help="Whole-fund price-to-book, inverted from the "
+                                       "reciprocal this source reports. Below ~2x leans "
+                                       "value, above ~5x leans growth.")
+                    with _etf_c3:
+                        st.metric("Expense ratio",
+                                  f"{_etf.expense_ratio_pct:.2f}%"
+                                  if _etf.expense_ratio_pct is not None else "Not reported",
+                                  delta=(f"{etf_analysis.expense_gap_pct(_etf):+.2f}pp vs category"
+                                         if etf_analysis.expense_gap_pct(_etf) is not None
+                                         else None),
+                                  delta_color="inverse",
+                                  help="The annual fee, as a percentage of assets, "
+                                       "against the average for this fund's category. "
+                                       "Charged whether the fund gains or loses.")
+                    with _etf_c4:
+                        st.metric("Style", etf_analysis.style_label(_etf),
+                                  help="The provider's own category where it gives one, "
+                                       "since it carries the size band too. Falls back "
+                                       "to the fund's price-to-earnings only when no "
+                                       "category is reported.")
+
+                    if etf_analysis.expense_is_high(_etf):
+                        st.warning(
+                            f"This fund costs {etf_analysis.expense_gap_pct(_etf):.2f} "
+                            "percentage points more than its category average.")
+
+                    _etf_gap = etf_analysis.valuation_gap_pct(_etf)
+                    if _etf_gap is not None:
+                        st.caption(
+                            f"Valuation gap vs category: {_etf_gap:+.1f}% "
+                            f"({_etf.price_earnings:.1f}x against "
+                            f"{_etf.category_price_earnings:.1f}x).")
+
+                    # --- what it holds ---------------------------------
+                    if _etf.top_holdings:
+                        _etf_covered = etf_analysis.concentration_pct(_etf.top_holdings)
+                        st.markdown("**Top holdings**")
+                        st.caption(
+                            f"These {len(_etf.top_holdings)} are {_etf_covered:.1f}% of "
+                            "the fund. That is a CONCENTRATION figure — the "
+                            "valuation above is computed across the whole "
+                            "portfolio, not from this list, because weighting "
+                            f"a P/E by {_etf_covered:.0f}% of the fund would "
+                            "understate it by the rest.")
+                        st.dataframe(
+                            pd.DataFrame([
+                                {"Ticker": h.symbol, "Name": h.name,
+                                 "Weight %": round(h.weight_pct, 2)}
+                                for h in _etf.top_holdings
+                            ]),
+                            width="stretch", hide_index=True)
+
+                    if _etf.sector_weights:
+                        _etf_sect = pd.DataFrame(
+                            [{"Sector": k.replace("_", " ").title(),
+                              "Weight %": round(v * 100.0, 2)}
+                             for k, v in _etf.sector_weights.items() if v],
+                        ).sort_values("Weight %", ascending=False)
+                        # graph_objects, not express: px is not imported in
+                        # this app and adding it for one chart would be a
+                        # second plotting idiom for no gain.
+                        _etf_fig = go.Figure(go.Pie(
+                            labels=_etf_sect["Sector"], values=_etf_sect["Weight %"],
+                            hole=0.45, sort=False))
+                        _etf_fig.update_layout(
+                            title="Sector allocation",
+                            template=_theme.plotly_template,
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font_color=_theme.chart_fg,
+                            margin=dict(t=48, b=8, l=8, r=8),
+                        )
+                        st.plotly_chart(_etf_fig, width="stretch")
+                        st.caption(chart_help("etf_sector_allocation"))
+
+                    # --- what it costs ---------------------------------
+                    st.markdown("**What the fee costs over time**")
+                    _etf_drag_rows = []
+                    for _etf_years in etf_analysis.DRAG_YEARS:
+                        _etf_drag = etf_analysis.expense_drag(
+                            _etf.expense_ratio_pct, _etf_years)
+                        _etf_drag_rows.append({
+                            "Horizon": f"{_etf_years} years",
+                            "Given up to fees":
+                                f"{_etf_drag:.2f}% of the gross outcome"
+                                if _etf_drag is not None else "Not reported",
+                        })
+                    st.dataframe(pd.DataFrame(_etf_drag_rows),
+                                 width="stretch", hide_index=True)
+                    st.caption(
+                        f"Illustrated against a declared "
+                        f"{etf_analysis.DRAG_ASSUMED_GROSS_RETURN_PCT:.0f}% gross "
+                        "annual return, compounded. That rate is an assumption "
+                        "for showing what a fee costs, not a forecast of this "
+                        "fund's return.")
+
+                    # --- how good is it --------------------------------
+                    _etf_parts, _etf_score, _etf_how = etf_analysis.quality_scorecard(_etf)
+                    st.markdown("**Holdings quality scorecard**")
+                    if _etf_score is None:
+                        st.caption(_etf_how)
+                    else:
+                        st.metric("Score", f"{_etf_score:.1f} / 10",
+                                  help="Averaged over the components that could be "
+                                       "scored from the available data — the count is "
+                                       "stated below, and unscored components are "
+                                       "listed rather than quietly dropped.")
+                        st.caption(_etf_how)
+                    for _etf_part in _etf_parts:
+                        _etf_shown = (f"{_etf_part.score:.1f}/10"
+                                      if _etf_part.score is not None else "not scored")
+                        st.caption(f"**{_etf_part.name}** — {_etf_shown}. {_etf_part.detail}")
         else:
             st.markdown("---")
             st.header("Financial Metrics Validation Report")

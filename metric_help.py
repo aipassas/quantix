@@ -287,6 +287,11 @@ GLOSSARY: Dict[str, str] = {
 # read it. Rendered as a caption directly above each chart (see the module
 # docstring for why a caption rather than a tooltip).
 CHART_HELP: Dict[str, str] = {
+    "etf_sector_allocation": (
+        "Where the fund's money actually sits, as the fund itself reports it rather than "
+        "inferred from its top ten. Look for a single wedge above a third of the fund: a "
+        "'large blend' fund built that way behaves like a sector fund when that sector "
+        "drops. Weights may not total 100% when cash sits outside these buckets."),
     "portfolio_performance": (
         "Your portfolio's value day by day against the benchmark, rebased to the same starting "
         "value so the gap between the two lines is the real comparison: above it you are "

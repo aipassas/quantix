@@ -218,9 +218,21 @@ def _dividend_yield_pct(info: dict, current_price: Optional[float]) -> Optional[
         as_fraction = abs(reported * 100.0 - derived)
         return reported * 100.0 if as_fraction < as_percent else reported
 
-    # No cross-check available. A "yield" under 0.5 is far more likely to
-    # be a fraction (0.023 = 2.3%) than a real 0.02% payout.
-    return reported * 100.0 if reported < 0.5 else reported
+    # No cross-check available, so there is nothing to decide BETWEEN —
+    # and this is where the old heuristic ("a yield under 0.5 is more
+    # likely a fraction") fabricated numbers. QQQ genuinely yields 0.44%
+    # and reports no dividendRate, so it was scaled to 44.00% and shown
+    # on the quick-stats strip. Any fund or low-payer under 1% with no
+    # rate reported had the same 100x error.
+    #
+    # This client version reports dividendYield already percent-valued
+    # (KO = 2.33 meaning 2.33%), so the reported figure is taken as it
+    # stands. If a future version flips to fractions, a sub-1% payer with
+    # no dividendRate would be UNDER-stated rather than multiplied by a
+    # hundred — the cross-check above still catches every security that
+    # reports a rate, and under-stating is the failure this app can live
+    # with. Inventing a 44% yield is not.
+    return reported
 
 
 def standardize_financials(bundle: TickerBundle) -> StandardizedFinancials:
