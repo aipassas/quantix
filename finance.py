@@ -78,6 +78,7 @@ import keyboard_shortcuts
 import date_range
 import notifications
 import loading_states
+import asset_class
 import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
@@ -3226,6 +3227,13 @@ with st.spinner(f"Running deep audit on {ticker_symbol} & loading Macro Data..."
     # and missing-value handling are consistent across the whole app.
     standardized = standardize_financials(ticker_bundle)
 
+    # What KIND of instrument is this? Nothing in the analysis path asked
+    # before, so BTC-USD loaded as "valid" with pe=None and then got a
+    # discounted cash flow, an eight-point company scorecard and a
+    # sector-percentile ranking run against it. Classified once here and
+    # honoured by the panels that only make sense for a company.
+    asset_kind = asset_class.classify(ticker_bundle.info, ticker_symbol)
+
 # ==========================================
 # SYMBOL HEADER (fill) — renders into the sticky slot reserved at the very
 # top of the page, so it's on screen from first paint and stays pinned
@@ -3953,6 +3961,25 @@ else:
     # as "N/A" rather than a fabricated default.
     fundamentals_engine = FundamentalAnalysisEngine(standardized, raw_info=ticker_bundle.info)
     fundamentals = fundamentals_engine.analyze()
+    # NameError-avoiding placeholders for the equity-only panels below.
+    # A non-equity skips those panels entirely, but the Executive Digest
+    # and the tear sheet read these names unconditionally — so they are
+    # defined here rather than inside the gates that may not execute.
+    # Every READ of the DCF outputs is already guarded on
+    # `dcf_result is not None and dcf_result.ok`, which is what stops a
+    # skipped valuation rendering as an intrinsic value of $0.00.
+    dcf_result = None
+    intrinsic_price = 0.0
+    intrinsic_value = 0.0
+    margin_of_safety = 0.0
+    score_pct = fundamentals.score_pct
+    # Hoisted OUT of the equity-only panel below: the Executive Digest
+    # reads cq.category unconditionally, and leaving the assignment inside
+    # the gate made it undefined for every non-equity — a NameError that
+    # only fires once a crypto or currency is loaded. company_quality is
+    # always present; for an instrument with no financials it reports
+    # "Not Ratable", which is exactly what the digest should say.
+    cq = fundamentals.company_quality
 
     # Sector-relative standing — computed once here, displayed alongside
     # (never instead of) the fixed-threshold Scorecard/Master Matrix rows
@@ -3985,361 +4012,370 @@ else:
     # summary; scroll down to any category for the full breakdown.
     mv = fundamentals.metrics_validation
     with tab_fundamentals:
-        st.markdown("---")
-        st.header("Financial Metrics Validation Report")
-
-        if mv.is_clean:
-            st.success(f"No issues found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}.")
+        # Equity-only. Nothing here has meaning for an instrument with
+        # no issuer and no filings, and rendering it as "not reported"
+        # would imply the question was sensible and the data merely
+        # absent. See asset_class.py.
+        if not asset_class.supports(asset_kind, asset_class.FUNDAMENTALS):
+            st.info(asset_class.unavailable_note(asset_kind, asset_class.FUNDAMENTALS))
+            for _ac_gap in asset_class.missing_sources(asset_kind):
+                st.caption(f"Not sourced in this build: {_ac_gap}.")
         else:
-            issue_parts = []
-            if mv.disagreement_count:
-                issue_parts.append(f"{mv.disagreement_count} disagree with Yahoo's own figure")
-            if mv.outlier_count:
-                issue_parts.append(f"{mv.outlier_count} exceed a sanity bound")
-            if mv.fallback_count:
-                issue_parts.append(f"{mv.fallback_count} used a fallback data source")
-            st.warning(f"{mv.total_issues} issue(s) found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}: " + "; ".join(issue_parts) + ".")
+            st.markdown("---")
+            st.header("Financial Metrics Validation Report")
 
-        vc1, vc2, vc3, vc4 = st.columns(4)
-        vc1.metric("Metrics Evaluated", f"{len(mv.evaluated_checks)} / {len(mv.checks)}", help=help_for("metrics_evaluated"))
-        vc2.metric("Yahoo Disagreements", mv.disagreement_count, help=help_for("yahoo_disagreements"))
-        vc3.metric("Extreme Outliers", mv.outlier_count, help=help_for("extreme_outliers"))
-        vc4.metric("Incomplete Calculations", mv.fallback_count, help=help_for("incomplete_calculations"))
+            if mv.is_clean:
+                st.success(f"No issues found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}.")
+            else:
+                issue_parts = []
+                if mv.disagreement_count:
+                    issue_parts.append(f"{mv.disagreement_count} disagree with Yahoo's own figure")
+                if mv.outlier_count:
+                    issue_parts.append(f"{mv.outlier_count} exceed a sanity bound")
+                if mv.fallback_count:
+                    issue_parts.append(f"{mv.fallback_count} used a fallback data source")
+                st.warning(f"{mv.total_issues} issue(s) found across {len(mv.evaluated_checks)} evaluated metric(s) for {ticker_symbol}: " + "; ".join(issue_parts) + ".")
 
-        if mv.outliers:
-            with st.expander(f"{mv.outlier_count} extreme outlier(s)", expanded=True):
-                for o in mv.outliers:
-                    st.error(f"**[{o.category}] {o.label}**: {o.display} — {o.note}")
+            vc1, vc2, vc3, vc4 = st.columns(4)
+            vc1.metric("Metrics Evaluated", f"{len(mv.evaluated_checks)} / {len(mv.checks)}", help=help_for("metrics_evaluated"))
+            vc2.metric("Yahoo Disagreements", mv.disagreement_count, help=help_for("yahoo_disagreements"))
+            vc3.metric("Extreme Outliers", mv.outlier_count, help=help_for("extreme_outliers"))
+            vc4.metric("Incomplete Calculations", mv.fallback_count, help=help_for("incomplete_calculations"))
 
-        if mv.fallback_notes:
-            with st.expander(f"{mv.fallback_count} incomplete calculation(s)", expanded=False):
-                for note in mv.fallback_notes:
-                    st.info(note)
+            if mv.outliers:
+                with st.expander(f"{mv.outlier_count} extreme outlier(s)", expanded=True):
+                    for o in mv.outliers:
+                        st.error(f"**[{o.category}] {o.label}**: {o.display} — {o.note}")
 
-        if mv.disagreements:
-            with st.expander(f"{mv.disagreement_count} disagreement(s) with Yahoo's own reported figure", expanded=False):
-                disagreement_data = {
-                    "Category": [cat for cat, _ in mv.disagreements],
-                    "Metric": [c.label for _, c in mv.disagreements],
-                    "Computed": [c.computed_display for _, c in mv.disagreements],
-                    "Yahoo Reported": [c.reference_display for _, c in mv.disagreements],
-                }
-                st.table(pd.DataFrame(disagreement_data))
-                st.caption("See the category-specific reports below for the likely cause of each disagreement.")
+            if mv.fallback_notes:
+                with st.expander(f"{mv.fallback_count} incomplete calculation(s)", expanded=False):
+                    for note in mv.fallback_notes:
+                        st.info(note)
 
-        # ==========================================
-        # SCOREBOARD
-        # ==========================================
-        # Flags and score come straight from the engine's evaluated checks. Both
-        # are sector-aware: Debt-to-Equity uses a looser threshold for Financial
-        # Services companies, and a metric with no computable value for this
-        # company (common for banks) is excluded from the score entirely rather
-        # than counted as a failure — so `total_checks` can be less than the 8
-        # possible scorecard metrics, and the Blueprint Alignment % is a weighted
-        # score over the evaluable ones (core health metrics count for more than
-        # valuation/volatility — see config.SCORECARD.weights).
-        green_flags = fundamentals.green_flags
-        total_checks = fundamentals.total_checks
-        possible_checks = len(fundamentals.scorecard_checks)
-        score_pct = fundamentals.score_pct
+            if mv.disagreements:
+                with st.expander(f"{mv.disagreement_count} disagreement(s) with Yahoo's own reported figure", expanded=False):
+                    disagreement_data = {
+                        "Category": [cat for cat, _ in mv.disagreements],
+                        "Metric": [c.label for _, c in mv.disagreements],
+                        "Computed": [c.computed_display for _, c in mv.disagreements],
+                        "Yahoo Reported": [c.reference_display for _, c in mv.disagreements],
+                    }
+                    st.table(pd.DataFrame(disagreement_data))
+                    st.caption("See the category-specific reports below for the likely cause of each disagreement.")
 
-        st.header("Strategic Investment Scorecard", anchor="scorecard")
-        sector_note = f"Sector: {standardized.sector}" if standardized.sector else "Sector: Unknown"
-        if standardized.sector in SCORECARD.financials_sector_names:
-            sector_note += f" — Debt-to-Equity benchmark relaxed to < {SCORECARD.financials_max_debt_to_equity} (banks are structurally more leveraged as a business model)"
-        st.caption(sector_note)
+            # ==========================================
+            # SCOREBOARD
+            # ==========================================
+            # Flags and score come straight from the engine's evaluated checks. Both
+            # are sector-aware: Debt-to-Equity uses a looser threshold for Financial
+            # Services companies, and a metric with no computable value for this
+            # company (common for banks) is excluded from the score entirely rather
+            # than counted as a failure — so `total_checks` can be less than the 8
+            # possible scorecard metrics, and the Blueprint Alignment % is a weighted
+            # score over the evaluable ones (core health metrics count for more than
+            # valuation/volatility — see config.SCORECARD.weights).
+            green_flags = fundamentals.green_flags
+            total_checks = fundamentals.total_checks
+            possible_checks = len(fundamentals.scorecard_checks)
+            score_pct = fundamentals.score_pct
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Institutional Green Flags", f"{green_flags} / {total_checks}", help=help_for("green_flags"))
-        c2.metric("Operational Warning Signs", f"{total_checks - green_flags}", help=help_for("warning_signs"))
-        c3.metric("Blueprint Alignment", f"{score_pct:.0f}%", help="Weighted over evaluable metrics — see the sector/weighting note above.")
+            st.header("Strategic Investment Scorecard", anchor="scorecard")
+            sector_note = f"Sector: {standardized.sector}" if standardized.sector else "Sector: Unknown"
+            if standardized.sector in SCORECARD.financials_sector_names:
+                sector_note += f" — Debt-to-Equity benchmark relaxed to < {SCORECARD.financials_max_debt_to_equity} (banks are structurally more leveraged as a business model)"
+            st.caption(sector_note)
 
-        if total_checks < possible_checks:
-            st.caption(f"{possible_checks - total_checks} of {possible_checks} scorecard metric(s) not computable for {ticker_symbol} and excluded from scoring, rather than counted as a failure.")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Institutional Green Flags", f"{green_flags} / {total_checks}", help=help_for("green_flags"))
+            c2.metric("Operational Warning Signs", f"{total_checks - green_flags}", help=help_for("warning_signs"))
+            c3.metric("Blueprint Alignment", f"{score_pct:.0f}%", help="Weighted over evaluable metrics — see the sector/weighting note above.")
 
-        if fundamentals.alignment_verdict == "high": st.success("HIGH ALIGNMENT: Passes major filters.")
-        elif fundamentals.alignment_verdict == "moderate": st.warning("MODERATE RISK: Proceed with caution.")
-        else: st.error("ABORT RESEARCH: Fails safety benchmarks.")
+            if total_checks < possible_checks:
+                st.caption(f"{possible_checks - total_checks} of {possible_checks} scorecard metric(s) not computable for {ticker_symbol} and excluded from scoring, rather than counted as a failure.")
 
-        # ==========================================
-        # COMPANY QUALITY CLASSIFICATION
-        # ==========================================
-        # A complementary, differently-framed view from the Scorecard above: five
-        # weighted factors (Profitability, Financial Stability, Growth, Valuation,
-        # Capital Efficiency) blended into one 0-100 quality score and category,
-        # instead of a flat pass/fail checklist. Valuation deliberately does NOT
-        # reward cheapness here — it scores how close each multiple sits to a
-        # "reasonably priced" center point, since excellent businesses often
-        # justly trade at a premium (standard quality-investing methodology
-        # excludes valuation from "quality" for exactly this reason).
-        cq = fundamentals.company_quality
-        st.markdown("---")
-        st.header("Company Quality Classification", anchor="quality-classification")
+            if fundamentals.alignment_verdict == "high": st.success("HIGH ALIGNMENT: Passes major filters.")
+            elif fundamentals.alignment_verdict == "moderate": st.warning("MODERATE RISK: Proceed with caution.")
+            else: st.error("ABORT RESEARCH: Fails safety benchmarks.")
 
-        if cq.overall_score is None:
-            st.warning(f"Not enough data to classify {ticker_symbol}'s quality — every factor was missing all of its inputs.")
-        else:
-            qc1, qc2 = st.columns([1, 2])
-            qc1.metric("Overall Quality Score", f"{cq.overall_score:.0f} / 100", help="Weighted average across evaluable factors — see config.QUALITY for every band and weight.")
-            with qc2:
-                st.markdown(f"### {cq.category_icon} {cq.category}")
-                if len(cq.evaluable_factors) < len(cq.factors):
-                    st.caption(f"{len(cq.evaluable_factors)} of {len(cq.factors)} factors had computable data for {ticker_symbol}; the rest were excluded rather than scored as 0.")
+            # ==========================================
+            # COMPANY QUALITY CLASSIFICATION
+            # ==========================================
+            # A complementary, differently-framed view from the Scorecard above: five
+            # weighted factors (Profitability, Financial Stability, Growth, Valuation,
+            # Capital Efficiency) blended into one 0-100 quality score and category,
+            # instead of a flat pass/fail checklist. Valuation deliberately does NOT
+            # reward cheapness here — it scores how close each multiple sits to a
+            # "reasonably priced" center point, since excellent businesses often
+            # justly trade at a premium (standard quality-investing methodology
+            # excludes valuation from "quality" for exactly this reason).
+            cq = fundamentals.company_quality
+            st.markdown("---")
+            st.header("Company Quality Classification", anchor="quality-classification")
 
-            factor_cols = st.columns(len(cq.factors))
-            for col, factor in zip(factor_cols, cq.factors):
-                with col:
-                    if factor.score is None:
-                        st.metric(factor.name, "N/A", help=f"Weight: {factor.weight:.0%}. No computable inputs for {ticker_symbol}.")
+            if cq.overall_score is None:
+                st.warning(f"Not enough data to classify {ticker_symbol}'s quality — every factor was missing all of its inputs.")
+            else:
+                qc1, qc2 = st.columns([1, 2])
+                qc1.metric("Overall Quality Score", f"{cq.overall_score:.0f} / 100", help="Weighted average across evaluable factors — see config.QUALITY for every band and weight.")
+                with qc2:
+                    st.markdown(f"### {cq.category_icon} {cq.category}")
+                    if len(cq.evaluable_factors) < len(cq.factors):
+                        st.caption(f"{len(cq.evaluable_factors)} of {len(cq.factors)} factors had computable data for {ticker_symbol}; the rest were excluded rather than scored as 0.")
+
+                factor_cols = st.columns(len(cq.factors))
+                for col, factor in zip(factor_cols, cq.factors):
+                    with col:
+                        if factor.score is None:
+                            st.metric(factor.name, "N/A", help=f"Weight: {factor.weight:.0%}. No computable inputs for {ticker_symbol}.")
+                        else:
+                            st.metric(factor.name, f"{factor.score:.0f}", help=f"Weight: {factor.weight:.0%} of the overall score.")
+                            st.progress(min(max(factor.score / 100, 0.0), 1.0))
+
+                # Sector-relative ROE — a separate small callout rather than a new
+                # column on the Capital Efficiency factor's table above, since that
+                # table's "Return on Equity" row uses the statement-computed figure
+                # (roe_pct_computed()) while peers here are only ever shallow-fetched,
+                # so the percentile is against Yahoo's own reported ROE — a related
+                # but distinct number, labeled explicitly so the two are never
+                # conflated.
+                if sector_percentiles is not None:
+                    if sector_percentiles.percentiles.get("roe") is not None:
+                        st.caption(f"Sector-relative standing: Return on Equity (Yahoo-reported, {sector_percentiles.target_values['roe']*100:.1f}%) ranks at the {format_percentile(sector_percentiles.percentiles['roe'])} among {sector_percentiles.peer_count} {sector_percentiles.sector} peers.")
                     else:
-                        st.metric(factor.name, f"{factor.score:.0f}", help=f"Weight: {factor.weight:.0%} of the overall score.")
-                        st.progress(min(max(factor.score / 100, 0.0), 1.0))
+                        st.caption(f"Sector-relative Return on Equity standing unavailable — too few {sector_percentiles.sector} peers report this specific metric.")
 
-            # Sector-relative ROE — a separate small callout rather than a new
-            # column on the Capital Efficiency factor's table above, since that
-            # table's "Return on Equity" row uses the statement-computed figure
-            # (roe_pct_computed()) while peers here are only ever shallow-fetched,
-            # so the percentile is against Yahoo's own reported ROE — a related
-            # but distinct number, labeled explicitly so the two are never
-            # conflated.
+            with st.expander("Quality methodology & full metric breakdown", expanded=False):
+                st.caption(
+                    "Each metric scores 0-100 against a configured band (config.QUALITY), then a factor is the average "
+                    "of its evaluable metrics, and the overall score is a weighted average of evaluable factors. A metric "
+                    "or factor with no computable data is excluded rather than scored as 0. Every band/weight is a "
+                    "disclosed judgment call, not derived from a live external quality-rating source."
+                )
+                for factor in cq.factors:
+                    score_label = "N/A" if factor.score is None else f"{factor.score:.0f} / 100"
+                    st.markdown(f"**{factor.name}** (weight {factor.weight:.0%}) — {score_label}")
+                    factor_data = {
+                        "Metric": [met.label for met in factor.metrics],
+                        "Value": [met.display for met in factor.metrics],
+                        "Sub-Score": ["N/A" if met.sub_score is None else f"{met.sub_score:.0f}" for met in factor.metrics],
+                    }
+                    st.table(pd.DataFrame(factor_data))
+                st.caption("Asset Turnover (Capital Efficiency) uses one global band and is naturally sector-dependent — asset-heavy businesses like banks score low here structurally, not necessarily because of poor capital discipline.")
+
+            # ==========================================
+            # STEP 1: QUALITATIVE AUDIT
+            # ==========================================
+            st.markdown("---")
+            st.header("Step 1: The Qualitative Business Audit")
+            with st.expander("Run The 2-Sentence Revenue Test", expanded=True):
+                st.subheader("Business Summary")
+                st.write(standardized.business_summary or 'Description not found.')
+                st.text_area("Your 2-Sentence Test (How do they make money?):")
+
+            # ==========================================
+            # STEP 2-5: THE MASTER MATRIX
+            # ==========================================
+            st.header("The Comprehensive Pass / Fail Master Matrix")
+
+            # Rows are generated from the engine's evaluated checks, so adding a new
+            # ratio in fundamental_analysis.py surfaces here automatically.
+            matrix_rows = fundamentals.matrix_checks
             if sector_percentiles is not None:
-                if sector_percentiles.percentiles.get("roe") is not None:
-                    st.caption(f"Sector-relative standing: Return on Equity (Yahoo-reported, {sector_percentiles.target_values['roe']*100:.1f}%) ranks at the {format_percentile(sector_percentiles.percentiles['roe'])} among {sector_percentiles.peer_count} {sector_percentiles.sector} peers.")
-                else:
-                    st.caption(f"Sector-relative Return on Equity standing unavailable — too few {sector_percentiles.sector} peers report this specific metric.")
-
-        with st.expander("Quality methodology & full metric breakdown", expanded=False):
-            st.caption(
-                "Each metric scores 0-100 against a configured band (config.QUALITY), then a factor is the average "
-                "of its evaluable metrics, and the overall score is a weighted average of evaluable factors. A metric "
-                "or factor with no computable data is excluded rather than scored as 0. Every band/weight is a "
-                "disclosed judgment call, not derived from a live external quality-rating source."
-            )
-            for factor in cq.factors:
-                score_label = "N/A" if factor.score is None else f"{factor.score:.0f} / 100"
-                st.markdown(f"**{factor.name}** (weight {factor.weight:.0%}) — {score_label}")
-                factor_data = {
-                    "Metric": [met.label for met in factor.metrics],
-                    "Value": [met.display for met in factor.metrics],
-                    "Sub-Score": ["N/A" if met.sub_score is None else f"{met.sub_score:.0f}" for met in factor.metrics],
-                }
-                st.table(pd.DataFrame(factor_data))
-            st.caption("Asset Turnover (Capital Efficiency) uses one global band and is naturally sector-dependent — asset-heavy businesses like banks score low here structurally, not necessarily because of poor capital discipline.")
-
-        # ==========================================
-        # STEP 1: QUALITATIVE AUDIT
-        # ==========================================
-        st.markdown("---")
-        st.header("Step 1: The Qualitative Business Audit")
-        with st.expander("Run The 2-Sentence Revenue Test", expanded=True):
-            st.subheader("Business Summary")
-            st.write(standardized.business_summary or 'Description not found.')
-            st.text_area("Your 2-Sentence Test (How do they make money?):")
-
-        # ==========================================
-        # STEP 2-5: THE MASTER MATRIX
-        # ==========================================
-        st.header("The Comprehensive Pass / Fail Master Matrix")
-
-        # Rows are generated from the engine's evaluated checks, so adding a new
-        # ratio in fundamental_analysis.py surfaces here automatically.
-        matrix_rows = fundamentals.matrix_checks
-        if sector_percentiles is not None:
-            st.caption(f"Sector Percentile column ranks against {sector_percentiles.peer_count} {sector_percentiles.sector} peers from Quantix's configured watchlist/peer universe: {', '.join(sector_percentiles.peer_tickers)}.")
-        else:
-            reason = "sector unknown" if not standardized.sector else f"fewer than {SECTOR_MIN_PEERS} same-sector peers in the configured universe"
-            st.caption(f"Sector Percentile column unavailable ({reason} for {ticker_symbol}) — never shown as a fabricated rank.")
-        matrix_data = {
-            "Category": [c.category for c in matrix_rows],
-            "Metric": [c.label for c in matrix_rows],
-            "Current Value": [c.display for c in matrix_rows],
-            "Blueprint Benchmark": [c.benchmark for c in matrix_rows],
-            "Status": [c.status_icon for c in matrix_rows],
-            "Sector Percentile": [format_percentile(sector_percentiles.percentiles.get(c.key)) if sector_percentiles else "N/A" for c in matrix_rows],
-        }
-        matrix_df = pd.DataFrame(matrix_data)
-        st.table(matrix_df)
-        st.download_button(
-            "Download Scorecard (CSV)",
-            data=matrix_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"{ticker_symbol}_scorecard_{datetime.date.today().isoformat()}.csv",
-            mime="text/csv",
-            help="The Comprehensive Pass/Fail Master Matrix exactly as shown above.",
-        )
-
-        # ==========================================
-        # PROFITABILITY VALIDATION REPORT
-        # ==========================================
-        # Every profitability ratio is independently computed from raw statement
-        # data and cross-checked against Yahoo's own separately-reported ratio
-        # for the same concept — the practical substitute here for reconciling
-        # against a real annual report (no live 10-K access in this environment).
-        # A "Differs" does not necessarily mean our formula is wrong: Yahoo's figure is
-        # often trailing-twelve-month while ours uses the most recent annual
-        # period, and that timing difference alone can exceed the tolerance.
-        st.markdown("---")
-        st.header("Profitability Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
-
-        prof_rows = fundamentals.profitability_checks
-        profitability_data = {
-            "Metric": [c.label for c in prof_rows],
-            "Formula": [c.formula for c in prof_rows],
-            "Computed": [c.computed_display for c in prof_rows],
-            "Yahoo Reported": [c.reference_display for c in prof_rows],
-            "Status": [c.status_icon for c in prof_rows],
-        }
-        st.table(pd.DataFrame(profitability_data))
-
-        disagreements = [c for c in prof_rows if c.agrees is False]
-        if disagreements:
-            with st.expander(f"{len(disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
-                for c in disagreements:
-                    st.info(
-                        f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
-                        "Likely cause: Yahoo's ratio is typically trailing-twelve-month, while this figure uses "
-                        "the most recently reported annual period — a timing/basis difference, not necessarily a formula error."
-                    )
-
-        not_applicable = [c for c in prof_rows if c.agrees is None and c.computed_pct is None]
-        if not_applicable:
-            st.caption(
-                "Not computable for " + ticker_symbol + ": " +
-                ", ".join(c.label for c in not_applicable) +
-                " — the required statement line item isn't reported (common for banks/financials, which don't report cost of revenue)."
+                st.caption(f"Sector Percentile column ranks against {sector_percentiles.peer_count} {sector_percentiles.sector} peers from Quantix's configured watchlist/peer universe: {', '.join(sector_percentiles.peer_tickers)}.")
+            else:
+                reason = "sector unknown" if not standardized.sector else f"fewer than {SECTOR_MIN_PEERS} same-sector peers in the configured universe"
+                st.caption(f"Sector Percentile column unavailable ({reason} for {ticker_symbol}) — never shown as a fabricated rank.")
+            matrix_data = {
+                "Category": [c.category for c in matrix_rows],
+                "Metric": [c.label for c in matrix_rows],
+                "Current Value": [c.display for c in matrix_rows],
+                "Blueprint Benchmark": [c.benchmark for c in matrix_rows],
+                "Status": [c.status_icon for c in matrix_rows],
+                "Sector Percentile": [format_percentile(sector_percentiles.percentiles.get(c.key)) if sector_percentiles else "N/A" for c in matrix_rows],
+            }
+            matrix_df = pd.DataFrame(matrix_data)
+            st.table(matrix_df)
+            st.download_button(
+                "Download Scorecard (CSV)",
+                data=matrix_df.to_csv(index=False).encode("utf-8"),
+                file_name=f"{ticker_symbol}_scorecard_{datetime.date.today().isoformat()}.csv",
+                mime="text/csv",
+                help="The Comprehensive Pass/Fail Master Matrix exactly as shown above.",
             )
 
-        # ==========================================
-        # LIQUIDITY VALIDATION REPORT
-        # ==========================================
-        # Current Ratio and Quick Ratio, independently computed from the balance
-        # sheet and cross-checked against Yahoo's own separately-reported ratio.
-        # Informational only — the Current Ratio shown in the Master Matrix above
-        # stays sourced from Yahoo directly; this report exists purely to verify
-        # that figure and to surface Quick Ratio, which has no scorecard flag.
-        st.markdown("---")
-        st.header("Liquidity Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
+            # ==========================================
+            # PROFITABILITY VALIDATION REPORT
+            # ==========================================
+            # Every profitability ratio is independently computed from raw statement
+            # data and cross-checked against Yahoo's own separately-reported ratio
+            # for the same concept — the practical substitute here for reconciling
+            # against a real annual report (no live 10-K access in this environment).
+            # A "Differs" does not necessarily mean our formula is wrong: Yahoo's figure is
+            # often trailing-twelve-month while ours uses the most recent annual
+            # period, and that timing difference alone can exceed the tolerance.
+            st.markdown("---")
+            st.header("Profitability Validation Report")
+            st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
 
-        liq_rows = fundamentals.liquidity_checks
-        liquidity_data = {
-            "Metric": [c.label for c in liq_rows],
-            "Formula": [c.formula for c in liq_rows],
-            "Computed": [c.computed_display for c in liq_rows],
-            "Yahoo Reported": [c.reference_display for c in liq_rows],
-            "Status": [c.status_icon for c in liq_rows],
-        }
-        st.table(pd.DataFrame(liquidity_data))
+            prof_rows = fundamentals.profitability_checks
+            profitability_data = {
+                "Metric": [c.label for c in prof_rows],
+                "Formula": [c.formula for c in prof_rows],
+                "Computed": [c.computed_display for c in prof_rows],
+                "Yahoo Reported": [c.reference_display for c in prof_rows],
+                "Status": [c.status_icon for c in prof_rows],
+            }
+            st.table(pd.DataFrame(profitability_data))
 
-        liq_disagreements = [c for c in liq_rows if c.agrees is False]
-        if liq_disagreements:
-            with st.expander(f"{len(liq_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
-                for c in liq_disagreements:
-                    st.info(
-                        f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
-                        "Likely cause: Yahoo's ratio is typically trailing-twelve-month, while this figure uses "
-                        "the most recently reported annual period — a timing/basis difference, not necessarily a formula error."
-                    )
-
-        liq_not_applicable = [c for c in liq_rows if c.agrees is None and c.computed_pct is None]
-        if liq_not_applicable:
-            st.caption(
-                "Not computable for " + ticker_symbol + ": " +
-                ", ".join(c.label for c in liq_not_applicable) +
-                " — Current Assets, Current Liabilities, or Inventory isn't reported for this company (common for banks, which don't file a classified balance sheet)."
-            )
-
-        # ==========================================
-        # LEVERAGE VALIDATION REPORT
-        # ==========================================
-        # Debt-to-Equity here IS the value shown in the Master Matrix above —
-        # unlike Current Ratio, it's statement-computed (Total Debt / Stockholders
-        # Equity) rather than a Yahoo passthrough, specifically because Yahoo's
-        # debtToEquity field has been observed at inconsistent scales (ratio vs.
-        # percent) across tickers. This report cross-checks that computed value
-        # against Yahoo's own figure, and separately verifies Total Debt itself by
-        # comparing its two independent Yahoo sources (balance sheet vs. info
-        # dict) side by side, since the app silently prefers one over the other
-        # everywhere else.
-        st.markdown("---")
-        st.header("Leverage Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
-
-        lev_rows = fundamentals.leverage_checks
-        leverage_data = {
-            "Metric": [c.label for c in lev_rows],
-            "Formula": [c.formula for c in lev_rows],
-            "Computed": [c.computed_display for c in lev_rows],
-            "Yahoo Reported": [c.reference_display for c in lev_rows],
-            "Status": [c.status_icon for c in lev_rows],
-        }
-        st.table(pd.DataFrame(leverage_data))
-
-        lev_disagreements = [c for c in lev_rows if c.agrees is False]
-        if lev_disagreements:
-            with st.expander(f"{len(lev_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
-                for c in lev_disagreements:
-                    if c.key == "total_debt":
-                        st.info(
-                            f"**{c.label}**: balance sheet reports {c.computed_display}, Yahoo's info feed reports {c.reference_display}. "
-                            "Likely cause: for some companies (especially banks/financials) these two Yahoo sources use different underlying "
-                            "definitions of \"debt\" — not a timing issue. The balance sheet figure is what the rest of the app uses."
-                        )
-                    else:
+            disagreements = [c for c in prof_rows if c.agrees is False]
+            if disagreements:
+                with st.expander(f"{len(disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+                    for c in disagreements:
                         st.info(
                             f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
-                            "Likely cause: Yahoo's debtToEquity field has been observed at inconsistent scales (ratio vs. percent) "
-                            "across tickers — the statement-computed figure above is what the rest of the app uses."
+                            "Likely cause: Yahoo's ratio is typically trailing-twelve-month, while this figure uses "
+                            "the most recently reported annual period — a timing/basis difference, not necessarily a formula error."
                         )
 
-        lev_not_applicable = [c for c in lev_rows if c.agrees is None]
-        if lev_not_applicable:
-            st.caption(
-                "No independent Yahoo reference for " + ticker_symbol + ": " +
-                ", ".join(c.label for c in lev_not_applicable) +
-                " — either Yahoo doesn't report an equivalent field (Interest Coverage), or this company doesn't report it (missing Stockholders Equity/Total Debt)."
-            )
+            not_applicable = [c for c in prof_rows if c.agrees is None and c.computed_pct is None]
+            if not_applicable:
+                st.caption(
+                    "Not computable for " + ticker_symbol + ": " +
+                    ", ".join(c.label for c in not_applicable) +
+                    " — the required statement line item isn't reported (common for banks/financials, which don't report cost of revenue)."
+                )
 
-        # ==========================================
-        # VALUATION VALIDATION REPORT
-        # ==========================================
-        # P/E and Price-to-Book stay Yahoo-sourced as the canonical Master Matrix
-        # values (Yahoo showed no known scale/unit bug here, unlike Debt-to-Equity)
-        # — this report cross-checks them only. EV/EBITDA is a brand-new metric
-        # with no prior canonical value in the app.
-        st.markdown("---")
-        st.header("Valuation Validation Report")
-        st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
+            # ==========================================
+            # LIQUIDITY VALIDATION REPORT
+            # ==========================================
+            # Current Ratio and Quick Ratio, independently computed from the balance
+            # sheet and cross-checked against Yahoo's own separately-reported ratio.
+            # Informational only — the Current Ratio shown in the Master Matrix above
+            # stays sourced from Yahoo directly; this report exists purely to verify
+            # that figure and to surface Quick Ratio, which has no scorecard flag.
+            st.markdown("---")
+            st.header("Liquidity Validation Report")
+            st.caption("Formula vs. Yahoo Finance's own reported ratio for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
 
-        val_rows = fundamentals.valuation_checks
-        valuation_data = {
-            "Metric": [c.label for c in val_rows],
-            "Formula": [c.formula for c in val_rows],
-            "Computed": [c.computed_display for c in val_rows],
-            "Yahoo Reported": [c.reference_display for c in val_rows],
-            "Status": [c.status_icon for c in val_rows],
-        }
-        st.table(pd.DataFrame(valuation_data))
+            liq_rows = fundamentals.liquidity_checks
+            liquidity_data = {
+                "Metric": [c.label for c in liq_rows],
+                "Formula": [c.formula for c in liq_rows],
+                "Computed": [c.computed_display for c in liq_rows],
+                "Yahoo Reported": [c.reference_display for c in liq_rows],
+                "Status": [c.status_icon for c in liq_rows],
+            }
+            st.table(pd.DataFrame(liquidity_data))
 
-        val_disagreement_reasons = {
-            "price_to_book": "Yahoo's own Price-to-Book appears to use a different book-value basis (e.g. a separately reported/stale book value per share) than the Stockholders Equity line item used here — the ROE cross-check above agreeing with Yahoo suggests the equity figure itself is correct.",
-            "peg_ratio": "Yahoo's pegRatio is typically based on forward-looking multi-year analyst growth estimates, while the figure above uses trailing earnings/revenue growth — a genuine definitional difference, not a formula error (Yahoo's own field is also frequently unavailable/deprecated).",
-            "ev_ebitda": "This inherits the Total Debt disagreement from the Leverage Validation Report above — Enterprise Value here is built from the balance-sheet Total Debt figure, which can differ from whatever total debt Yahoo used to compute its own enterpriseValue.",
-        }
-        val_disagreements = [c for c in val_rows if c.agrees is False]
-        if val_disagreements:
-            with st.expander(f"{len(val_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
-                for c in val_disagreements:
-                    reason = val_disagreement_reasons.get(c.key, "Likely a timing/basis difference between this figure and Yahoo's own calculation, not necessarily a formula error.")
-                    st.info(f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. {reason}")
+            liq_disagreements = [c for c in liq_rows if c.agrees is False]
+            if liq_disagreements:
+                with st.expander(f"{len(liq_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+                    for c in liq_disagreements:
+                        st.info(
+                            f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
+                            "Likely cause: Yahoo's ratio is typically trailing-twelve-month, while this figure uses "
+                            "the most recently reported annual period — a timing/basis difference, not necessarily a formula error."
+                        )
 
-        val_not_applicable = [c for c in val_rows if c.agrees is None]
-        if val_not_applicable:
-            st.caption(
-                "No independent Yahoo reference for " + ticker_symbol + ": " +
-                ", ".join(c.label for c in val_not_applicable) +
-                " — Yahoo doesn't report an equivalent field (FCF Yield), doesn't report one for this company (PEG, EV/EBITDA), or a required input (EBIT, Net Income, Market Cap) is missing."
-            )
+            liq_not_applicable = [c for c in liq_rows if c.agrees is None and c.computed_pct is None]
+            if liq_not_applicable:
+                st.caption(
+                    "Not computable for " + ticker_symbol + ": " +
+                    ", ".join(c.label for c in liq_not_applicable) +
+                    " — Current Assets, Current Liabilities, or Inventory isn't reported for this company (common for banks, which don't file a classified balance sheet)."
+                )
+
+            # ==========================================
+            # LEVERAGE VALIDATION REPORT
+            # ==========================================
+            # Debt-to-Equity here IS the value shown in the Master Matrix above —
+            # unlike Current Ratio, it's statement-computed (Total Debt / Stockholders
+            # Equity) rather than a Yahoo passthrough, specifically because Yahoo's
+            # debtToEquity field has been observed at inconsistent scales (ratio vs.
+            # percent) across tickers. This report cross-checks that computed value
+            # against Yahoo's own figure, and separately verifies Total Debt itself by
+            # comparing its two independent Yahoo sources (balance sheet vs. info
+            # dict) side by side, since the app silently prefers one over the other
+            # everywhere else.
+            st.markdown("---")
+            st.header("Leverage Validation Report")
+            st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
+
+            lev_rows = fundamentals.leverage_checks
+            leverage_data = {
+                "Metric": [c.label for c in lev_rows],
+                "Formula": [c.formula for c in lev_rows],
+                "Computed": [c.computed_display for c in lev_rows],
+                "Yahoo Reported": [c.reference_display for c in lev_rows],
+                "Status": [c.status_icon for c in lev_rows],
+            }
+            st.table(pd.DataFrame(leverage_data))
+
+            lev_disagreements = [c for c in lev_rows if c.agrees is False]
+            if lev_disagreements:
+                with st.expander(f"{len(lev_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+                    for c in lev_disagreements:
+                        if c.key == "total_debt":
+                            st.info(
+                                f"**{c.label}**: balance sheet reports {c.computed_display}, Yahoo's info feed reports {c.reference_display}. "
+                                "Likely cause: for some companies (especially banks/financials) these two Yahoo sources use different underlying "
+                                "definitions of \"debt\" — not a timing issue. The balance sheet figure is what the rest of the app uses."
+                            )
+                        else:
+                            st.info(
+                                f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. "
+                                "Likely cause: Yahoo's debtToEquity field has been observed at inconsistent scales (ratio vs. percent) "
+                                "across tickers — the statement-computed figure above is what the rest of the app uses."
+                            )
+
+            lev_not_applicable = [c for c in lev_rows if c.agrees is None]
+            if lev_not_applicable:
+                st.caption(
+                    "No independent Yahoo reference for " + ticker_symbol + ": " +
+                    ", ".join(c.label for c in lev_not_applicable) +
+                    " — either Yahoo doesn't report an equivalent field (Interest Coverage), or this company doesn't report it (missing Stockholders Equity/Total Debt)."
+                )
+
+            # ==========================================
+            # VALUATION VALIDATION REPORT
+            # ==========================================
+            # P/E and Price-to-Book stay Yahoo-sourced as the canonical Master Matrix
+            # values (Yahoo showed no known scale/unit bug here, unlike Debt-to-Equity)
+            # — this report cross-checks them only. EV/EBITDA is a brand-new metric
+            # with no prior canonical value in the app.
+            st.markdown("---")
+            st.header("Valuation Validation Report")
+            st.caption("Formula vs. Yahoo Finance's own reported figure for the same concept · Agrees (within 15%) · Differs · Not checked (no independent reference, or not applicable for this company)")
+
+            val_rows = fundamentals.valuation_checks
+            valuation_data = {
+                "Metric": [c.label for c in val_rows],
+                "Formula": [c.formula for c in val_rows],
+                "Computed": [c.computed_display for c in val_rows],
+                "Yahoo Reported": [c.reference_display for c in val_rows],
+                "Status": [c.status_icon for c in val_rows],
+            }
+            st.table(pd.DataFrame(valuation_data))
+
+            val_disagreement_reasons = {
+                "price_to_book": "Yahoo's own Price-to-Book appears to use a different book-value basis (e.g. a separately reported/stale book value per share) than the Stockholders Equity line item used here — the ROE cross-check above agreeing with Yahoo suggests the equity figure itself is correct.",
+                "peg_ratio": "Yahoo's pegRatio is typically based on forward-looking multi-year analyst growth estimates, while the figure above uses trailing earnings/revenue growth — a genuine definitional difference, not a formula error (Yahoo's own field is also frequently unavailable/deprecated).",
+                "ev_ebitda": "This inherits the Total Debt disagreement from the Leverage Validation Report above — Enterprise Value here is built from the balance-sheet Total Debt figure, which can differ from whatever total debt Yahoo used to compute its own enterpriseValue.",
+            }
+            val_disagreements = [c for c in val_rows if c.agrees is False]
+            if val_disagreements:
+                with st.expander(f"{len(val_disagreements)} metric(s) diverge from Yahoo's reported figure", expanded=False):
+                    for c in val_disagreements:
+                        reason = val_disagreement_reasons.get(c.key, "Likely a timing/basis difference between this figure and Yahoo's own calculation, not necessarily a formula error.")
+                        st.info(f"**{c.label}**: computed {c.computed_display} vs. Yahoo's {c.reference_display}. {reason}")
+
+            val_not_applicable = [c for c in val_rows if c.agrees is None]
+            if val_not_applicable:
+                st.caption(
+                    "No independent Yahoo reference for " + ticker_symbol + ": " +
+                    ", ".join(c.label for c in val_not_applicable) +
+                    " — Yahoo doesn't report an equivalent field (FCF Yield), doesn't report one for this company (PEG, EV/EBITDA), or a required input (EBIT, Net Income, Market Cap) is missing."
+                )
 
     with tab_chart_workspace:
         # ==========================================
@@ -5042,69 +5078,100 @@ else:
             st.info(f"ATR ({atr_length}) not yet available — the selected date range doesn't cover enough trading days to complete the warm-up period.")
 
     with tab_fundamentals:
-        # ==========================================
-        # PROFESSIONAL MULTI-STAGE DCF ENGINE
-        # ==========================================
-        st.markdown("---")
-        st.header("Automated DCF Valuation Engine", anchor="dcf")
+        # Equity-only. Nothing here has meaning for an instrument with
+        # no issuer and no filings, and rendering it as "not reported"
+        # would imply the question was sensible and the data merely
+        # absent. See asset_class.py.
+        if not asset_class.supports(asset_kind, asset_class.DCF):
+            st.info(asset_class.unavailable_note(asset_kind, asset_class.DCF))
+            for _ac_gap in asset_class.missing_sources(asset_kind):
+                st.caption(f"Not sourced in this build: {_ac_gap}.")
+        else:
+            # ==========================================
+            # PROFESSIONAL MULTI-STAGE DCF ENGINE
+            # ==========================================
+            st.markdown("---")
+            st.header("Automated DCF Valuation Engine", anchor="dcf")
 
-        # CAPM beta for the DCF's WACC: reuses the same regression computed
-        # above for the Alpha/Performance Attribution section (against the
-        # selected benchmark) rather than running it twice; wacc()/run_dcf()
-        # fall back to Yahoo's reported beta, then a declared 1.0 market
-        # assumption, when this comes back None.
-        dcf_result = None  # stays None if the try block below raises before assignment — the Executive Digest checks this rather than assuming it's always set
-        with st.expander("Professional Multi-Stage DCF Valuation", expanded=True):
-            try:
-                # The DCF model itself lives in the Fundamental Analysis Engine;
-                # this block only renders its result.
-                dcf_result = fundamentals_engine.run_dcf(
-                    dcf_growth, fallback_price=df['Close'].iloc[-1],
-                    regressed_beta=beta_regression.beta if beta_regression else None,
-                    beta_r_squared=beta_regression.r_squared if beta_regression else None,
-                )
-                current_price = dcf_result.current_price
-
-                if dcf_result.ok:
-                    wacc = dcf_result.wacc
-                    intrinsic_price = dcf_result.intrinsic_price
-                    intrinsic_value = intrinsic_price  # Alias για το Executive Briefing
-                    margin_of_safety = dcf_result.margin_of_safety_pct
-
-                    # UI Metrics
-                    d1, d2, d3 = st.columns(3)
-                    d1.metric("Market Price", f"${current_price:.2f}", help=help_for("market_price"))
-                    d2.metric("Intrinsic Value (2-Stage)", f"${intrinsic_price:.2f}", help=help_for("intrinsic_value"))
-                    d3.metric("Margin of Safety", f"{margin_of_safety:.2f}%", delta=dcf_result.status, delta_color=dcf_result.status_color, help=help_for("margin_of_safety"))
-
-                    beta_labels = {
-                        "regressed": f"regressed vs. {benchmark_symbol}, R²={dcf_result.beta_r_squared:.2f}",
-                        "yahoo_reported": "Yahoo-reported",
-                        "market_assumption": "1.0 market assumption — no reported or regressible beta available",
-                    }
-                    st.info(
-                        f"**WACC Calculated:** {wacc*100:.2f}% (CAPM & Debt Structure) | **Model:** 2-Stage Gordon Growth  \n"
-                        f"**Beta:** {dcf_result.beta:.2f} ({beta_labels[dcf_result.beta_source]})"
+            # CAPM beta for the DCF's WACC: reuses the same regression computed
+            # above for the Alpha/Performance Attribution section (against the
+            # selected benchmark) rather than running it twice; wacc()/run_dcf()
+            # fall back to Yahoo's reported beta, then a declared 1.0 market
+            # assumption, when this comes back None.
+            dcf_result = None  # stays None if the try block below raises before assignment — the Executive Digest checks this rather than assuming it's always set
+            with st.expander("Professional Multi-Stage DCF Valuation", expanded=True):
+                try:
+                    # The DCF model itself lives in the Fundamental Analysis Engine;
+                    # this block only renders its result.
+                    dcf_result = fundamentals_engine.run_dcf(
+                        dcf_growth, fallback_price=df['Close'].iloc[-1],
+                        regressed_beta=beta_regression.beta if beta_regression else None,
+                        beta_r_squared=beta_regression.r_squared if beta_regression else None,
                     )
+                    current_price = dcf_result.current_price
 
-                    # Visual Gauge
-                    st.write("Safety Gauge:")
-                    st.progress(min(max(margin_of_safety / 50, 0), 1.0))
+                    if dcf_result.ok:
+                        wacc = dcf_result.wacc
+                        intrinsic_price = dcf_result.intrinsic_price
+                        intrinsic_value = intrinsic_price  # Alias για το Executive Briefing
+                        margin_of_safety = dcf_result.margin_of_safety_pct
 
-                    # Sensitivity Analysis Heatmap
-                    st.subheader("Sensitivity Analysis: WACC vs Terminal Growth")
-                    wacc_range = np.linspace(max(0.01, wacc - DCF.sensitivity_wacc_delta), wacc + DCF.sensitivity_wacc_delta, DCF.sensitivity_steps)
-                    growth_range = np.linspace(max(0.01, dcf_growth - DCF.sensitivity_growth_delta), dcf_growth + DCF.sensitivity_growth_delta, DCF.sensitivity_steps)
+                        # UI Metrics
+                        d1, d2, d3 = st.columns(3)
+                        d1.metric("Market Price", f"${current_price:.2f}", help=help_for("market_price"))
+                        d2.metric("Intrinsic Value (2-Stage)", f"${intrinsic_price:.2f}", help=help_for("intrinsic_value"))
+                        d3.metric("Margin of Safety", f"{margin_of_safety:.2f}%", delta=dcf_result.status, delta_color=dcf_result.status_color, help=help_for("margin_of_safety"))
 
-                    data = [[fundamentals_engine.intrinsic_price(g, w) for w in wacc_range] for g in growth_range]
-                    df_heat = pd.DataFrame(data, columns=[f"{w*100:.1f}% WACC" for w in wacc_range], index=[f"{g*100:.1f}% Growth" for g in growth_range])
-                    st.dataframe(df_heat.style.format("${:.2f}"))
+                        beta_labels = {
+                            "regressed": f"regressed vs. {benchmark_symbol}, R²={dcf_result.beta_r_squared:.2f}",
+                            "yahoo_reported": "Yahoo-reported",
+                            "market_assumption": "1.0 market assumption — no reported or regressible beta available",
+                        }
+                        st.info(
+                            f"**WACC Calculated:** {wacc*100:.2f}% (CAPM & Debt Structure) | **Model:** 2-Stage Gordon Growth  \n"
+                            f"**Beta:** {dcf_result.beta:.2f} ({beta_labels[dcf_result.beta_source]})"
+                        )
 
-                else:
-                    if dcf_result.reason == "missing market cap":
-                        st.warning("Missing market capitalization data. Cannot compute WACC/DCF reliably.")
+                        # Visual Gauge
+                        st.write("Safety Gauge:")
+                        st.progress(min(max(margin_of_safety / 50, 0), 1.0))
+
+                        # Sensitivity Analysis Heatmap
+                        st.subheader("Sensitivity Analysis: WACC vs Terminal Growth")
+                        wacc_range = np.linspace(max(0.01, wacc - DCF.sensitivity_wacc_delta), wacc + DCF.sensitivity_wacc_delta, DCF.sensitivity_steps)
+                        growth_range = np.linspace(max(0.01, dcf_growth - DCF.sensitivity_growth_delta), dcf_growth + DCF.sensitivity_growth_delta, DCF.sensitivity_steps)
+
+                        data = [[fundamentals_engine.intrinsic_price(g, w) for w in wacc_range] for g in growth_range]
+                        df_heat = pd.DataFrame(data, columns=[f"{w*100:.1f}% WACC" for w in wacc_range], index=[f"{g*100:.1f}% Growth" for g in growth_range])
+                        st.dataframe(df_heat.style.format("${:.2f}"))
+
                     else:
-                        st.warning("Negative Free Cash Flow or missing shares. Cannot compute DCF reliably.")
+                        if dcf_result.reason == "missing market cap":
+                            st.warning("Missing market capitalization data. Cannot compute WACC/DCF reliably.")
+                        else:
+                            st.warning("Negative Free Cash Flow or missing shares. Cannot compute DCF reliably.")
+                        # PLACEHOLDERS ONLY — these keep the names bound for code
+                        # further down that would otherwise raise NameError. They are
+                        # NOT a valuation. Every consumer must gate on
+                        # `dcf_result is not None and dcf_result.ok` before reading
+                        # them; rendering these zeroes is how the tear sheet once
+                        # told a client Rivian's intrinsic value was $0.00.
+                        intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
+
+                except ZeroDivisionError:
+                    # Terminal value is undefined when WACC exactly equals the terminal
+                    # growth rate used in the Gordon Growth model.
+                    st.error(f"DCF Engine Error: the discount rate (WACC) came out equal to the terminal growth rate ({DCF.terminal_growth_rate*100:.0f}%), which makes the terminal value mathematically undefined. Try adjusting the WACC or growth sliders.")
+                    # PLACEHOLDERS ONLY — these keep the names bound for code
+                    # further down that would otherwise raise NameError. They are
+                    # NOT a valuation. Every consumer must gate on
+                    # `dcf_result is not None and dcf_result.ok` before reading
+                    # them; rendering these zeroes is how the tear sheet once
+                    # told a client Rivian's intrinsic value was $0.00.
+                    intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
+                except Exception as e:
+                    log_exception(logger, "calc.error", section="dcf_engine", ticker=ticker_symbol)
+                    st.error(f"Unexpected DCF Engine error: {type(e).__name__}: {e}")
                     # PLACEHOLDERS ONLY — these keep the names bound for code
                     # further down that would otherwise raise NameError. They are
                     # NOT a valuation. Every consumer must gate on
@@ -5113,169 +5180,147 @@ else:
                     # told a client Rivian's intrinsic value was $0.00.
                     intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
 
-            except ZeroDivisionError:
-                # Terminal value is undefined when WACC exactly equals the terminal
-                # growth rate used in the Gordon Growth model.
-                st.error(f"DCF Engine Error: the discount rate (WACC) came out equal to the terminal growth rate ({DCF.terminal_growth_rate*100:.0f}%), which makes the terminal value mathematically undefined. Try adjusting the WACC or growth sliders.")
-                # PLACEHOLDERS ONLY — these keep the names bound for code
-                # further down that would otherwise raise NameError. They are
-                # NOT a valuation. Every consumer must gate on
-                # `dcf_result is not None and dcf_result.ok` before reading
-                # them; rendering these zeroes is how the tear sheet once
-                # told a client Rivian's intrinsic value was $0.00.
-                intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
-            except Exception as e:
-                log_exception(logger, "calc.error", section="dcf_engine", ticker=ticker_symbol)
-                st.error(f"Unexpected DCF Engine error: {type(e).__name__}: {e}")
-                # PLACEHOLDERS ONLY — these keep the names bound for code
-                # further down that would otherwise raise NameError. They are
-                # NOT a valuation. Every consumer must gate on
-                # `dcf_result is not None and dcf_result.ok` before reading
-                # them; rendering these zeroes is how the tear sheet once
-                # told a client Rivian's intrinsic value was $0.00.
-                intrinsic_price, intrinsic_value, margin_of_safety = 0.0, 0.0, 0.0
+            # ==========================================
+            # SCENARIO MODELING
+            # ==========================================
+            # Wires hypothetical shocks into the SAME DCF/risk functions above
+            # — engine.intrinsic_price() (the identical call the sensitivity
+            # heatmap uses) and the unchanged risk_analytics VaR/CVaR/Sharpe/
+            # Max Drawdown functions — never a second valuation or risk model.
+            st.markdown("---")
+            st.header("Scenario Modeling")
+            st.caption(
+                "Define a hypothetical event and see its before/after impact on THIS ticker's DCF valuation and risk "
+                "metrics, computed by re-running the exact same engines above at shocked inputs — not a separate model. "
+                "Dividend Cut is deliberately the odd one out: this app's DCF is built on unlevered free cash flow, "
+                "which by the Modigliani-Miller theorem doesn't mechanically change with dividend POLICY — so a "
+                "dividend cut's real, non-fabricated effect shown below is the lost cash income per share, not an "
+                "invented DCF impact, unless you explicitly opt into a discount-rate add-on for it."
+            )
 
-        # ==========================================
-        # SCENARIO MODELING
-        # ==========================================
-        # Wires hypothetical shocks into the SAME DCF/risk functions above
-        # — engine.intrinsic_price() (the identical call the sensitivity
-        # heatmap uses) and the unchanged risk_analytics VaR/CVaR/Sharpe/
-        # Max Drawdown functions — never a second valuation or risk model.
-        st.markdown("---")
-        st.header("Scenario Modeling")
-        st.caption(
-            "Define a hypothetical event and see its before/after impact on THIS ticker's DCF valuation and risk "
-            "metrics, computed by re-running the exact same engines above at shocked inputs — not a separate model. "
-            "Dividend Cut is deliberately the odd one out: this app's DCF is built on unlevered free cash flow, "
-            "which by the Modigliani-Miller theorem doesn't mechanically change with dividend POLICY — so a "
-            "dividend cut's real, non-fabricated effect shown below is the lost cash income per share, not an "
-            "invented DCF impact, unless you explicitly opt into a discount-rate add-on for it."
-        )
+            if "scenario_saved" not in st.session_state:
+                st.session_state["scenario_saved"] = load_scenarios()
 
-        if "scenario_saved" not in st.session_state:
-            st.session_state["scenario_saved"] = load_scenarios()
+            sc_type = st.radio(
+                "Scenario Type", SCENARIO_TYPES, format_func=lambda t: SCENARIO_TYPE_LABELS[t],
+                horizontal=True, key="scenario_type_radio",
+            )
 
-        sc_type = st.radio(
-            "Scenario Type", SCENARIO_TYPES, format_func=lambda t: SCENARIO_TYPE_LABELS[t],
-            horizontal=True, key="scenario_type_radio",
-        )
+            # Re-seeded only when the TYPE actually changes (not on every rerun)
+            # — same pattern realtime_alerts.py's fundamental-threshold field
+            # established, so editing a parameter sticks across reruns instead
+            # of being silently reset back to the type's default every time.
+            if st.session_state.get("_scenario_seeded_for_type") != sc_type:
+                _seed = default_scenario(sc_type)
+                st.session_state["scenario_growth_delta"] = _seed.growth_rate_delta * 100
+                st.session_state["scenario_discount_delta"] = _seed.discount_rate_delta * 100
+                st.session_state["scenario_vol_multiplier"] = _seed.volatility_multiplier
+                st.session_state["scenario_mean_shift"] = _seed.mean_return_shift * 100
+                st.session_state["scenario_dividend_cut_pct"] = _seed.dividend_cut_pct
+                st.session_state["_scenario_seeded_for_type"] = sc_type
 
-        # Re-seeded only when the TYPE actually changes (not on every rerun)
-        # — same pattern realtime_alerts.py's fundamental-threshold field
-        # established, so editing a parameter sticks across reruns instead
-        # of being silently reset back to the type's default every time.
-        if st.session_state.get("_scenario_seeded_for_type") != sc_type:
-            _seed = default_scenario(sc_type)
-            st.session_state["scenario_growth_delta"] = _seed.growth_rate_delta * 100
-            st.session_state["scenario_discount_delta"] = _seed.discount_rate_delta * 100
-            st.session_state["scenario_vol_multiplier"] = _seed.volatility_multiplier
-            st.session_state["scenario_mean_shift"] = _seed.mean_return_shift * 100
-            st.session_state["scenario_dividend_cut_pct"] = _seed.dividend_cut_pct
-            st.session_state["_scenario_seeded_for_type"] = sc_type
+            sc_c1, sc_c2, sc_c3 = st.columns(3)
+            with sc_c1:
+                sc_growth_delta = st.number_input("Growth Rate Shock (pp)", key="scenario_growth_delta", step=0.5, help="Added to the DCF's current growth-rate slider (in percentage points).") / 100
+                sc_discount_delta = st.number_input("Discount Rate Shock (pp)", key="scenario_discount_delta", step=0.25, help="Added to the DCF's calculated WACC (in percentage points).") / 100
+            with sc_c2:
+                sc_vol_multiplier = st.number_input("Volatility Multiplier", key="scenario_vol_multiplier", min_value=0.1, step=0.1, help="Scales daily returns before recomputing VaR/CVaR/Sharpe/Max Drawdown. 1.0 = no change.")
+                sc_mean_shift = st.number_input("Daily Return Shift (pp)", key="scenario_mean_shift", step=0.05, help="Added to every daily log-return before recomputing risk metrics (in percentage points per day).") / 100
+            with sc_c3:
+                sc_dividend_cut = st.number_input("Dividend Cut (%)", key="scenario_dividend_cut_pct", min_value=0.0, max_value=100.0, step=5.0, disabled=(sc_type != "dividend_cut"), help="Only used for the Dividend Cut scenario type.")
+                sc_investment = st.number_input("Illustrative Investment ($)", value=SCENARIO_MODELING.default_investment_amount, step=1000.0, key="scenario_investment", help="Applies the DCF's intrinsic-value % change to this dollar amount — illustrative only, not a price forecast.")
 
-        sc_c1, sc_c2, sc_c3 = st.columns(3)
-        with sc_c1:
-            sc_growth_delta = st.number_input("Growth Rate Shock (pp)", key="scenario_growth_delta", step=0.5, help="Added to the DCF's current growth-rate slider (in percentage points).") / 100
-            sc_discount_delta = st.number_input("Discount Rate Shock (pp)", key="scenario_discount_delta", step=0.25, help="Added to the DCF's calculated WACC (in percentage points).") / 100
-        with sc_c2:
-            sc_vol_multiplier = st.number_input("Volatility Multiplier", key="scenario_vol_multiplier", min_value=0.1, step=0.1, help="Scales daily returns before recomputing VaR/CVaR/Sharpe/Max Drawdown. 1.0 = no change.")
-            sc_mean_shift = st.number_input("Daily Return Shift (pp)", key="scenario_mean_shift", step=0.05, help="Added to every daily log-return before recomputing risk metrics (in percentage points per day).") / 100
-        with sc_c3:
-            sc_dividend_cut = st.number_input("Dividend Cut (%)", key="scenario_dividend_cut_pct", min_value=0.0, max_value=100.0, step=5.0, disabled=(sc_type != "dividend_cut"), help="Only used for the Dividend Cut scenario type.")
-            sc_investment = st.number_input("Illustrative Investment ($)", value=SCENARIO_MODELING.default_investment_amount, step=1000.0, key="scenario_investment", help="Applies the DCF's intrinsic-value % change to this dollar amount — illustrative only, not a price forecast.")
+            sc_run_col, sc_save_col = st.columns([1, 1])
+            with sc_run_col:
+                sc_run_clicked = st.button("Run Scenario", type="primary", key="scenario_run_btn")
+            with sc_save_col:
+                sc_save_clicked = st.button("Save This Scenario", key="scenario_save_btn")
 
-        sc_run_col, sc_save_col = st.columns([1, 1])
-        with sc_run_col:
-            sc_run_clicked = st.button("Run Scenario", type="primary", key="scenario_run_btn")
-        with sc_save_col:
-            sc_save_clicked = st.button("Save This Scenario", key="scenario_save_btn")
+            _sc_definition = ScenarioDefinition(
+                name=f"{SCENARIO_TYPE_LABELS[sc_type]} ({ticker_symbol})", scenario_type=sc_type,
+                growth_rate_delta=sc_growth_delta, discount_rate_delta=sc_discount_delta,
+                volatility_multiplier=sc_vol_multiplier, mean_return_shift=sc_mean_shift,
+                dividend_cut_pct=sc_dividend_cut, created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+            )
 
-        _sc_definition = ScenarioDefinition(
-            name=f"{SCENARIO_TYPE_LABELS[sc_type]} ({ticker_symbol})", scenario_type=sc_type,
-            growth_rate_delta=sc_growth_delta, discount_rate_delta=sc_discount_delta,
-            volatility_multiplier=sc_vol_multiplier, mean_return_shift=sc_mean_shift,
-            dividend_cut_pct=sc_dividend_cut, created_at=datetime.datetime.now().isoformat(timespec="seconds"),
-        )
+            if sc_save_clicked:
+                st.session_state["scenario_saved"] = save_scenario(_sc_definition)
+                st.success(f"Saved \"{_sc_definition.name}\".")
 
-        if sc_save_clicked:
-            st.session_state["scenario_saved"] = save_scenario(_sc_definition)
-            st.success(f"Saved \"{_sc_definition.name}\".")
-
-        if sc_run_clicked:
-            _sc_result, _sc_risk, _sc_dividend = None, None, None
-            if dcf_result is not None and dcf_result.ok:
-                _sc_result = run_scenario(
-                    fundamentals_engine, df, ticker_bundle.info, dcf_growth, dcf_result.wacc,
-                    _sc_definition, confidence_level=var_confidence, lookback=var_lookback, investment_amount=sc_investment,
-                )
-            else:
-                # DCF unavailable: still run the risk/dividend legs by
-                # calling the same functions directly rather than routing
-                # through run_scenario(), which requires a base discount
-                # rate to also attempt the DCF leg.
-                st.caption("DCF is unavailable for this ticker (see the DCF section above) — showing risk/dividend impact only.")
-                _sc_risk = apply_risk_scenario(df, _sc_definition, var_confidence, var_lookback)
-                _sc_dividend = dividend_cut_impact(ticker_bundle.info, standardized.current_price, sc_dividend_cut) if sc_type == "dividend_cut" else None
-
-            log_event(logger, logging.INFO, "user.scenario_run", ticker=ticker_symbol, scenario_type=sc_type)
-
-            if _sc_result is not None:
-                if _sc_result.dcf.ok:
-                    st.markdown("**DCF Impact**")
-                    dc1, dc2, dc3 = st.columns(3)
-                    dc1.metric("Base Intrinsic Value", f"${_sc_result.dcf.base_intrinsic_price:.2f}", help=help_for("base_intrinsic_value"))
-                    dc2.metric("Shocked Intrinsic Value", f"${_sc_result.dcf.shocked_intrinsic_price:.2f}", delta=f"{_sc_result.dcf.pct_change:+.2f}%", help=help_for("shocked_intrinsic_value"))
-                    if _sc_result.implied_portfolio_value_change is not None:
-                        dc3.metric(f"Illustrative Impact on ${sc_investment:,.0f}", f"${_sc_result.implied_portfolio_value_change:+,.2f}", help="Applies the intrinsic-value % change to your investment amount — assumes eventual price convergence to intrinsic value, not a forecast.")
+            if sc_run_clicked:
+                _sc_result, _sc_risk, _sc_dividend = None, None, None
+                if dcf_result is not None and dcf_result.ok:
+                    _sc_result = run_scenario(
+                        fundamentals_engine, df, ticker_bundle.info, dcf_growth, dcf_result.wacc,
+                        _sc_definition, confidence_level=var_confidence, lookback=var_lookback, investment_amount=sc_investment,
+                    )
                 else:
-                    st.warning(f"DCF impact not available: {_sc_result.dcf.reason}")
+                    # DCF unavailable: still run the risk/dividend legs by
+                    # calling the same functions directly rather than routing
+                    # through run_scenario(), which requires a base discount
+                    # rate to also attempt the DCF leg.
+                    st.caption("DCF is unavailable for this ticker (see the DCF section above) — showing risk/dividend impact only.")
+                    _sc_risk = apply_risk_scenario(df, _sc_definition, var_confidence, var_lookback)
+                    _sc_dividend = dividend_cut_impact(ticker_bundle.info, standardized.current_price, sc_dividend_cut) if sc_type == "dividend_cut" else None
 
-                if _sc_result.risk.ok:
-                    st.markdown("**Risk Impact**")
-                    _sc_risk_rows = pd.DataFrame({
-                        "Base": [f"{_sc_result.risk.base_var_pct:.2f}%", f"{_sc_result.risk.base_cvar_pct:.2f}%", f"{_sc_result.risk.base_sharpe:.2f}" if _sc_result.risk.base_sharpe is not None else "N/A", f"{_sc_result.risk.base_max_drawdown_pct:.2f}%"],
-                        "Shocked": [f"{_sc_result.risk.shocked_var_pct:.2f}%", f"{_sc_result.risk.shocked_cvar_pct:.2f}%", f"{_sc_result.risk.shocked_sharpe:.2f}" if _sc_result.risk.shocked_sharpe is not None else "N/A", f"{_sc_result.risk.shocked_max_drawdown_pct:.2f}%"],
-                    }, index=[f"1-Day VaR ({var_confidence:.0%})", "Expected Shortfall (CVaR)", "Sharpe Ratio", "Max Drawdown"])
-                    st.table(_sc_risk_rows)
+                log_event(logger, logging.INFO, "user.scenario_run", ticker=ticker_symbol, scenario_type=sc_type)
 
-                if _sc_result.dividend.applicable:
-                    st.markdown("**Dividend Impact**")
-                    dv1, dv2, dv3 = st.columns(3)
-                    dv1.metric("Annual Dividend / Share", f"${_sc_result.dividend.current_annual_dividend:.2f} → ${_sc_result.dividend.shocked_annual_dividend:.2f}", help=help_for("annual_dividend_share"))
-                    dv2.metric("Dividend Yield", f"{_sc_result.dividend.current_yield_pct:.2f}% → {_sc_result.dividend.shocked_yield_pct:.2f}%", help=help_for("dividend_yield"))
-                    dv3.metric("Lost Income / Share", f"${_sc_result.dividend.lost_annual_income_per_share:.2f}", help=help_for("lost_income_share"))
-                elif sc_type == "dividend_cut":
-                    st.caption(f"Dividend impact not available: {_sc_result.dividend.detail}")
-            elif _sc_risk is not None:
-                if _sc_risk.ok:
-                    st.markdown("**Risk Impact**")
-                    _sc_risk_rows = pd.DataFrame({
-                        "Base": [f"{_sc_risk.base_var_pct:.2f}%", f"{_sc_risk.base_cvar_pct:.2f}%", f"{_sc_risk.base_sharpe:.2f}" if _sc_risk.base_sharpe is not None else "N/A", f"{_sc_risk.base_max_drawdown_pct:.2f}%"],
-                        "Shocked": [f"{_sc_risk.shocked_var_pct:.2f}%", f"{_sc_risk.shocked_cvar_pct:.2f}%", f"{_sc_risk.shocked_sharpe:.2f}" if _sc_risk.shocked_sharpe is not None else "N/A", f"{_sc_risk.shocked_max_drawdown_pct:.2f}%"],
-                    }, index=[f"1-Day VaR ({var_confidence:.0%})", "Expected Shortfall (CVaR)", "Sharpe Ratio", "Max Drawdown"])
-                    st.table(_sc_risk_rows)
-                if _sc_dividend is not None and _sc_dividend.applicable:
-                    st.markdown("**Dividend Impact**")
-                    dv1, dv2, dv3 = st.columns(3)
-                    dv1.metric("Annual Dividend / Share", f"${_sc_dividend.current_annual_dividend:.2f} → ${_sc_dividend.shocked_annual_dividend:.2f}", help=help_for("annual_dividend_share"))
-                    dv2.metric("Dividend Yield", f"{_sc_dividend.current_yield_pct:.2f}% → {_sc_dividend.shocked_yield_pct:.2f}%", help=help_for("dividend_yield"))
-                    dv3.metric("Lost Income / Share", f"${_sc_dividend.lost_annual_income_per_share:.2f}", help=help_for("lost_income_share"))
+                if _sc_result is not None:
+                    if _sc_result.dcf.ok:
+                        st.markdown("**DCF Impact**")
+                        dc1, dc2, dc3 = st.columns(3)
+                        dc1.metric("Base Intrinsic Value", f"${_sc_result.dcf.base_intrinsic_price:.2f}", help=help_for("base_intrinsic_value"))
+                        dc2.metric("Shocked Intrinsic Value", f"${_sc_result.dcf.shocked_intrinsic_price:.2f}", delta=f"{_sc_result.dcf.pct_change:+.2f}%", help=help_for("shocked_intrinsic_value"))
+                        if _sc_result.implied_portfolio_value_change is not None:
+                            dc3.metric(f"Illustrative Impact on ${sc_investment:,.0f}", f"${_sc_result.implied_portfolio_value_change:+,.2f}", help="Applies the intrinsic-value % change to your investment amount — assumes eventual price convergence to intrinsic value, not a forecast.")
+                    else:
+                        st.warning(f"DCF impact not available: {_sc_result.dcf.reason}")
 
-        if st.session_state["scenario_saved"]:
-            with st.expander(f"Saved scenarios ({len(st.session_state['scenario_saved'])})", expanded=False):
-                for _saved in st.session_state["scenario_saved"]:
-                    _sv_c1, _sv_c2 = st.columns([5, 1])
-                    with _sv_c1:
-                        st.caption(
-                            f"**{_saved.name}** ({SCENARIO_TYPE_LABELS[_saved.scenario_type]}) — "
-                            f"growth {_saved.growth_rate_delta*100:+.1f}pp, discount {_saved.discount_rate_delta*100:+.1f}pp, "
-                            f"vol ×{_saved.volatility_multiplier:.1f}, saved {_saved.created_at}"
-                        )
-                    with _sv_c2:
-                        if st.button("✕", key=f"scenario_delete_{_saved.name}", help="Delete this saved scenario"):
-                            st.session_state["scenario_saved"] = delete_scenario(_saved.name)
-                            st.rerun()
+                    if _sc_result.risk.ok:
+                        st.markdown("**Risk Impact**")
+                        _sc_risk_rows = pd.DataFrame({
+                            "Base": [f"{_sc_result.risk.base_var_pct:.2f}%", f"{_sc_result.risk.base_cvar_pct:.2f}%", f"{_sc_result.risk.base_sharpe:.2f}" if _sc_result.risk.base_sharpe is not None else "N/A", f"{_sc_result.risk.base_max_drawdown_pct:.2f}%"],
+                            "Shocked": [f"{_sc_result.risk.shocked_var_pct:.2f}%", f"{_sc_result.risk.shocked_cvar_pct:.2f}%", f"{_sc_result.risk.shocked_sharpe:.2f}" if _sc_result.risk.shocked_sharpe is not None else "N/A", f"{_sc_result.risk.shocked_max_drawdown_pct:.2f}%"],
+                        }, index=[f"1-Day VaR ({var_confidence:.0%})", "Expected Shortfall (CVaR)", "Sharpe Ratio", "Max Drawdown"])
+                        st.table(_sc_risk_rows)
+
+                    if _sc_result.dividend.applicable:
+                        st.markdown("**Dividend Impact**")
+                        dv1, dv2, dv3 = st.columns(3)
+                        dv1.metric("Annual Dividend / Share", f"${_sc_result.dividend.current_annual_dividend:.2f} → ${_sc_result.dividend.shocked_annual_dividend:.2f}", help=help_for("annual_dividend_share"))
+                        dv2.metric("Dividend Yield", f"{_sc_result.dividend.current_yield_pct:.2f}% → {_sc_result.dividend.shocked_yield_pct:.2f}%", help=help_for("dividend_yield"))
+                        dv3.metric("Lost Income / Share", f"${_sc_result.dividend.lost_annual_income_per_share:.2f}", help=help_for("lost_income_share"))
+                    elif sc_type == "dividend_cut":
+                        st.caption(f"Dividend impact not available: {_sc_result.dividend.detail}")
+                elif _sc_risk is not None:
+                    if _sc_risk.ok:
+                        st.markdown("**Risk Impact**")
+                        _sc_risk_rows = pd.DataFrame({
+                            "Base": [f"{_sc_risk.base_var_pct:.2f}%", f"{_sc_risk.base_cvar_pct:.2f}%", f"{_sc_risk.base_sharpe:.2f}" if _sc_risk.base_sharpe is not None else "N/A", f"{_sc_risk.base_max_drawdown_pct:.2f}%"],
+                            "Shocked": [f"{_sc_risk.shocked_var_pct:.2f}%", f"{_sc_risk.shocked_cvar_pct:.2f}%", f"{_sc_risk.shocked_sharpe:.2f}" if _sc_risk.shocked_sharpe is not None else "N/A", f"{_sc_risk.shocked_max_drawdown_pct:.2f}%"],
+                        }, index=[f"1-Day VaR ({var_confidence:.0%})", "Expected Shortfall (CVaR)", "Sharpe Ratio", "Max Drawdown"])
+                        st.table(_sc_risk_rows)
+                    if _sc_dividend is not None and _sc_dividend.applicable:
+                        st.markdown("**Dividend Impact**")
+                        dv1, dv2, dv3 = st.columns(3)
+                        dv1.metric("Annual Dividend / Share", f"${_sc_dividend.current_annual_dividend:.2f} → ${_sc_dividend.shocked_annual_dividend:.2f}", help=help_for("annual_dividend_share"))
+                        dv2.metric("Dividend Yield", f"{_sc_dividend.current_yield_pct:.2f}% → {_sc_dividend.shocked_yield_pct:.2f}%", help=help_for("dividend_yield"))
+                        dv3.metric("Lost Income / Share", f"${_sc_dividend.lost_annual_income_per_share:.2f}", help=help_for("lost_income_share"))
+
+            if st.session_state["scenario_saved"]:
+                with st.expander(f"Saved scenarios ({len(st.session_state['scenario_saved'])})", expanded=False):
+                    for _saved in st.session_state["scenario_saved"]:
+                        _sv_c1, _sv_c2 = st.columns([5, 1])
+                        with _sv_c1:
+                            st.caption(
+                                f"**{_saved.name}** ({SCENARIO_TYPE_LABELS[_saved.scenario_type]}) — "
+                                f"growth {_saved.growth_rate_delta*100:+.1f}pp, discount {_saved.discount_rate_delta*100:+.1f}pp, "
+                                f"vol ×{_saved.volatility_multiplier:.1f}, saved {_saved.created_at}"
+                            )
+                        with _sv_c2:
+                            if st.button("✕", key=f"scenario_delete_{_saved.name}", help="Delete this saved scenario"):
+                                st.session_state["scenario_saved"] = delete_scenario(_saved.name)
+                                st.rerun()
 
     # ==========================================
     # EXECUTIVE DIGEST (fill) — every source signal this synthesizes
