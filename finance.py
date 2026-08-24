@@ -75,6 +75,7 @@ import ticker_discovery as td
 import empty_states
 import button_roles
 import keyboard_shortcuts
+import date_range
 import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
@@ -2826,8 +2827,64 @@ with st.sidebar.expander("Find a ticker", expanded=False):
 
 today = datetime.date.today()
 one_year_ago = today - datetime.timedelta(days=CHART_DEFAULTS.default_lookback_days)
-start_date = st.sidebar.date_input("Start Date", one_year_ago)
-end_date = st.sidebar.date_input("End Date", today)
+
+# --- Analysis date range ---------------------------------------------------
+# ONE control, not two. st.date_input takes a (start, end) tuple and renders
+# a single calendar where you click the start and then the end — the native
+# form of "drag to select a range", and half the controls on a phone.
+#
+# Both controls were ALREADY calendar pickers, contrary to the task's
+# premise; what was missing was the presets, a statement of how long the
+# window is, and the range shape.
+#
+# The range lives in a non-widget session key and the calendar gets a
+# computed `value=` with NO `key=`. That is the pattern this codebase
+# arrived at the hard way: passing both value= and key= silently reverts
+# the user's edit on the next rerun, and a keyed widget restores its old
+# value over a just-applied preset.
+if "_dr_range" not in st.session_state:
+    st.session_state["_dr_range"] = (one_year_ago, today)
+
+_dr_start, _dr_end = st.session_state["_dr_range"]
+
+# Pills carry no key either, for the same reason: `default=` is computed
+# from the range that is actually in force, so the row reflects reality
+# rather than whatever was last clicked. A range typed by hand matches no
+# preset and correctly shows none selected.
+_dr_pick = st.sidebar.pills(
+    "Quick range", date_range.PRESET_KEYS,
+    default=date_range.matching_preset(_dr_start, _dr_end, today),
+    selection_mode="single", label_visibility="collapsed",
+    help="Presets end today. Max asks for "
+         f"{date_range.MAX_LOOKBACK_YEARS} years and returns whatever the "
+         "data source actually has for this symbol.",
+)
+if _dr_pick:
+    _dr_resolved = date_range.resolve(_dr_pick, today)
+    # Compared against the range in force rather than against the last
+    # click: a stale selection would otherwise re-fire every run and drag
+    # the dates back over any manual edit — the bug the ticker
+    # autocomplete hit and documents above.
+    if _dr_resolved and _dr_resolved != st.session_state["_dr_range"]:
+        st.session_state["_dr_range"] = _dr_resolved
+        log_event(logger, logging.INFO, "user.date_preset", preset=_dr_pick)
+        st.rerun()
+
+_dr_picked = st.sidebar.date_input(
+    "Analysis range", value=st.session_state["_dr_range"],
+    min_value=date_range.EARLIEST_SELECTABLE, max_value=today,
+    help="Click a start date, then an end date. Drives every fetch on the "
+         "page — prices, statements, benchmarks and backtests.",
+)
+# Between those two clicks the widget returns a ONE-element tuple.
+# Unpacking that raises, and this control feeds every fetch on the page,
+# so the half-made selection holds the previous range instead.
+start_date, end_date = date_range.coerce(_dr_picked, st.session_state["_dr_range"])
+st.session_state["_dr_range"] = (start_date, end_date)
+
+st.sidebar.caption(date_range.describe(start_date, end_date, today))
+for _dr_problem in date_range.problems(start_date, end_date, today):
+    st.sidebar.warning(_dr_problem)
 
 # ==========================================
 # WATCHLIST (quick symbol switching) — multiple saved, named lists
