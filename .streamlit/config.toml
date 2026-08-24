@@ -1,0 +1,30 @@
+# Streamlit's own theme options. Deliberately minimal: this app paints
+# almost everything itself from theme.PALETTES, and the one thing it
+# could NOT reach from CSS was Streamlit's primary accent.
+#
+# Unset, that accent is Streamlit's stock #FF4B4B, and it leaks into
+# every widget built from it — primary buttons ("Run Screen", "Check
+# Alerts"), the active tab's underline, checkbox ticks, radio dots,
+# slider value bubbles and multiselect tags. Measured on the running
+# page: eighteen separate elements painted #FF4B4B. In a financial app
+# red already means a loss, so that is not a neutral default.
+#
+# primaryColor is therefore the brand cyan, which fixes all of them at
+# once rather than by CSS-patching each widget family.
+#
+# NOTE what is deliberately NOT set here:
+#
+#   base / backgroundColor / textColor — the app has a light/dark toggle
+#   of its own (theme.PALETTES) applied as CSS at runtime, and a static
+#   base= here would fight it. The sidebar in particular relies on
+#   Streamlit's light chrome: finance.py scopes its button restyling to
+#   stMain precisely because those same buttons already read correctly
+#   against the sidebar's own background.
+#
+#   A licensee's accent — branding.brand().accent_color can differ, and a
+#   TOML file cannot follow it. The CSS layer paints buttons from the
+#   branded accent, so branding still flows through where it is most
+#   visible; this value is the baseline for the widget families CSS does
+#   not reach.
+[theme]
+primaryColor = "#00f2fe"

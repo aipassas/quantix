@@ -185,12 +185,17 @@ def test_sidebar_panels_highlight_with_more_than_a_text_colour(source):
     assert "box-shadow: inset" in rule
 
 
-def test_watchlist_remove_recedes_but_stays_reachable(source):
+def test_watchlist_remove_recedes_but_stays_reachable():
     """Deliberately NOT display:none / opacity:0 — the sidebar is a
-    full-screen overlay on a phone, where nothing can be hovered."""
-    rest = _declaration_for(source, '[class*="st-key-wl_rm_"] button {{')
-    opacity = float(re.search(r"opacity:\s*([0-9.]+)", rest).group(1))
-    assert 0.3 < opacity < 1.0, f"rest opacity {opacity} hides the control"
+    full-screen overlay on a phone, where nothing can be hovered.
+
+    The value moved to button_roles when the destructive treatment was
+    unified across every remove control in the app; the invariant is the
+    same and now covers all of them rather than the watchlist alone."""
+    import button_roles
+
+    assert 0.3 < button_roles.INLINE_REST_OPACITY < 1.0, (
+        f"rest opacity {button_roles.INLINE_REST_OPACITY} hides the control")
 
 
 def test_hovering_the_ticker_lights_up_its_remove_button(source):
@@ -232,13 +237,28 @@ def test_the_blanket_button_transition_names_every_animated_property(source):
 
     animated = set()
     for fragment in ('[class*="st-key-wl_go_"] button:hover {{',
-                     '[class*="st-key-wl_go_"] button[kind="secondary"]:hover {{',
-                     '[class*="st-key-wl_rm_"] button:hover {{'):
+                     '[class*="st-key-wl_go_"] button[kind="secondary"]:hover {{'):
         for body in _declarations_for(source, fragment):
             for line in body.splitlines():
                 name = line.split(":", 1)[0].strip()
                 if re.fullmatch(r"[a-z-]+", name):
-                    animated.add("transform" if name == "transform" else name)
+                    animated.add(name)
+
+    # The destructive controls' hover states moved into button_roles when
+    # the three roles were unified, but they animate against the SAME
+    # blanket transition declared here, so they still have to be counted.
+    import button_roles
+    from theme import PALETTES
+
+    roles_css = button_roles.css(PALETTES["dark"], "#00f2fe")
+    for chunk in roles_css.split("}"):
+        if ":hover" not in chunk.split("{")[0]:
+            continue
+        for line in chunk.split("{")[-1].split(";"):
+            name = line.split(":", 1)[0].strip()
+            if re.fullmatch(r"[a-z-]+", name):
+                animated.add(name)
+    animated.discard("filter")      # not a transitioned property here
 
     assert animated, "expected the watchlist hover rules to change something"
     for prop in animated:

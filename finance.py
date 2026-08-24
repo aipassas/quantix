@@ -72,6 +72,7 @@ import profile_menu
 import alignment_card
 import ticker_discovery as td
 import empty_states
+import button_roles
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -661,23 +662,17 @@ st.markdown(f"""
     [data-testid="stSidebar"] [class*="st-key-wl_go_"] button[kind="secondary"]:hover {{
         border-color: {_theme.card_accent} !important;
     }}
-    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button {{
-        opacity: 0.45;   /* transition supplied by the blanket rule above */
-    }}
-    /* :has() on the row wrapper is what makes hovering the TICKER light
-       up its ✕ — the two are separate st.columns children with no shared
-       hoverable ancestor otherwise. */
+    /* The ✕'s resting fade and its red hover now come from
+       button_roles.css(), which applies the same treatment to every
+       destructive control in the app — keeping a second copy here is how
+       the watchlist's remove button and the alert rule's would drift
+       apart. What stays is the one rule that is genuinely specific to
+       this row: :has() on the row wrapper is what makes hovering the
+       TICKER light up its ✕, since the two are separate st.columns
+       children with no shared hoverable ancestor otherwise. */
     [data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has([class*="st-key-wl_rm_"]):hover
-        [class*="st-key-wl_rm_"] button,
-    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button:focus-visible {{
+        [class*="st-key-wl_rm_"] button {{
         opacity: 1;
-    }}
-    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button:hover {{
-        opacity: 1;
-        border-color: #ef4444 !important;
-    }}
-    [data-testid="stSidebar"] [class*="st-key-wl_rm_"] button:hover p {{
-        color: #ef4444 !important;
     }}
 
     /* Every button and tab, main area and sidebar alike. */
@@ -922,6 +917,13 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
+# Button roles — primary / secondary / danger — in one stylesheet rather
+# than scattered across the panels that own each button. Injected after
+# the block above because it deliberately overrides Streamlit's stock
+# primary; the hueless selection chips are excluded inside the rule
+# itself, so this does not depend on which stylesheet lands last.
+st.markdown(button_roles.css(_theme, _theme.card_accent), unsafe_allow_html=True)
+
 # ==========================================
 # AUTHENTICATION GATE
 # ==========================================
@@ -1147,7 +1149,12 @@ with st.expander("Custom Thresholds", expanded=False):
                           changed=len(load_threshold_overrides()), sectors=len(_thr_table))
                 st.success("Thresholds saved — Scorecard, alerts and screener now use them.")
     with _thr_reset_col:
-        if st.button("Reset to defaults"):
+        # Keyed so button_roles can mark it destructive — it discards the
+        # user's customised thresholds. A key on a BUTTON is safe (unlike
+        # the screener's criteria selectboxes, which must stay unkeyed):
+        # a button holds no value between runs, so there is nothing for
+        # Streamlit to restore over a fresh one.
+        if st.button("Reset to defaults", key="thresholds_reset"):
             reset_thresholds()
             for _spec in THRESHOLD_SPECS:
                 st.session_state.pop(f"thr_{_spec.key}", None)
