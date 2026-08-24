@@ -52,6 +52,7 @@ DANGER_INLINE: Tuple[str, ...] = (
     "rt_remove_",          # remove a real-time alert rule
     "alert_remove_",       # remove a risk alert rule
     "screener_remove_",    # remove a screener criterion
+    "etf_remove_",         # remove an ETF screener criterion
     "collab_rm_",          # remove a note's tag
     "collab_del_",         # delete a team note
     "scenario_delete_",    # delete a saved scenario

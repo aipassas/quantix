@@ -80,6 +80,7 @@ import notifications
 import loading_states
 import asset_class
 import etf_analysis
+import etf_screener
 import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
@@ -1691,6 +1692,160 @@ if _screener_state:
         if st.button(f"Open full analysis for {_screener_selected_ticker} →"):
             st.session_state["ticker_input"] = _screener_selected_ticker
             st.rerun()
+
+# ==========================================
+# ETF SCREENER
+# ==========================================
+# A SEPARATE section from the Stock Screener above, because it works the
+# other way round. That one filters a universe you supply, one deep fetch
+# per ticker — its docstring is explicit that it does not scan the
+# market. Yahoo publishes a whole ETF table in one request, so this one
+# genuinely screens 250 funds you did not have to name in advance.
+st.markdown("---")
+st.header("ETF Screener")
+st.caption(
+    "Screens a market-wide table of funds — no ticker list required, "
+    "unlike the stock screener above. Refreshed every "
+    f"{etf_screener.CACHE_TTL_SECONDS // 60} minutes.")
+
+with st.expander("What this screener cannot filter on", expanded=False):
+    for _etfs_gap in etf_screener.UNSUPPORTED_FILTERS:
+        st.caption(f"· {_etfs_gap}")
+
+_etfs_rows, _etfs_error = etf_screener.load_universe()
+if _etfs_error:
+    st.warning(_etfs_error)
+else:
+    st.caption(f"{len(_etfs_rows)} funds loaded.")
+
+    # --- search ---------------------------------------------------------
+    _etfs_query = st.text_input(
+        "Find a fund", key="etf_search",
+        placeholder="Symbol or name — e.g. vgt, vanguard, dividend",
+        help="Substring match over the loaded table. Instant, because the "
+             "universe is already in memory — no search index needed for "
+             "250 rows.")
+    if _etfs_query.strip():
+        _etfs_hits = etf_screener.search(_etfs_rows, _etfs_query)
+        if not _etfs_hits:
+            st.caption(f'No fund matches "{_etfs_query.strip()}".')
+        for _etfs_hit in _etfs_hits:
+            if st.button(f"{_etfs_hit.symbol} — {_etfs_hit.name}",
+                         key=f"etf_hit_{_etfs_hit.symbol}", width="stretch"):
+                st.session_state["_pending_ticker"] = _etfs_hit.symbol
+                st.rerun()
+
+    # --- presets --------------------------------------------------------
+    if "etf_criteria" not in st.session_state:
+        st.session_state["etf_criteria"] = list(etf_screener.PRESETS[0].criteria)
+
+    st.markdown("**Preset screens**")
+    _etfs_cols = st.columns(len(etf_screener.PRESETS))
+    for _etfs_col, _etfs_preset in zip(_etfs_cols, etf_screener.PRESETS):
+        with _etfs_col:
+            if st.button(_etfs_preset.name, key=f"etf_preset_{_etfs_preset.name}",
+                         width="stretch", help=_etfs_preset.description):
+                st.session_state["etf_criteria"] = list(_etfs_preset.criteria)
+                st.rerun()
+
+    # --- criteria -------------------------------------------------------
+    st.markdown("**Filters**")
+    _etfs_remove = None
+    for _etfs_i, _etfs_crit in enumerate(st.session_state["etf_criteria"]):
+        _etfs_m, _etfs_o, _etfs_v, _etfs_x = st.columns([3, 1.4, 2, 0.6])
+        _etfs_keys = [m.key for m in etf_screener.METRICS]
+        with _etfs_m:
+            # Labels vary per row for the reason documented on the stock
+            # screener: Streamlit hashes (label, options, index, help) to
+            # identify an unkeyed widget and ignores label_visibility, so
+            # two rows with matching parameters collide outright.
+            # Prefixed "ETF", not just numbered. The suffix alone left row
+            # 0 labelled "Op" — identical to the STOCK screener's row 0
+            # Op, same options, same index — and Streamlit's auto-ID
+            # collided across the two screeners, taking the page down with
+            # StreamlitDuplicateElementId. The prefix is also plainly
+            # better for a screen reader now that the page has two
+            # screeners on it.
+            _etfs_suffix = "" if _etfs_i == 0 else f" {_etfs_i + 1}"
+            _etfs_metric = st.selectbox(
+                f"ETF metric{_etfs_suffix}", _etfs_keys,
+                index=_etfs_keys.index(_etfs_crit.metric)
+                if _etfs_crit.metric in _etfs_keys else 0,
+                format_func=lambda k: etf_screener.METRICS_BY_KEY[k].label,
+                label_visibility="visible" if _etfs_i == 0 else "collapsed")
+        _etfs_ops = list(etf_screener.operators_for(_etfs_metric))
+        with _etfs_o:
+            _etfs_op = st.selectbox(
+                f"ETF op{_etfs_suffix}", _etfs_ops,
+                index=_etfs_ops.index(_etfs_crit.operator)
+                if _etfs_crit.operator in _etfs_ops else 0,
+                label_visibility="visible" if _etfs_i == 0 else "collapsed")
+        with _etfs_v:
+            _etfs_spec = etf_screener.METRICS_BY_KEY[_etfs_metric]
+            if _etfs_spec.kind == "text":
+                _etfs_threshold = st.text_input(
+                    f"ETF value{_etfs_suffix}",
+                    value=str(_etfs_crit.threshold)
+                    if isinstance(_etfs_crit.threshold, str) else "",
+                    label_visibility="visible" if _etfs_i == 0 else "collapsed")
+            else:
+                _etfs_threshold = st.number_input(
+                    f"ETF threshold{_etfs_suffix}",
+                    value=float(_etfs_crit.threshold)
+                    if isinstance(_etfs_crit.threshold, (int, float)) else 0.0,
+                    label_visibility="visible" if _etfs_i == 0 else "collapsed")
+        with _etfs_x:
+            if _etfs_i == 0:
+                st.markdown("&nbsp;")
+            if st.button("✕", key=f"etf_remove_{_etfs_i}", help="Remove this filter"):
+                _etfs_remove = _etfs_i
+        st.session_state["etf_criteria"][_etfs_i] = etf_screener.EtfCriterion(
+            metric=_etfs_metric, operator=_etfs_op, threshold=_etfs_threshold)
+
+    if _etfs_remove is not None:
+        st.session_state["etf_criteria"].pop(_etfs_remove)
+        st.rerun()
+
+    if st.button("+ Add ETF filter", key="etf_add_filter"):
+        st.session_state["etf_criteria"].append(
+            etf_screener.EtfCriterion("expense_ratio_pct", "<", 0.5))
+        st.rerun()
+
+    # --- results --------------------------------------------------------
+    _etfs_passed, _etfs_unjudged = etf_screener.run(
+        _etfs_rows, st.session_state["etf_criteria"])
+    st.caption(
+        f"{len(_etfs_passed)} of {len(_etfs_rows)} funds match"
+        + (f" · {len(_etfs_unjudged)} set aside because they do not report "
+           "every filtered metric" if _etfs_unjudged else ""))
+
+    if not _etfs_passed:
+        st.info("No fund passes every filter. Loosen one, or try a preset.")
+    else:
+        _etfs_table = etf_screener.results_frame(
+            _etfs_passed[:etf_screener.MAX_RESULTS_SHOWN])
+        _etfs_event = st.dataframe(
+            _etfs_table, width="stretch", hide_index=True,
+            column_config=etf_screener.column_config(),
+            on_select="rerun", selection_mode="single-row",
+            key="etf_results_table")
+        if len(_etfs_passed) > etf_screener.MAX_RESULTS_SHOWN:
+            st.caption(f"Showing the first {etf_screener.MAX_RESULTS_SHOWN}.")
+
+        _etfs_sel = (_etfs_event.selection.rows
+                     if _etfs_event and _etfs_event.selection else [])
+        if _etfs_sel:
+            _etfs_pick = _etfs_table.iloc[_etfs_sel[0]]["Symbol"]
+            if st.button(f"Open full analysis for {_etfs_pick} →",
+                         key="etf_open_pick"):
+                st.session_state["_pending_ticker"] = _etfs_pick
+                st.rerun()
+
+        st.download_button(
+            "Download these results (CSV)",
+            _etfs_table.to_csv(index=False).encode("utf-8"),
+            file_name=f"quantix_etf_screen_{datetime.date.today()}.csv",
+            mime="text/csv", key="etf_csv")
 
 # ==========================================
 # SMART RISK-AWARE ALERTS
