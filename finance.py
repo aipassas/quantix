@@ -71,6 +71,7 @@ import quick_stats
 import profile_menu
 import alignment_card
 import ticker_discovery as td
+import empty_states
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -102,6 +103,7 @@ from realtime_alerts import (
     FUNDAMENTAL_TRIGGER_TYPE as RT_FUNDAMENTAL_TRIGGER_TYPE,
     PRICE_TRIGGER_TYPES as RT_PRICE_TRIGGER_TYPES,
     TRIGGER_LABELS as RT_TRIGGER_LABELS,
+    FIRST_ALERT_TRIGGER as RT_FIRST_ALERT_TRIGGER,
     CATEGORY_NAMES as RT_CATEGORY_NAMES,
     category_of as rt_category_of,
     triggers_in as rt_triggers_in,
@@ -1288,9 +1290,27 @@ for _i, _crit in enumerate(st.session_state["screener_criteria"]):
     # and undo it. Worse for the operator box, whose OPTIONS change when
     # the metric is categorical — a stored "<" is not in ["is", "is not"]
     # and selecting it raises.
+    # Each row's labels carry the row index so the four widgets get
+    # DISTINCT auto-generated IDs. Streamlit hashes (label, options, index,
+    # help) to identify an unkeyed widget and does NOT include
+    # label_visibility, so two rows whose operator box offered the same
+    # options at the same index collided outright:
+    # StreamlitDuplicateElementId, which took the whole screener down.
+    # "+ Add Filter" appends rsi/"<"/30.0, so it collided with any existing
+    # numeric "<" row — including the default P/E filter, i.e. the very
+    # first click of Add Filter on a fresh screener.
+    #
+    # A key= would be the obvious fix and is the one thing that must NOT be
+    # used here, for the two reasons spelled out above: the operator box's
+    # options change with the metric, and a keyed widget restores its old
+    # value over a just-applied saved screener. Renaming the label is
+    # invisible instead — every row past the first has its label collapsed,
+    # so nothing is displayed, and a screen reader gets "Op 2" rather than
+    # a third identical "Op".
+    _row_suffix = "" if _i == 0 else f" {_i + 1}"
     with _c1:
         _crit["metric"] = st.selectbox(
-            "Metric", _screener_metric_options,
+            f"Metric{_row_suffix}", _screener_metric_options,
             index=_screener_metric_options.index(_crit["metric"]) if _crit.get("metric") in _screener_metric_options else 0,
             format_func=lambda k: SCREENER_METRICS_BY_KEY[k].label,
             label_visibility="visible" if _i == 0 else "collapsed",
@@ -1309,20 +1329,22 @@ for _i, _crit in enumerate(st.session_state["screener_criteria"]):
             _spec, _is_categorical, _ops = _new_spec, _new_spec.kind == "categorical", _new_ops
     with _c2:
         _crit["operator"] = st.selectbox(
-            "Op", _ops, index=_ops.index(_crit["operator"]) if _crit.get("operator") in _ops else 0,
+            f"Op{_row_suffix}", _ops,
+            index=_ops.index(_crit["operator"]) if _crit.get("operator") in _ops else 0,
             label_visibility="visible" if _i == 0 else "collapsed",
         )
     with _c3:
         if _is_categorical:
             _choices = list(_spec.choices) or [str(_crit.get("threshold", ""))]
             _crit["threshold"] = st.selectbox(
-                "Value", _choices,
+                f"Value{_row_suffix}", _choices,
                 index=_choices.index(_crit["threshold"]) if _crit.get("threshold") in _choices else 0,
                 label_visibility="visible" if _i == 0 else "collapsed",
             )
         else:
             _crit["threshold"] = st.number_input(
-                "Threshold", value=float(_crit["threshold"]) if isinstance(_crit.get("threshold"), (int, float)) else 0.0,
+                f"Threshold{_row_suffix}",
+                value=float(_crit["threshold"]) if isinstance(_crit.get("threshold"), (int, float)) else 0.0,
                 label_visibility="visible" if _i == 0 else "collapsed",
             )
     with _c4:
@@ -1374,6 +1396,11 @@ with st.expander("Save this screen", expanded=False):
         else:
             st.warning(_saved_err)
 
+# The empty-state "remove this filter" action re-runs the screen without
+# making the user find the button again.
+if st.session_state.pop("_screener_rerun", False):
+    screener_run_clicked = True
+
 if screener_run_clicked:
     _screener_universe = [t.strip().upper() for t in screener_universe_input.split(",") if t.strip()]
     _screener_universe = list(dict.fromkeys(_screener_universe))  # dedupe, preserve order
@@ -1422,6 +1449,38 @@ if _screener_state:
     if _screener_error_count:
         _screener_summary += f" · {_screener_error_count} could not be loaded"
     st.caption(_screener_summary)
+
+    # Zero PASSING is not zero results — the table below still lists every
+    # ticker with its own pass/fail, and that evidence stays on screen.
+    # So rather than "try adjusting filters", name the filter that actually
+    # did the rejecting, counted from the results themselves.
+    if _screener_pass_count == 0:
+        _screener_why, _screener_drop = empty_states.screener_guidance(
+            _screener_results, _screener_criteria)
+        _screener_acted = empty_states.render(
+            "No stocks passed every filter",
+            _screener_why,
+            action_label=(f"Remove “{_screener_drop.text}” and re-run"
+                          if _screener_drop else None),
+            key="empty_screener_relax",
+            help_text=("Drops just that one criterion and screens the same "
+                       "universe again. The others stay as they are."),
+        )
+        if _screener_acted and _screener_drop is not None:
+            # session_state["screener_criteria"] is the source of truth and
+            # is positionally aligned with the ScreenCriterions that were
+            # run, so the index carries across.
+            _screener_kept = [
+                c for i, c in enumerate(st.session_state["screener_criteria"])
+                if i != _screener_drop.index
+            ]
+            st.session_state["screener_criteria"] = _screener_kept
+            # Re-run on the next pass rather than duplicating the run block
+            # here; the trigger below treats this exactly like a click.
+            st.session_state["_screener_rerun"] = True
+            empty_states.log_action("screener_filter_dropped",
+                                    remaining=len(_screener_kept))
+            st.rerun()
 
     _screener_rows = []
     for r in _screener_results:
@@ -1816,7 +1875,53 @@ def _render_realtime_alerts_fragment():
     rerun is never required just to reflect a new poll result."""
     _rt_rules = st.session_state["rt_alert_rules"]
     if not _rt_rules:
-        st.caption("No active rules — add one above to start monitoring.")
+        _rt_first_label = RT_TRIGGER_LABELS[RT_FIRST_ALERT_TRIGGER]
+        # NOT ticker_symbol: this fragment runs at line ~1875, and the
+        # sidebar assigns ticker_symbol several hundred lines below — a
+        # NameError that only fires for a user with no rules yet, which
+        # is to say every new user. Read from session_state instead of
+        # the script-level names, because on a TIMER rerun Streamlit
+        # re-executes this function alone and script locals are whatever
+        # the last full run left behind. Prefers the rule form's own
+        # ticker box, since that is the one the reader is looking at.
+        # Third fallback matters: ticker_input is not seeded until line
+        # ~2412, well below this fragment, so on the FIRST run of a
+        # session neither session key exists and the button would be
+        # missing exactly when a new user needs it. The constant is the
+        # same value that seeding uses, and is also what the page is
+        # already analysing at that moment, so the offer is accurate.
+        _rt_seed_ticker = (st.session_state.get("rt_new_ticker")
+                           or st.session_state.get("ticker_input")
+                           or CHART_DEFAULTS.default_ticker
+                           or "").strip().upper()
+        if empty_states.render(
+            "No alerts set",
+            "Alerts watch a symbol while this tab stays open and tell you "
+            "the moment a condition is met."
+            + ("" if _rt_seed_ticker else
+               " Enter a ticker above to create one."),
+            # No ticker in either box means nothing to act on, so no
+            # button — an action that cannot complete is worse than none.
+            action_label=(f"Create your first alert for {_rt_seed_ticker} →"
+                          if _rt_seed_ticker else None),
+            key="empty_rt_first_alert",
+            help_text=f"Creates one rule: {_rt_seed_ticker} — {_rt_first_label}. "
+                      "No threshold to choose; it uses the app's own period. "
+                      "Remove it with the ✕ beside it.",
+        ):
+            _rt_seed = RealtimeAlertRule(
+                id=rt_new_rule_id(), ticker=_rt_seed_ticker,
+                trigger_type=RT_FIRST_ALERT_TRIGGER,
+                created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+            )
+            st.session_state["rt_alert_rules"].append(_rt_seed)
+            rt_save_store(st.session_state["rt_alert_rules"],
+                          st.session_state["rt_alert_history"])
+            empty_states.log_action("first_realtime_alert", ticker=_rt_seed_ticker)
+            # scope="app": the Active Rules list this adds to is rendered
+            # OUTSIDE this fragment, so a fragment-scoped rerun would
+            # redraw the empty state and leave the new rule invisible.
+            st.rerun(scope="app")
         return
 
     _rt_results = rt_evaluate_all(_rt_rules)
@@ -2652,7 +2757,28 @@ if _wl_add_clicked:
 
 _wl_tickers = _wl_store.lists[_wl_store.active].tickers
 if not _wl_tickers:
-    st.sidebar.caption("No tickers yet — add one above to build a quick-switch list.")
+    # The action adds the symbol already on screen. Streamlit cannot focus
+    # the "Add ticker" box above, so a button that merely points at it
+    # would do nothing visible; this finishes the job in one click and is
+    # undone by the ✕ that appears next to the row.
+    if empty_states.render(
+        "No tickers yet",
+        "A watchlist is how you switch between symbols without retyping them.",
+        action_label=f"Add {ticker_symbol} to get started",
+        key="empty_watchlist_add",
+        help_text=f"Adds {ticker_symbol}, the symbol currently being analysed.",
+        container=st.sidebar,
+    ):
+        _wl_seed, _wl_seed_err = add_ticker(
+            _wl_tickers, ticker_symbol, WATCHLIST_PANEL.max_tickers)
+        if _wl_seed_err:
+            st.sidebar.warning(_wl_seed_err)
+        else:
+            _wl_store = update_active_tickers(_wl_store, _wl_seed)
+            st.session_state["watchlist_store"] = _wl_store
+            save_watchlist_store(_wl_store)
+            empty_states.log_action("watchlist_seeded", ticker=ticker_symbol)
+            st.rerun()
 else:
     _wl_snapshots = load_quote_snapshots(_wl_tickers)
     for _wl_snap in _wl_snapshots:

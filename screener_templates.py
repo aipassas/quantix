@@ -55,21 +55,15 @@ class Template:
     @property
     def summary(self) -> str:
         """One line describing what this screen does, for the UI."""
-        from screener import METRICS_BY_KEY
+        # Shared with the screener's own "which filter is blocking"
+        # readout, so the two cannot describe the same criterion
+        # differently — and so the categorical-threshold branch exists
+        # once rather than per caller.
+        from screener import criterion_text
 
-        parts = []
-        for raw in self.criteria:
-            spec = METRICS_BY_KEY.get(raw.get("metric", ""))
-            label = spec.label if spec else raw.get("metric", "?")
-            threshold = raw.get("threshold")
-            unit = spec.unit if spec else ""
-            if isinstance(threshold, (int, float)):
-                # A currency unit is a prefix, not a suffix — "< $100",
-                # never "< 100$".
-                shown = f"${threshold:g}" if unit == "$" else f"{threshold:g}{unit}"
-            else:
-                shown = str(threshold)
-            parts.append(f"{label} {raw.get('operator', '?')} {shown}")
+        parts = [criterion_text(raw.get("metric", ""), raw.get("operator", "?"),
+                                raw.get("threshold"))
+                 for raw in self.criteria]
         return "  ·  ".join(parts) or "No criteria"
 
     def unknown_parts(self) -> List[str]:

@@ -119,6 +119,14 @@ TRIGGER_LABELS: Dict[str, str] = {
 # Drawdown. Naming a group Fundamental and filling it with risk metrics
 # would misfile them; naming it honestly leaves the fundamentals for
 # whenever P/E and ROE become alertable.
+# What "Create your first alert" builds. A technical crossing rather than
+# a price level, deliberately: a price target needs a NUMBER, and this app
+# does not invent numbers on the user's behalf — picking "alert me at
+# $250" for someone would be a recommendation wearing a default. A moving
+# average cross uses the app's own configured period and needs nothing
+# from the user but a ticker.
+FIRST_ALERT_TRIGGER = "sma_cross_bullish"
+
 TRIGGER_CATEGORIES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Price", ("price_above", "price_below")),
     ("Technical signals", ("sma_cross_bullish", "sma_cross_bearish",

@@ -119,6 +119,26 @@ CATEGORICAL_OPERATORS: Dict[str, "callable"] = {
 }
 
 
+def criterion_text(metric: str, operator: str, threshold) -> str:
+    """"P/E < 15" / "Sector is Technology" — one criterion, in words.
+
+    Lives here rather than in each caller because the threshold's type
+    depends on the metric's kind, and formatting it wrongly has shipped
+    two crashes already: "{:g}" and round() both raise on a categorical
+    threshold like "Technology". Two callers formatting this
+    independently is how the third one gets written.
+    """
+    spec = METRICS_BY_KEY.get(metric)
+    label = spec.label if spec else metric or "?"
+    if isinstance(threshold, (int, float)) and not isinstance(threshold, bool):
+        unit = spec.unit if spec else ""
+        # A currency unit prefixes, never suffixes: "< $100", not "100$".
+        shown = f"${threshold:g}" if unit == "$" else f"{threshold:g}{unit}"
+    else:
+        shown = str(threshold)
+    return f"{label} {operator} {shown}"
+
+
 def operators_for(metric_key: str) -> Dict[str, "callable"]:
     """The operator table a given metric can use."""
     spec = METRICS_BY_KEY.get(metric_key)
