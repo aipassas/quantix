@@ -339,19 +339,37 @@ def run_screen(
     start=None,
     end=None,
     risk_free_rate: Optional[float] = None,
+    _on_progress=None,
 ) -> List[ScreenResult]:
     """Screen `tickers` against `criteria`. Tuples (not lists) so this is
     cacheable — repeated screens of the same universe/criteria don't
     re-fetch. Underlying per-ticker fetches are independently cached too
     (data_loader.py), so overlapping universes across separate screens
     still only pay for what isn't already cached.
+
+    `_on_progress(done, total, ticker)` is called after each ticker so the
+    caller can draw a real progress bar rather than a spinner that says
+    nothing about how far along a sixteen-ticker screen is. The leading
+    underscore is load-bearing: st.cache_data does not hash parameters
+    named that way, so passing a fresh closure on every run does not
+    defeat the cache. On a cache HIT the body never executes and no
+    progress is reported, which is correct — there was none to report.
     """
     start = start or (pd.Timestamp.today() - pd.Timedelta(days=CHART_DEFAULTS.default_lookback_days)).date()
     end = end or pd.Timestamp.today().date()
     risk_free_rate = risk_free_rate if risk_free_rate is not None else RISK.risk_free_rate
 
     log_event(logger, logging.INFO, "screener.run", universe_size=len(tickers), criteria_count=len(criteria))
-    results = [_screen_one(t, criteria, start, end, risk_free_rate) for t in tickers]
+    results = []
+    for index, ticker in enumerate(tickers):
+        results.append(_screen_one(ticker, criteria, start, end, risk_free_rate))
+        if _on_progress is not None:
+            # Never allowed to take the screen down: a caller's drawing
+            # code failing is not a reason to lose the results.
+            try:
+                _on_progress(index + 1, len(tickers), ticker)
+            except Exception:
+                log_exception(logger, "screener.progress_failed", section="screener")
     log_event(logger, logging.INFO, "screener.complete", universe_size=len(tickers),
               passed=sum(1 for r in results if r.passed_all), insufficient=sum(1 for r in results if r.status == "insufficient_data"),
               errors=sum(1 for r in results if r.status == "fetch_error"))

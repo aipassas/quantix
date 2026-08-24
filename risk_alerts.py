@@ -238,9 +238,22 @@ def _compute_ticker_risk_snapshot(ticker: str) -> TickerRiskSnapshot:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def compute_watchlist_snapshots(tickers: Tuple[str, ...]) -> List[TickerRiskSnapshot]:
+def compute_watchlist_snapshots(tickers: Tuple[str, ...],
+                                _on_progress=None) -> List[TickerRiskSnapshot]:
+    """`_on_progress(done, total, ticker)` after each ticker, so the caller
+    can show real progress instead of an unmoving spinner. Underscored
+    because st.cache_data does not hash such parameters — a fresh closure
+    each run must not defeat the cache."""
     log_event(logger, logging.INFO, "risk_alerts.snapshot_scan", watchlist_size=len(tickers))
-    return [_compute_ticker_risk_snapshot(t) for t in tickers]
+    snapshots = []
+    for index, ticker in enumerate(tickers):
+        snapshots.append(_compute_ticker_risk_snapshot(ticker))
+        if _on_progress is not None:
+            try:
+                _on_progress(index + 1, len(tickers), ticker)
+            except Exception:
+                log_exception(logger, "risk_alerts.progress_failed", section="risk_alerts")
+    return snapshots
 
 
 def evaluate_alerts(snapshots: List[TickerRiskSnapshot], rules: Tuple[AlertRule, ...]) -> List[TriggeredAlert]:

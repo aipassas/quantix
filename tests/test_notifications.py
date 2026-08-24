@@ -204,7 +204,7 @@ def test_the_bell_counts_only_the_persisted_event_log():
 
 def test_the_bell_sits_in_the_sticky_header_beside_the_profile_menu():
     assert "_nb_slot" in FINANCE
-    header = FINANCE.index("with symbol_header_container:")
+    header = FINANCE.index("with symbol_header_container.container():")
     bell = FINANCE.index("# --- Notification bell")
     tabs = FINANCE.index("= st.tabs([")
     assert header < bell < tabs

@@ -77,6 +77,7 @@ import button_roles
 import keyboard_shortcuts
 import date_range
 import notifications
+import loading_states
 import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
@@ -362,7 +363,13 @@ if st.session_state["onboarding_active"]:
 # same container-as-placeholder pattern executive_digest_container already
 # uses (content written into a container later still renders at the
 # container's position). See the "SYMBOL HEADER (fill)" block below.
-symbol_header_container = st.container()
+# st.empty(), NOT st.container(): a container APPENDS, so a skeleton
+# written here would still be on screen underneath the real header. An
+# empty slot holds one thing and replaces it, and .container() on it
+# gives a replaceable slot that can hold the several elements the header
+# needs. This slot sits visibly empty for the ~10s the ticker bundle
+# takes, which is the gap the skeleton covers.
+symbol_header_container = st.empty()
 
 # --- Theme (dark/light) ---
 # Loaded from the persisted local preference the first time this session
@@ -944,6 +951,19 @@ st.markdown(button_roles.css(_theme, _theme.card_accent), unsafe_allow_html=True
 import login_page
 
 login_page.require_sign_in()
+
+# The skeleton for the slot reserved at the top of the page. Drawn HERE,
+# not there, for two reasons this script's order makes unavoidable:
+# _theme is not assigned until ~20 lines below the reservation (a
+# NameError that fires on first paint, which is the only paint that
+# matters for a loading state), and everything above the gate renders
+# behind a signed-out visitor's login page.
+with symbol_header_container.container():
+    st.markdown(loading_states.css(_theme), unsafe_allow_html=True)
+    st.markdown(
+        loading_states.skeleton("Loading symbol", rows=(28, 62, 40), tall_first=True),
+        unsafe_allow_html=True,
+    )
 
 # Only now does the app itself begin. The title sits below the gate so a
 # signed-out visitor sees the login page alone rather than the app's
@@ -1564,8 +1584,22 @@ if screener_run_clicked:
                             threshold=_screener_threshold(c))
             for c in st.session_state["screener_criteria"]
         )
-        with st.spinner(f"Screening {len(_screener_universe)} ticker(s)..."):
-            _screener_results = run_screen(tuple(_screener_universe), _screener_criteria_tuple)
+        # A real bar, not a spinner: a sixteen-ticker screen takes about
+        # fifteen seconds and a spinner says nothing about whether it is
+        # halfway or wedged. On a cache hit the callback never fires and
+        # the bar goes straight to complete, which is honest — there was
+        # no work to report.
+        _screener_bar = st.progress(0.0, text="Starting screen…")
+
+        def _screener_progress(done, total, ticker):
+            _screener_bar.progress(
+                loading_states.progress_fraction(done, total),
+                text="Screening " + loading_states.progress_text(done, total, ticker))
+
+        _screener_results = run_screen(
+            tuple(_screener_universe), _screener_criteria_tuple,
+            _on_progress=_screener_progress)
+        _screener_bar.empty()
         st.session_state["screener_results_state"] = {"results": _screener_results, "criteria": _screener_criteria_tuple}
         log_event(logger, logging.INFO, "user.screener_run", universe_size=len(_screener_universe), criteria_count=len(_screener_criteria_tuple))
 
@@ -1746,8 +1780,16 @@ if check_alerts_clicked:
             AlertRule(metric=r["metric"], operator=r["operator"], threshold=float(r["threshold"]))
             for r in st.session_state["risk_alert_rules"]
         )
-        with st.spinner(f"Checking risk metrics for {len(_alert_watchlist)} watchlist ticker(s)..."):
-            _alert_snapshots = compute_watchlist_snapshots(_alert_watchlist)
+        _alert_bar = st.progress(0.0, text="Starting risk check…")
+
+        def _alert_progress(done, total, ticker):
+            _alert_bar.progress(
+                loading_states.progress_fraction(done, total),
+                text="Checking " + loading_states.progress_text(done, total, ticker))
+
+        _alert_snapshots = compute_watchlist_snapshots(
+            _alert_watchlist, _on_progress=_alert_progress)
+        _alert_bar.empty()
         _alert_triggered = evaluate_alerts(_alert_snapshots, _alert_rules_tuple)
         st.session_state["risk_alerts_state"] = {"snapshots": _alert_snapshots, "triggered": _alert_triggered}
         log_event(logger, logging.INFO, "user.risk_alerts_check", watchlist_size=len(_alert_watchlist), rule_count=len(_alert_rules_tuple), triggered=len(_alert_triggered))
@@ -2139,9 +2181,16 @@ def _render_realtime_alerts_fragment():
             for _rt_r in _rt_issue_rules:
                 st.caption(_rt_md_escape_dollar(f"{_rt_r.label}: {_rt_results[_rt_r.id].detail}"))
 
-    st.caption(
-        f"Checked {datetime.datetime.now().strftime('%H:%M:%S')} · "
-        f"rechecking every {REALTIME_ALERTS.poll_interval_seconds}s while this tab stays open."
+    # A pulse here is honest: this fragment really does re-run on a timer.
+    # Nothing else on the page gets one — every other figure is as old as
+    # the last rerun, and a pulse would imply a liveness this app, being a
+    # stateless script with no background worker, does not have.
+    st.markdown(
+        loading_states.pulse(
+            f"Checked {datetime.datetime.now().strftime('%H:%M:%S')} · "
+            f"rechecking every {REALTIME_ALERTS.poll_interval_seconds}s "
+            "while this tab stays open."),
+        unsafe_allow_html=True,
     )
 
 
@@ -3183,7 +3232,9 @@ with st.spinner(f"Running deep audit on {ticker_symbol} & loading Macro Data..."
 # while scrolling through any panel. Fills even when df is empty, since
 # knowing WHICH symbol failed to load is exactly when the header matters.
 # ==========================================
-with symbol_header_container:
+# .container() REPLACES the skeleton written above rather than appending
+# beneath it.
+with symbol_header_container.container():
     # Price/day-change come from the LIVE QUOTE (the same load_quote_snapshots
     # the sidebar watchlist uses), NOT from standardized.current_price.
     # That distinction is load-bearing, not incidental: standardized's price
@@ -3455,10 +3506,13 @@ with symbol_header_container:
                         st.session_state.pop("quick_stats_choice", None)
                         st.rerun(scope="app")
 
-                st.caption(
-                    f"Refreshes about every {quick_stats.REFRESH_SECONDS // 60} minutes, "
-                    "which is how often the underlying quote is re-fetched. It is not a "
-                    "tick-by-tick feed.")
+                st.markdown(
+                    loading_states.pulse(
+                        f"Refreshes about every {quick_stats.REFRESH_SECONDS // 60} "
+                        "minutes, which is how often the underlying quote is "
+                        "re-fetched. Not a tick-by-tick feed."),
+                    unsafe_allow_html=True,
+                )
 
     _render_quick_stats()
 
@@ -3582,7 +3636,12 @@ else:
     # block after the DCF section for what actually goes in this slot.)
     # ==========================================
     with tab_overview:
-        executive_digest_container = st.container()
+        executive_digest_container = st.empty()
+        with executive_digest_container.container():
+            st.markdown(
+                loading_states.skeleton("Building executive digest", rows=(45, 80, 65, 30)),
+                unsafe_allow_html=True,
+            )
 
         # ==========================================
         # HISTORICAL COMPARISON
@@ -5228,7 +5287,7 @@ else:
     # Report — see that container's own comment for why writing to it here
     # doesn't mean it displays here.
     # ==========================================
-    with executive_digest_container:
+    with executive_digest_container.container():
         st.header("Executive Digest")
         st.caption("The top strengths and concerns auto-prioritized from every signal computed on this page — not a new analysis, a synthesis of what's already below. Click a line to jump to its source section.")
 

@@ -126,7 +126,7 @@ def test_no_dead_settings_entry():
 
 def test_the_menu_renders_inside_the_sticky_header():
     """"Top right" means the right end of the one block always on screen."""
-    header_at = FINANCE.index("with symbol_header_container:")
+    header_at = FINANCE.index("with symbol_header_container.container():")
     render_at = FINANCE.index("profile_menu.render()")
     stats_at = FINANCE.index("_render_quick_stats()")
     assert header_at < render_at < stats_at

@@ -100,7 +100,7 @@ def test_the_badge_is_a_popover_not_markup():
 def test_the_badge_renders_inside_the_sticky_header():
     """"Prominent" means always on screen. Below the fold in a tab is
     where it already was."""
-    header_start = FINANCE.index("with symbol_header_container:")
+    header_start = FINANCE.index("with symbol_header_container.container():")
     tabs_start = FINANCE.index("= st.tabs([")
     badge_at = FINANCE.index("# --- Data quality badge")
     assert header_start < badge_at < tabs_start
