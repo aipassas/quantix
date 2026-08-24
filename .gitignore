@@ -59,3 +59,8 @@ screener_templates.json
 screener_templates.tmp
 quick_stats.json
 quick_stats.tmp
+
+# Notification read-state and rule snoozes — per-user local state, same
+# never-committed class as every other store above.
+notifications.json
+notifications.tmp

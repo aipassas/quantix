@@ -75,6 +75,7 @@ DANGER_STRONG: Tuple[str, ...] = (
     "pf_remove",              # removes a holding
     "clear_recents",          # forgets recently-viewed
     "quick_stats_reset",      # resets the stats strip to defaults
+    "notif_clear",            # wipes the persisted alert trigger history
 )
 
 DANGER_PREFIXES: Tuple[str, ...] = DANGER_INLINE + DANGER_STRONG

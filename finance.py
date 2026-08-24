@@ -76,6 +76,7 @@ import empty_states
 import button_roles
 import keyboard_shortcuts
 import date_range
+import notifications
 import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
@@ -2105,6 +2106,14 @@ def _render_realtime_alerts_fragment():
             _rt_rule = _rt_rules_by_id.get(_rt_rid)
             if _rt_rule is None:
                 continue
+            # A snoozed rule records nothing and raises no toast. This is
+            # the only place snooze can meaningfully act: the event is what
+            # the bell counts, so suppressing it here is what makes the
+            # mute real rather than cosmetic. The rule still EVALUATES —
+            # the active/cleared banner below still reflects reality — it
+            # simply stops generating notifications until the mute lapses.
+            if notifications.is_muted(_rt_rid):
+                continue
             _rt_result = _rt_results[_rt_rid]
             st.toast(_rt_md_escape_dollar(f"{_rt_rule.label} — {_rt_result.detail}"))
             st.session_state["rt_alert_history"].append(RealtimeTriggerEvent(
@@ -2139,7 +2148,11 @@ def _render_realtime_alerts_fragment():
 _render_realtime_alerts_fragment()
 
 if st.session_state["rt_alert_history"]:
-    with st.expander(f"Trigger history ({len(st.session_state['rt_alert_history'])})", expanded=False):
+    # Opened by the bell's "See all" — the dropdown shows the most recent
+    # few and this is the full list, rather than a third place that
+    # renders the same events.
+    with st.expander(f"Trigger history ({len(st.session_state['rt_alert_history'])})",
+                     expanded=bool(st.session_state.pop("_notif_open_history", False))):
         _rt_hist_rows = [
             {
                 "When": h.triggered_at, "Ticker": h.ticker,
@@ -3256,7 +3269,7 @@ with symbol_header_container:
         standardized, ticker_bundle, macro_bundle)
     _dq_colour = data_quality.grade_colour(data_quality_report.grade)
 
-    _dq_slot, _pm_spacer, _pm_slot = st.columns([2, 7, 1])
+    _dq_slot, _pm_spacer, _nb_slot, _pm_slot = st.columns([2, 6, 1.4, 1])
     with _dq_slot:
         st.markdown(
             # Qualified to (0,3,1). The obvious selector,
@@ -3317,6 +3330,76 @@ with symbol_header_container:
                 "Overview → Data Quality Report."
                 if _dq_gaps else
                 "No field-level issues. The full report is in Overview.")
+
+    # --- Notification bell --------------------------------------------
+    # Fed by the real-time engine's persisted TriggerEvents only. The
+    # Smart Risk-Aware Alerts are an on-demand snapshot with no event log
+    # and no timestamps, so counting them would mean inventing an
+    # occurrence time — settled with the user rather than assumed.
+    with _nb_slot:
+        _nb_history = st.session_state.get("rt_alert_history", [])
+        _nb_seen = notifications.last_seen()
+        _nb_unread = notifications.unread(_nb_history, _nb_seen)
+        _nb_badge = notifications.badge_text(len(_nb_unread))
+        with st.popover(f"Alerts {_nb_badge}".strip(), width="stretch",
+                        key="notif_bell",
+                        help="Alerts your rules have fired, newest first"):
+            if notifications.store_is_corrupt():
+                st.caption(
+                    "The notifications file on this instance can't be read, so "
+                    "read state and snoozes are unavailable. Move or delete "
+                    f"{notifications.STORE_FILENAME} and reload.")
+            if not _nb_history:
+                st.caption("No alerts yet. Rules that fire appear here.")
+            else:
+                _nb_unread_ids = {id(e) for e in _nb_unread}
+                _nb_rules = {r.id: r for r in st.session_state.get("rt_alert_rules", [])}
+                for _nb_event in list(reversed(_nb_history))[:notifications.DROPDOWN_LIMIT]:
+                    _nb_new = "**NEW** · " if id(_nb_event) in _nb_unread_ids else ""
+                    st.markdown(
+                        f"{_nb_new}**{_nb_event.ticker}** — "
+                        f"{RT_TRIGGER_LABELS.get(_nb_event.trigger_type, _nb_event.trigger_type)}")
+                    st.caption(
+                        f"{notifications.describe_age(_nb_event.triggered_at)} · "
+                        + _rt_md_escape_dollar(_nb_event.detail or ""))
+                    # Snooze acts on the RULE behind the event. The event
+                    # has already happened; muting the rule is what stops
+                    # it firing again.
+                    if _nb_event.rule_id in _nb_rules:
+                        _nb_until = notifications.mutes().get(_nb_event.rule_id)
+                        if _nb_until:
+                            st.caption(notifications.describe_mute(_nb_until))
+                            if st.button("Unmute", key=f"notif_unmute_{_nb_event.rule_id}",
+                                         width="stretch"):
+                                notifications.unsnooze(_nb_event.rule_id)
+                                st.rerun()
+                        else:
+                            _nb_choice = st.selectbox(
+                                f"Snooze {_nb_event.ticker}",
+                                [label for label, _ in notifications.SNOOZE_CHOICES],
+                                index=None, placeholder="Snooze this rule…",
+                                label_visibility="collapsed",
+                                key=f"notif_snooze_{_nb_event.rule_id}")
+                            if _nb_choice:
+                                _nb_hours = dict(notifications.SNOOZE_CHOICES)[_nb_choice]
+                                notifications.snooze(_nb_event.rule_id, _nb_hours)
+                                st.rerun()
+                    st.divider()
+
+                if len(_nb_history) > notifications.DROPDOWN_LIMIT:
+                    if st.button(f"See all {len(_nb_history)}", key="notif_see_all",
+                                 width="stretch"):
+                        st.session_state["_notif_open_history"] = True
+                        st.rerun()
+                if _nb_unread and st.button("Mark all read", key="notif_mark_read",
+                                            width="stretch"):
+                    notifications.mark_all_read()
+                    st.rerun()
+                if st.button("Clear history", key="notif_clear", width="stretch"):
+                    st.session_state["rt_alert_history"] = []
+                    rt_save_store(st.session_state["rt_alert_rules"], [])
+                    notifications.clear_history()
+                    st.rerun()
 
     with _pm_slot:
         profile_menu.render()
