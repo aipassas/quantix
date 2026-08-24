@@ -73,6 +73,8 @@ import alignment_card
 import ticker_discovery as td
 import empty_states
 import button_roles
+import keyboard_shortcuts
+import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
 from portfolio_backtester import REBALANCE_FREQUENCIES, REBALANCE_FREQUENCY_LABELS, prepare_ticker_for_backtest, run_portfolio_backtest
 from ml_pipeline import (
@@ -943,7 +945,129 @@ login_page.require_sign_in()
 # Only now does the app itself begin. The title sits below the gate so a
 # signed-out visitor sees the login page alone rather than the app's
 # masthead stacked on top of it.
+# ==========================================
+# KEYBOARD SHORTCUTS & COMMAND PALETTE
+# ==========================================
+# The listener is an invisible components.html iframe. That is NOT the
+# same mechanism onboarding.py rules out: a <script> inserted through
+# st.markdown never executes, but a component iframe is a real document
+# whose scripts do — and it is same-origin here, so it can bind on
+# window.parent.document and click things. Probed on this app before any
+# of it was written; see keyboard_shortcuts' docstring.
+#
+# The hidden buttons below are the bridge back into Python. They are
+# clipped rather than display:none so a synthetic .click() still lands.
+st.markdown(
+    """
+    <style>
+    [class*="st-key-kbd_trigger_"] {
+        position: absolute !important;
+        width: 1px; height: 1px;
+        overflow: hidden; clip: rect(0 0 0 0);
+        white-space: nowrap;
+    }
+    /* Both panels open ABOVE the sticky symbol header, which sits at
+       z-index 100 and otherwise renders straight through them — the
+       quick-stats chips landed on top of the palette's own search box.
+       An opaque background is part of the fix, not decoration: without
+       it the page still shows through a merely-raised panel. */
+    [class*="st-key-kbd_palette_panel"],
+    [class*="st-key-kbd_shortcuts_panel"] {
+        position: relative;
+        z-index: 200;
+        background: var(--background-color, #000000);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+_kbd_pending_tab = st.session_state.pop("kbd_pending_tab", None)
+# Whichever panel just opened gets scrolled to and focused — see the
+# module docstring: they render far below the fold, so without this ⌘K
+# looked like it did nothing.
+_kbd_focus = ("kbd_palette_panel" if st.session_state.get("kbd_palette_open")
+              else "kbd_shortcuts_panel" if st.session_state.get("kbd_shortcuts_open")
+              else None)
+components.html(
+    keyboard_shortcuts.listener_html(pending_tab=_kbd_pending_tab,
+                                     focus_panel=_kbd_focus),
+    height=0,
+)
+
+for _kbd_name, _kbd_key in keyboard_shortcuts.TRIGGERS.items():
+    if st.button(_kbd_name, key=_kbd_key):
+        if _kbd_name == "close":
+            st.session_state["kbd_palette_open"] = False
+            st.session_state["kbd_shortcuts_open"] = False
+        elif _kbd_name == "palette":
+            st.session_state["kbd_palette_open"] = True
+            st.session_state["kbd_shortcuts_open"] = False
+        elif _kbd_name == "shortcuts":
+            st.session_state["kbd_shortcuts_open"] = not st.session_state.get(
+                "kbd_shortcuts_open", False)
+        elif _kbd_name == "help":
+            st.session_state[profile_menu.OPEN_HELP_KEY] = True
+        elif _kbd_name == "new_alert":
+            st.session_state["kbd_new_alert_requested"] = True
+        log_event(logger, logging.INFO, "user.keyboard_shortcut", action=_kbd_name)
+        st.rerun()
+
 st.title(brand().title)
+
+# --- the palette and the shortcuts panel ---------------------------------
+if st.session_state.get("kbd_palette_open"):
+    with st.container(border=True, key="kbd_palette_panel"):
+        st.caption("**Command palette** · type to filter, Esc to close")
+        _kbd_query = st.text_input(
+            "Command", key="kbd_palette_query", label_visibility="collapsed",
+            placeholder="Jump to a tab, create an alert, open help…",
+        )
+        _kbd_hits = keyboard_shortcuts.search(_kbd_query)
+        if not _kbd_hits:
+            st.caption(f'Nothing matches "{_kbd_query.strip()}".')
+        for _kbd_cmd in _kbd_hits[:8]:
+            _kbd_label = (f"{_kbd_cmd.label}  ·  {_kbd_cmd.hint}"
+                          if _kbd_cmd.hint else _kbd_cmd.label)
+            if st.button(_kbd_label, key=f"kbd_cmd_{_kbd_cmd.id}", width="stretch"):
+                if _kbd_cmd.kind == "tab":
+                    # st.tabs cannot be selected from Python, so the index
+                    # is handed to the listener component, which clicks the
+                    # tab when it mounts on the next run.
+                    st.session_state["kbd_pending_tab"] = _kbd_cmd.payload
+                elif _kbd_cmd.id == "action:help":
+                    st.session_state[profile_menu.OPEN_HELP_KEY] = True
+                elif _kbd_cmd.id == "action:shortcuts":
+                    st.session_state["kbd_shortcuts_open"] = True
+                elif _kbd_cmd.id == "action:new_alert":
+                    st.session_state["kbd_new_alert_requested"] = True
+                st.session_state["kbd_palette_open"] = False
+                log_event(logger, logging.INFO, "user.palette_command",
+                          command=_kbd_cmd.id)
+                st.rerun()
+        if st.button("Close", key="kbd_palette_close", width="stretch"):
+            st.session_state["kbd_palette_open"] = False
+            st.rerun()
+
+if st.session_state.get("kbd_shortcuts_open"):
+    with st.container(border=True, key="kbd_shortcuts_panel"):
+        st.caption("**Keyboard shortcuts**")
+        for _kbd_cat, _kbd_items in keyboard_shortcuts.shortcuts_by_category().items():
+            st.caption(f"**{_kbd_cat}**")
+            for _kbd_sc in _kbd_items:
+                st.markdown(
+                    f"`{_kbd_sc.keys}` — {_kbd_sc.description}"
+                    + (f"  \n<span style='opacity:.7;font-size:.86em'>{_kbd_sc.note}</span>"
+                       if _kbd_sc.note else ""),
+                    unsafe_allow_html=True,
+                )
+        st.caption(
+            "Shortcuts are delivered by an invisible component iframe, so they "
+            "work on this page only — not while a browser dialog has focus."
+        )
+        if st.button("Close", key="kbd_shortcuts_close", width="stretch"):
+            st.session_state["kbd_shortcuts_open"] = False
+            st.rerun()
 
 # ==========================================
 # INSTITUTIONAL WATCHLIST SUGGESTIONS (CHRONOLOGICAL PORTFOLIOS)
@@ -1756,6 +1880,43 @@ if "rt_alert_rules" not in st.session_state:
     st.session_state["rt_alert_rules"] = _rt_init_rules
     st.session_state["rt_alert_history"] = _rt_init_history
     st.session_state["rt_alert_prev_active"] = {}
+
+# ⌘⇧A, from the keyboard listener or the command palette. Consumed here
+# because this is the first point where the rule store exists.
+#
+# The ticker comes from session_state rather than ticker_symbol, which
+# the sidebar does not assign until several hundred lines below this —
+# the same ordering trap the alerts empty state hit. CHART_DEFAULTS is
+# the last resort because ticker_input is not seeded until then either.
+if st.session_state.pop("kbd_new_alert_requested", False):
+    _kbd_alert_ticker = (st.session_state.get("rt_new_ticker")
+                         or st.session_state.get("ticker_input")
+                         or CHART_DEFAULTS.default_ticker
+                         or "").strip().upper()
+    if not _kbd_alert_ticker:
+        st.warning("No ticker to alert on yet — enter one first.")
+    elif len(st.session_state["rt_alert_rules"]) >= REALTIME_ALERTS.max_rules:
+        st.warning(f"Rule limit reached ({REALTIME_ALERTS.max_rules} max) — "
+                   "remove one in the Real-Time Alert Engine first.")
+    else:
+        _kbd_rule = RealtimeAlertRule(
+            id=rt_new_rule_id(), ticker=_kbd_alert_ticker,
+            trigger_type=RT_FIRST_ALERT_TRIGGER,
+            created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        )
+        st.session_state["rt_alert_rules"].append(_kbd_rule)
+        rt_save_store(st.session_state["rt_alert_rules"],
+                      st.session_state["rt_alert_history"])
+        log_event(logger, logging.INFO, "user.keyboard_new_alert",
+                  ticker=_kbd_alert_ticker)
+        # A keystroke that silently changes stored state is a bad
+        # surprise, so say exactly what was created and where to undo it.
+        st.toast(
+            f"Alert created: {_kbd_alert_ticker} — "
+            f"{RT_TRIGGER_LABELS[RT_FIRST_ALERT_TRIGGER]}. "
+            "Remove it in the Real-Time Alert Engine.",
+            icon=":material/notifications_active:",
+        )
 
 # Every widget below is seeded into session_state ONLY if the key is
 # absent, then constructed with `key=` alone — no `value=` on top of an
