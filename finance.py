@@ -80,6 +80,7 @@ import notifications
 import loading_states
 import asset_class
 import etf_analysis
+import etf_technicals
 import etf_screener
 import streamlit.components.v1 as components
 from strategy_builder import LOGIC_OPTIONS, StrategyCondition, StrategyRule, classic_mean_reversion, condition_library, evaluate_condition_set, run_backtest, run_walk_forward_backtest
@@ -5121,6 +5122,200 @@ else:
             p1.metric("Total Excess Return", f"{attribution.total_excess_return_pct:.2f}%", help=f'{help_for("excess_return_total")} Here: {ticker_symbol}\'s period return minus the period risk-free rate.')
             p2.metric("Systematic (Market Beta)", f"{attribution.systematic_pct:.2f}%", help=help_for("beta_systematic"))
             p3.metric("Selection (Residual)", f"{attribution.selection_pct:.2f}%", help=help_for("alpha_selection"))
+
+
+        # ==========================================
+        # FUND TECHNICALS & SECTOR MOMENTUM  (PHASE 1.4)
+        # ==========================================
+        # Placed in the Chart Workspace rather than beside Fund
+        # Decomposition, because everything here is price-derived and
+        # belongs next to the chart it describes.
+        #
+        # The indicator suite above is NOT rebuilt: the SMA trio, RSI and
+        # MACD subplots and the up/down-coloured volume bars already
+        # render for a fund, because none of them was ever gated on asset
+        # class. What follows is the part that is specific to a basket.
+        if asset_class.supports(asset_kind, asset_class.HOLDINGS):
+            st.markdown("---")
+            st.header("Fund Technicals & Sector Momentum", anchor="fund-technicals")
+
+            # Computed here rather than read off `df`, deliberately. The
+            # 50/200-day lines above exist only when the "Show 20/50/200
+            # SMA Trio" checkbox is ticked, and a signal that reported
+            # "unavailable" because a DISPLAY toggle was off would be
+            # blaming the data for a UI state.
+            _ft_sma = compute_sma_lines(df, (50, etf_technicals.SMA_LONG_PERIOD))
+            _ft_rsi = compute_rsi(df, rsi_length)
+            _ft_rsi_clean = _ft_rsi.dropna() if _ft_rsi is not None else None
+            _ft_rsi_latest = (float(_ft_rsi_clean.iloc[-1])
+                              if _ft_rsi_clean is not None and len(_ft_rsi_clean) else None)
+            _ft_volume = etf_technicals.relative_volume(df)
+            _ft_range = etf_technicals.range_position(df)
+            _ft_verdict = etf_technicals.momentum_verdict(
+                _ft_rsi_latest, _ft_sma, df, _ft_range)
+
+            _ft_g1, _ft_g2, _ft_g3 = st.columns(3)
+            _ft_g1.metric(
+                "Momentum", _ft_verdict.label,
+                help=("Net of the readings that could actually be taken over "
+                      "the loaded range — RSI, price against its 50- and "
+                      "200-day averages, and position in range. Scored out "
+                      "of what was measurable, so a short range gives a "
+                      "less confident reading rather than a falsely "
+                      "decisive one."))
+            _ft_g1.caption(
+                f"{_ft_verdict.considered} reading(s) considered"
+                if _ft_verdict.considered else "Not enough history to read.")
+            if _ft_range.position_pct is None:
+                _ft_g2.metric("Position in range", "Unavailable",
+                              help="0% sits at the low of the loaded range, "
+                                   "100% at the high. Not computable when the "
+                                   "range has no span.")
+                _ft_g2.caption("The loaded range has no high-low span.")
+            else:
+                _ft_g2.metric("Position in range", f"{_ft_range.position_pct:.0f}%",
+                              help="0% sits at the low of the loaded range, "
+                                   "100% at the high.")
+                _ft_g2.caption(
+                    f"{_ft_range.low:,.2f} – {_ft_range.high:,.2f} over "
+                    f"{_ft_range.days_used} trading day(s)"
+                    + ("" if _ft_range.sufficient else
+                       " — shorter than a year, so this is the loaded range "
+                       "and not a 52-week figure"))
+            if _ft_volume.ok:
+                _ft_g3.metric("Relative volume", f"{_ft_volume.ratio_pct:.0f}%",
+                              help="Latest bar's volume as a percentage OF its "
+                                   "trailing average. The average excludes the "
+                                   "latest bar, so a doubling reads as 200%.")
+                _ft_g3.caption(etf_technicals.describe_volume(_ft_volume))
+            else:
+                _ft_g3.metric("Relative volume", "Unavailable",
+                              help="Latest bar's volume as a percentage OF its "
+                                   "trailing average. Not computable without "
+                                   "volume for the latest bar.")
+                _ft_g3.caption("Volume was not reported for the latest bar.")
+
+            if _ft_range.sufficient and _ft_range.at_new_high:
+                st.success(f"{ticker_symbol} closed at a new 52-week high.")
+            elif _ft_range.sufficient and _ft_range.at_new_low:
+                st.warning(f"{ticker_symbol} closed at a new 52-week low.")
+
+            # --- signals -------------------------------------------------
+            st.markdown("**Entry / exit signals**")
+            _ft_signals = etf_technicals.signals(df, _ft_sma, _ft_rsi, _ft_volume)
+            _ft_state_labels = {
+                etf_technicals.FIRED: "Fired",
+                etf_technicals.NOT_FIRED: "Not fired",
+                etf_technicals.UNAVAILABLE: "Not evaluated",
+            }
+            st.dataframe(
+                pd.DataFrame([
+                    {"Signal": _s.name,
+                     "Status": _ft_state_labels[_s.state],
+                     "Basis": _s.detail}
+                    for _s in _ft_signals
+                ]),
+                width="stretch", hide_index=True, key="etf_signal_table")
+            st.caption(
+                "“Not evaluated” is not “not fired” — it means the loaded "
+                "range is too short to check that rule at all. The "
+                "200-day trend rule needs a year of history; a three-month "
+                "range gives 63 trading days.")
+
+            # --- sector momentum -----------------------------------------
+            st.markdown("**Sector momentum**")
+            _ft_weights = {}
+            _ft_profile = etf_analysis.load_profile(ticker_symbol)
+            if _ft_profile.ok:
+                _ft_weights = _ft_profile.sector_weights or {}
+
+            if not _ft_weights:
+                st.info(
+                    "This fund reports no equity sector weightings. That is "
+                    "normal for a bond fund or a commodity trust — there are "
+                    "no equity sectors to weight — rather than a gap in the "
+                    "data.")
+            else:
+                _ft_sector_returns, _ft_sector_error = etf_technicals.load_sector_returns()
+                if _ft_sector_error:
+                    st.warning(_ft_sector_error)
+                _ft_fund_move = etf_technicals._pct_change(
+                    df["Close"], etf_technicals.MOMENTUM_LOOKBACK_DAYS)
+                _ft_rows = etf_technicals.sector_momentum(
+                    _ft_weights, _ft_sector_returns, _ft_fund_move)
+                _ft_estimate = etf_technicals.estimated_fund_move(_ft_rows)
+
+                st.caption(
+                    f"Each sector's weight in {ticker_symbol} against that "
+                    f"sector's own {etf_technicals.MOMENTUM_LOOKBACK_DAYS}-day "
+                    "move, measured through the SPDR select sector ETFs. "
+                    "Yahoo reports a fund's sector weights as a single "
+                    "undated snapshot with no history, so the time dimension "
+                    "comes from sector prices — the proxy is the sector as a "
+                    "whole, not this fund's particular holdings within it.")
+
+                _ft_t = pd.DataFrame([
+                    {"Sector": _r.label,
+                     "Proxy": _r.proxy,
+                     "Weight %": _r.weight_pct,
+                     f"{etf_technicals.MOMENTUM_LOOKBACK_DAYS}d %": _r.return_pct,
+                     "Contribution (pp)": _r.contribution_pct,
+                     "vs fund (pp)": _r.divergence_pct}
+                    for _r in _ft_rows
+                ])
+                for _c in ("Weight %", f"{etf_technicals.MOMENTUM_LOOKBACK_DAYS}d %",
+                           "Contribution (pp)", "vs fund (pp)"):
+                    _ft_t[_c] = pd.to_numeric(_ft_t[_c], errors="coerce")
+                st.dataframe(
+                    _ft_t, width="stretch", hide_index=True,
+                    column_config={
+                        "Weight %": st.column_config.NumberColumn(
+                            "Weight %", format="%.1f%%"),
+                        f"{etf_technicals.MOMENTUM_LOOKBACK_DAYS}d %":
+                            st.column_config.NumberColumn(
+                                f"{etf_technicals.MOMENTUM_LOOKBACK_DAYS}d %",
+                                format="%.2f%%",
+                                help="The sector proxy ETF's own return."),
+                        "Contribution (pp)": st.column_config.NumberColumn(
+                            "Contribution (pp)", format="%.2f",
+                            help="Weight x sector return, in percentage points "
+                                 "of the fund's move."),
+                        "vs fund (pp)": st.column_config.NumberColumn(
+                            "vs fund (pp)", format="%+.2f",
+                            help="Sector return minus the fund's own return "
+                                 "over the same window."),
+                    },
+                    key="etf_sector_momentum_table")
+
+                if _ft_estimate is not None and _ft_fund_move is not None:
+                    st.caption(
+                        f"Contributions sum to {_ft_estimate:+.2f}pp against "
+                        f"{ticker_symbol}'s actual "
+                        f"{etf_technicals.MOMENTUM_LOOKBACK_DAYS}-day move of "
+                        f"{_ft_fund_move:+.2f}%. The two are close when the "
+                        "fund tracks its sectors; a gap is the fund's own "
+                        "security selection.")
+
+                _ft_ahead, _ft_behind = etf_technicals.leaders_and_laggards(_ft_rows)
+                if _ft_ahead or _ft_behind:
+                    _ft_parts = []
+                    if _ft_ahead:
+                        _ft_parts.append(
+                            "outperforming: " + ", ".join(
+                                f"{_r.label} ({_r.divergence_pct:+.1f}pp)"
+                                for _r in _ft_ahead))
+                    if _ft_behind:
+                        _ft_parts.append(
+                            "underperforming: " + ", ".join(
+                                f"{_r.label} ({_r.divergence_pct:+.1f}pp)"
+                                for _r in _ft_behind))
+                    st.caption(
+                        f"Diverging from the fund by "
+                        f"{etf_technicals.DIVERGENCE_FLAG_PCT:.0f}pp or more — "
+                        + "; ".join(_ft_parts) + ".")
+
+            # --- what is deliberately absent ------------------------------
+            st.caption(etf_technicals.NAV_PREMIUM_UNAVAILABLE)
 
     with tab_risk:
         # --- QUANTITATIVE CALCULATIONS ---
