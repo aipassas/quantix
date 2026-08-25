@@ -63,6 +63,7 @@ def test_every_spec_reads_a_field_that_exists(qs):
     import financial_standardization as fs
     import watchlist_panel as wp
 
+    import crypto_data
     import etf_analysis
 
     std_fields = {f.name for f in dataclasses.fields(fs.StandardizedFinancials)}
@@ -71,7 +72,19 @@ def test_every_spec_reads_a_field_that_exists(qs):
     # (the stat key and the profile attribute differ where the stat key
     # would otherwise collide with an equity one).
     fund_fields = {f.name for f in dataclasses.fields(etf_analysis.EtfProfile)}
+    # A fourth source: crypto stats read off a crypto_data.CoinRow. Two of
+    # those are PROPERTIES rather than dataclass fields (turnover,
+    # pct_of_max_mined), so this looks at the class and not only at its
+    # fields — a fields-only check would pass a stat pointing at a
+    # property that does not exist.
+    coin_names = ({f.name for f in dataclasses.fields(crypto_data.CoinRow)}
+                  | {n for n in dir(crypto_data.CoinRow)
+                     if not n.startswith("_")})
     for spec in qs.STATS:
+        if spec.source == "crypto":
+            attr = qs._CRYPTO_ATTRS.get(spec.key, spec.key)
+            assert attr in coin_names, f"{spec.key} -> {attr} is not on CoinRow"
+            continue
         if spec.source == "fund":
             attr = qs._FUND_ATTRS.get(spec.key, spec.key)
             assert attr in fund_fields, f"{spec.key} -> {attr} is not on EtfProfile"

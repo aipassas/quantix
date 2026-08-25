@@ -106,6 +106,25 @@ STATS: Tuple[StatSpec, ...] = (
     StatSpec("fund_pe", "Fund P/E", "fund", "number",
              note="Whole-fund trailing P/E across its holdings, not the "
                   "top ten — the top ten are only 37-46% of a fund."),
+
+    # --- crypto stats ---------------------------------------------------
+    # These read off a crypto_data.CoinRow the way the fund stats read
+    # off an EtfProfile. Dominance comes off the market totals rather
+    # than the row, because a coin's share of the whole market cannot be
+    # reconstructed from a 250-coin page — that total excludes eighteen
+    # thousand other coins and would inflate every share.
+    StatSpec("volume_24h", "24h Volume", "crypto", "money",
+             note="Exchange trading volume over 24 hours. Not the same "
+                  "as on-chain settlement volume, which is what NVT "
+                  "divides by."),
+    StatSpec("dominance_pct", "Dominance", "crypto", "percent",
+             note="This coin's share of total crypto market "
+                  "capitalisation, as reported across the whole market."),
+    StatSpec("supply_mined_pct", "Mined", "crypto", "percent", decimals=1,
+             note="Percent of the maximum supply already in circulation. "
+                  "Not reported for an uncapped coin — that is an "
+                  "answer, not a gap, and a zero there would state the "
+                  "opposite."),
 )
 STATS_BY_KEY: Dict[str, StatSpec] = {s.key: s for s in STATS}
 
@@ -165,6 +184,15 @@ def format_value(spec: StatSpec, raw: Any) -> str:
 
 # Fund stats read off an EtfProfile; the attribute names differ from the
 # stat keys where the stat key would otherwise collide with an equity one.
+# Crypto stats read off a crypto_data.CoinRow, except dominance, which
+# is a market-wide figure carried on the same object by the caller.
+_CRYPTO_ATTRS: Dict[str, str] = {
+    "volume_24h": "volume_24h",
+    "supply_mined_pct": "pct_of_max_mined",
+    "dominance_pct": "dominance_pct",
+}
+
+
 _FUND_ATTRS: Dict[str, str] = {
     "expense_ratio_pct": "expense_ratio_pct",
     "net_assets": "net_assets",
@@ -186,6 +214,14 @@ def raw_value(spec: StatSpec, quote, standardized, fund=None) -> Any:
             if fund is None or not getattr(fund, "ok", False):
                 return None
             return getattr(fund, _FUND_ATTRS.get(spec.key, spec.key), None)
+        if spec.source == "crypto":
+            # `fund` carries whichever class-specific object the page
+            # loaded; for a coin that is a crypto_data.CoinRow. A crypto
+            # stat with no row is simply not reported rather than
+            # falling through to an equity field of the same name.
+            if fund is None:
+                return None
+            return getattr(fund, _CRYPTO_ATTRS.get(spec.key, spec.key), None)
         if spec.source == "quote":
             if spec.key == "price":
                 value = getattr(quote, "price", None)

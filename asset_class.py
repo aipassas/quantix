@@ -73,10 +73,11 @@ TECHNICALS = "technicals"          # price-derived: SMA, RSI, MACD, Bollinger
 RISK = "risk"                      # return-derived: VaR, Sharpe, drawdown
 SIMULATION = "simulation"          # Monte Carlo over returns
 HOLDINGS = "holdings"              # what a basket contains
+ON_CHAIN = "on_chain"              # settlement activity on a public ledger
 
 ALL_CAPABILITIES: Tuple[str, ...] = (
     FUNDAMENTALS, DCF, SECTOR_PERCENTILE, PEERS, DIVIDENDS,
-    TECHNICALS, RISK, SIMULATION, HOLDINGS,
+    TECHNICALS, RISK, SIMULATION, HOLDINGS, ON_CHAIN,
 )
 
 
@@ -107,10 +108,12 @@ SPECS: Tuple[AssetClassSpec, ...] = (
         "SPY"),
     AssetClassSpec(
         CRYPTO, "Cryptocurrency",
-        (TECHNICALS, RISK, SIMULATION),
+        (TECHNICALS, RISK, SIMULATION, ON_CHAIN),
         "A cryptocurrency has no issuer, no filings and no cash flows, so "
         "there is nothing to discount and no sector to rank it within. "
-        "Price-derived analysis still applies in full.",
+        "Price-derived analysis still applies in full, and a public "
+        "ledger supports a valuation read no equity has: what the "
+        "network actually settles.",
         "BTC-USD"),
     AssetClassSpec(
         FOREX, "Currency pair",
@@ -151,8 +154,20 @@ MISSING_SOURCES: Dict[str, Tuple[str, ...]] = {
           "fund_operations. Top holdings and sector weightings are "
           "present for equity funds and absent by nature for bond and "
           "commodity ones (SPY and QQQ disclose them; TLT and GLD do not)",),
-    CRYPTO: ("on-chain metrics (MVRV, NVT, hashrate) need Glassnode or "
-             "similar — no credentials in this build",),
+    CRYPTO: ("MVRV, realized cap, whale concentration and exchange "
+             "reserves — all need UTXO-level or address-labelled data "
+             "that no free provider publishes; Glassnode or CoinMetrics "
+             "would",
+             "on-chain metrics for any coin OTHER than Bitcoin — "
+             "blockchain.info indexes the Bitcoin chain only, so every "
+             "other coin has price and supply but no chain data",
+             "social sentiment — CoinGecko still returns the fields and "
+             "they are empty, reading zero for Bitcoin and Dogecoin "
+             "alike, which is a retired field rather than a quiet "
+             "community",
+             "order-book depth — Binance and Kraken quote the prices "
+             "CoinGecko already aggregates, and their depth endpoints "
+             "need per-exchange integration",),
     FUTURE: ("the forward curve needs quotes for every contract month; "
              "Yahoo returns only the front month per symbol",),
     INDEX: ("treasury yields arrive as an index level (^TNX); "

@@ -88,6 +88,11 @@ import etf_risk
 import bond_data
 import bond_market
 import bond_screener
+import crypto_data
+import crypto_market
+import crypto_risk
+import crypto_screener
+import crypto_valuation
 import etf_technicals
 import etf_screener
 import streamlit.components.v1 as components
@@ -1959,6 +1964,121 @@ else:
             file_name=f"quantix_bond_screen_{datetime.date.today()}.csv",
             mime="text/csv", key="bond_csv")
         st.caption(bond_screener.LADDER_UNAVAILABLE)
+
+# ==========================================
+# CRYPTO SCREENER (PHASE 3.5)
+# ==========================================
+st.markdown("---")
+st.header("Crypto Screener", anchor="crypto-screener")
+st.caption(
+    "Screens the top coins by market cap from CoinGecko's keyless public "
+    f"API, refreshed every {crypto_data.UNIVERSE_TTL_SECONDS // 60} "
+    "minutes.")
+_cs_rows, _cs_err = crypto_data.load_universe()
+if _cs_err:
+    st.warning(_cs_err)
+if not _cs_rows:
+    st.info("No coins could be loaded right now.")
+else:
+    st.caption(
+        f"{len(_cs_rows)} coins loaded. Category tags are deliberately not "
+        "offered as a filter: Bitcoin, Ethereum, Solana and Dogecoin are "
+        "all tagged \"Smart Contract Platform\" by the provider, so a "
+        "\"DeFi\" screen built on that field would return Bitcoin.")
+    if "crypto_criteria" not in st.session_state:
+        st.session_state["crypto_criteria"] = [
+            {"metric": "market_cap_rank", "operator": "<=",
+             "threshold": 10.0}]
+
+    st.markdown("**Preset screens**")
+    _cs_cols = st.columns(len(crypto_screener.PRESETS))
+    for _cs_i, _cs_preset in enumerate(crypto_screener.PRESETS):
+        with _cs_cols[_cs_i]:
+            if st.button(_cs_preset.name, key=f"crypto_preset_{_cs_i}",
+                         width="stretch", help=_cs_preset.description):
+                st.session_state["crypto_criteria"] = [
+                    {"metric": c.metric, "operator": c.operator,
+                     "threshold": c.threshold}
+                    for c in _cs_preset.criteria]
+                st.rerun()
+
+    st.markdown("**Filters**")
+    _cs_remove = None
+    for _cs_i, _cs_c in enumerate(st.session_state["crypto_criteria"]):
+        # Numbered labels, no Streamlit key: an unkeyed widget is
+        # identified by hashing (label, options, index, help) and
+        # label_visibility is NOT in that hash, so two collapsed rows
+        # with the same parameters collide outright.
+        _cs_suffix = "" if _cs_i == 0 else f" {_cs_i + 1}"
+        _cs_m, _cs_o, _cs_v, _cs_x = st.columns([3, 2, 3, 1])
+        with _cs_m:
+            _cs_keys = [m.key for m in crypto_screener.METRICS]
+            _cs_metric = st.selectbox(
+                f"Coin metric{_cs_suffix}", _cs_keys,
+                index=_cs_keys.index(_cs_c["metric"])
+                if _cs_c["metric"] in _cs_keys else 0,
+                format_func=lambda k: crypto_screener.METRICS_BY_KEY[k].label,
+                label_visibility="collapsed")
+        _cs_ops = crypto_screener.operators_for(_cs_metric)
+        with _cs_o:
+            _cs_op = st.selectbox(
+                f"Coin op{_cs_suffix}", _cs_ops,
+                index=_cs_ops.index(_cs_c["operator"])
+                if _cs_c["operator"] in _cs_ops else 0,
+                label_visibility="collapsed")
+        with _cs_v:
+            _cs_threshold = st.number_input(
+                f"Coin threshold{_cs_suffix}",
+                value=float(_cs_c["threshold"]),
+                label_visibility="collapsed")
+        with _cs_x:
+            if st.button("✕", key=f"crypto_remove_{_cs_i}",
+                         help="Remove this filter"):
+                _cs_remove = _cs_i
+        st.session_state["crypto_criteria"][_cs_i] = {
+            "metric": _cs_metric, "operator": _cs_op,
+            "threshold": _cs_threshold}
+
+    if _cs_remove is not None:
+        st.session_state["crypto_criteria"].pop(_cs_remove)
+        st.rerun()
+    if st.button("+ Add coin filter", key="crypto_add_filter"):
+        st.session_state["crypto_criteria"].append(
+            {"metric": "market_cap", "operator": ">", "threshold": 1e9})
+        st.rerun()
+
+    _cs_criteria = [crypto_screener.Criterion(**c)
+                    for c in st.session_state["crypto_criteria"]]
+    _cs_passed, _cs_unjudged = crypto_screener.run(_cs_rows, _cs_criteria)
+    st.caption(" · ".join(crypto_screener.describe(c) for c in _cs_criteria)
+               or "No filters — every coin passes.")
+
+    if not _cs_passed:
+        st.info(
+            f"No coin in the top {len(_cs_rows)} meets every filter."
+            + (f" {_cs_unjudged} could not be judged because they do not "
+               f"report one of the fields." if _cs_unjudged else ""))
+    else:
+        st.success(
+            f"{len(_cs_passed)} of {len(_cs_rows)} coins match."
+            + (f" {_cs_unjudged} could not be judged — they do not report "
+               f"one of the filtered fields, which is not the same as "
+               f"failing." if _cs_unjudged else ""))
+        _cs_table = crypto_screener.results_frame(
+            _cs_passed[:crypto_screener.MAX_RESULTS_SHOWN])
+        st.dataframe(_cs_table, hide_index=True, width="stretch",
+                     column_config=crypto_screener.column_config(),
+                     key="crypto_results_table")
+        if len(_cs_passed) > crypto_screener.MAX_RESULTS_SHOWN:
+            st.caption(
+                f"Showing the first {crypto_screener.MAX_RESULTS_SHOWN}.")
+        st.download_button(
+            "Download these results (CSV)",
+            _cs_table.to_csv(index=False).encode("utf-8"),
+            file_name=f"quantix_crypto_screen_{datetime.date.today()}.csv",
+            mime="text/csv", key="crypto_csv")
+        st.caption(crypto_data.SOCIAL_UNAVAILABLE)
+
 
 st.header("ETF Screener")
 st.caption(
@@ -3959,6 +4079,17 @@ with symbol_header_container.container():
         _qs_fund = (etf_analysis.load_profile(ticker_symbol)
                     if asset_class.supports(asset_kind, asset_class.HOLDINGS)
                     else None)
+        # A coin's stats come off a CoinRow the same way a fund's come off
+        # an EtfProfile, and from the same cached universe the screener
+        # and the valuation panel read — so the strip still adds no fetch
+        # of its own. Dominance is market-wide rather than per-row, so it
+        # is attached here from the reported global totals.
+        if _qs_fund is None and asset_class.supports(asset_kind,
+                                                     asset_class.ON_CHAIN):
+            _qs_rows, _ = crypto_data.load_universe()
+            _qs_resolved = crypto_data.resolve(ticker_symbol, _qs_rows)
+            _qs_fund = crypto_data.with_dominance(
+                _qs_resolved.row, crypto_data.load_global())
         _qs_specs = [quick_stats.STATS_BY_KEY[k] for k in _qs_selected
                      if k in quick_stats.STATS_BY_KEY]
         _qs_cols = st.columns(len(_qs_specs) + 1)
@@ -4835,6 +4966,155 @@ else:
                         st.caption(etf_pipeline.GEOGRAPHIC_ALLOCATION_UNAVAILABLE)
                         if not etf_pipeline.morningstar_is_configured():
                             st.caption(etf_pipeline.MORNINGSTAR_UNCONFIGURED)
+
+            # A coin has no filings either, but it is not opaque: a
+            # public ledger reports what the network actually settles,
+            # and that supports a valuation read no equity has. This is
+            # the analysis that replaces the company scorecard for
+            # crypto, in the same spirit as Fund Decomposition above.
+            if asset_class.supports(asset_kind, asset_class.ON_CHAIN):
+                st.markdown("---")
+                st.header("On-Chain & Valuation", anchor="crypto-valuation")
+
+                _cx_rows, _cx_uni_err = crypto_data.load_universe()
+                _cx_res = crypto_data.resolve(ticker_symbol, _cx_rows)
+                if _cx_uni_err:
+                    st.warning(_cx_uni_err)
+                elif not _cx_res.ok:
+                    st.info(_cx_res.error)
+
+                if _cx_res.ambiguous:
+                    st.warning(
+                        "More than one coin uses this symbol. Showing "
+                        f"{_cx_res.row.name} (rank "
+                        f"{_cx_res.row.market_cap_rank}); also matched: "
+                        + ", ".join(_cx_res.also_matched) + ".")
+
+                _cx_row = _cx_res.row
+                if _cx_row is not None:
+                    _cx_supply = crypto_valuation.supply_picture(_cx_row)
+                    _cx_s1, _cx_s2, _cx_s3 = st.columns(3)
+                    _cx_s1.metric(
+                        "Circulating supply",
+                        f"{_cx_row.circulating_supply:,.0f}"
+                        if _cx_row.circulating_supply else "Not reported",
+                        help="Coins in existence and in public hands.")
+                    if _cx_supply.uncapped:
+                        _cx_s2.metric(
+                            "Maximum supply", "Uncapped",
+                            help="This coin has no supply cap. That is an "
+                                 "answer, not a missing figure — Yahoo "
+                                 "reports 0 here and CoinGecko reports "
+                                 "null, and 111 of the top 250 coins are "
+                                 "uncapped.")
+                        _cx_s2.caption(_cx_supply.note)
+                    else:
+                        _cx_s2.metric(
+                            "Maximum supply", f"{_cx_supply.maximum:,.0f}",
+                            help="The hard cap on eventual issuance.")
+                        if _cx_supply.pct_of_max_mined is not None:
+                            _cx_s2.caption(_cx_supply.note)
+                    _cx_s3.metric(
+                        "Turnover",
+                        f"{_cx_row.turnover:.1%}" if _cx_row.turnover
+                        else "Not reported",
+                        help="24h exchange volume over market cap — how "
+                             "much of the coin changes hands in a day.")
+
+                # On-chain metrics exist for the one chain this build can
+                # index. For every other coin the panel says which coin
+                # it can do this for, rather than showing a Bitcoin
+                # number under another name.
+                if not crypto_data.onchain_available(ticker_symbol):
+                    st.info(crypto_data.onchain_note(ticker_symbol))
+                    st.caption(crypto_data.MVRV_UNAVAILABLE)
+                else:
+                    _cx_mc, _cx_mc_err = crypto_data.load_onchain_market_cap()
+                    _cx_tv, _cx_tv_err = crypto_data.load_onchain(
+                        "tx_volume_usd", crypto_valuation.NVT_HISTORY_TIMESPAN)
+                    _cx_nvt = crypto_valuation.read_nvt(_cx_mc, _cx_tv)
+                    _cx_label, _cx_detail = crypto_valuation.nvt_verdict(_cx_nvt)
+
+                    _cx_n1, _cx_n2 = st.columns(2)
+                    if _cx_nvt.ok:
+                        _cx_n1.metric(
+                            "NVT Signal", f"{_cx_nvt.nvt_signal:,.0f}",
+                            help="Market cap divided by a 90-day average "
+                                 "of ON-CHAIN transaction volume. Raw NVT "
+                                 "swings 87% day to day, which is why the "
+                                 "smoothed form is the one shown.")
+                        _cx_n1.caption(f"**{_cx_label}.** {_cx_detail}")
+                    else:
+                        _cx_n1.metric("NVT Signal", "Unavailable",
+                                      help="Needs 90 days of on-chain "
+                                           "transaction volume.")
+                        _cx_n1.caption(_cx_nvt.error or _cx_mc_err or _cx_tv_err or "")
+                    st.caption(crypto_valuation.NVT_SPEC_THRESHOLD_NOTE)
+
+                    _cx_supply_series, _cx_sup_err = crypto_data.load_onchain(
+                        "supply", "2years")
+                    _cx_scarcity = crypto_valuation.stock_to_flow(_cx_supply_series)
+                    if _cx_scarcity.ok:
+                        _cx_n2.metric("Stock-to-flow",
+                                      f"{_cx_scarcity.ratio:,.1f}",
+                                      help="Coins in existence divided by "
+                                           "coins issued a year. The flow is "
+                                           "MEASURED from the supply series, "
+                                           "not assumed from the halving "
+                                           "schedule — so it cannot silently "
+                                           "describe the wrong epoch.")
+                        _cx_n2.caption(
+                            crypto_valuation.describe_scarcity(_cx_scarcity))
+                    else:
+                        _cx_n2.metric("Stock-to-flow", "Unavailable",
+                                      help="Needs at least 180 days of "
+                                           "supply history.")
+                        _cx_n2.caption(_cx_scarcity.error or _cx_sup_err or "")
+
+                    # The chain's own activity, each with a 30-day change
+                    # so a level has a direction beside it.
+                    _cx_reads = []
+                    for _cx_key in ("tx_volume_usd", "active_addresses",
+                                    "miner_revenue", "hash_rate"):
+                        _cx_series, _cx_err = crypto_data.load_onchain(
+                            _cx_key, "1years")
+                        _cx_reads.append(
+                            crypto_market.activity(_cx_key, _cx_series, _cx_err))
+                    _cx_ok = [r for r in _cx_reads if r.ok]
+                    if _cx_ok:
+                        st.markdown("**Network activity**")
+                        _cx_cols = st.columns(len(_cx_ok))
+                        for _cx_col, _cx_read in zip(_cx_cols, _cx_ok):
+                            _cx_col.metric(
+                                _cx_read.label,
+                                crypto_screener.crypto_compact(_cx_read.latest)
+                                if _cx_read.unit == "USD"
+                                else f"{_cx_read.latest:,.0f} {_cx_read.unit}"
+                                .strip(),
+                                (f"{_cx_read.change_30d_pct:+.1f}% vs 30d ago"
+                                 if _cx_read.change_30d_pct is not None else None),
+                                help=_cx_read.note or _cx_read.label)
+                    st.caption(crypto_market.activity_summary(_cx_reads))
+
+                    _cx_card = crypto_valuation.scorecard(
+                        _cx_nvt, _cx_scarcity,
+                        crypto_valuation.supply_picture(_cx_row)
+                        if _cx_row is not None
+                        else crypto_valuation.SupplyPicture())
+                    with st.expander(
+                            f"Valuation scorecard — {_cx_card.dimensions_scored}"
+                            f" of {_cx_card.dimensions_possible} dimensions "
+                            f"measured", expanded=False):
+                        for _cx_line in _cx_card.lines:
+                            st.markdown(
+                                f"**{_cx_line.label}: {_cx_line.value}** "
+                                f"({_cx_line.verdict})")
+                            if _cx_line.detail:
+                                st.caption(_cx_line.detail)
+                        st.caption(crypto_data.WHALE_UNAVAILABLE)
+                        st.caption(crypto_data.EXCHANGE_RESERVE_UNAVAILABLE)
+                        st.caption(crypto_data.SOCIAL_UNAVAILABLE)
+
         else:
             st.markdown("---")
             st.header("Financial Metrics Validation Report")
@@ -6043,6 +6323,205 @@ else:
                         "shock itself, because the weights sum to the whole "
                         "fund. The value of the table is the per-sector "
                         "split above it.")
+
+
+        # --- crypto: risk, trend and market structure (PHASE 3.3/3.4) ---
+        # Sits beside the fund and bond blocks above, gated the same way:
+        # on a declared capability rather than on a guess from a missing
+        # field. Everything here is price- or market-derived, so it works
+        # for every coin; the on-chain half lives in the valuation tab
+        # because it exists for one chain only.
+        if asset_class.supports(asset_kind, asset_class.ON_CHAIN):
+            st.markdown("---")
+            st.header("Crypto Risk & Market Structure", anchor="crypto-risk")
+
+            # Correlation benchmarks and the coin itself, on one fetch.
+            # The volatility windows read this rather than the chart
+            # frame: a 1-year range gives 365 bars and therefore 364
+            # returns, so the 1-year window could never be computed on
+            # the app's own default range — "1-year volatility:
+            # Unavailable" while showing a year of prices reads as a
+            # bug, and is one. The fund risk block above loads its own
+            # 3-year history for the same reason.
+            _cr_pairs = crypto_risk.benchmarks_for(ticker_symbol)
+            _cr_prices = etf_comparison.load_prices(
+                tuple([ticker_symbol] + [s for _, s in _cr_pairs]),
+                period="2y")[0]
+            _cr_history = (_cr_prices[ticker_symbol]
+                           if _cr_prices is not None
+                           and ticker_symbol in _cr_prices else None)
+            # Drawdown stays on the SELECTED range, deliberately: the
+            # panel says "inside this range", and silently answering a
+            # different question would be worse than answering a narrow
+            # one.
+            _cr_closes = df['Close'] if 'Close' in df else None
+            _cr_windows = crypto_risk.volatility_windows(
+                _cr_history if _cr_history is not None else _cr_closes)
+            _cr_cols = st.columns(len(_cr_windows))
+            for _cr_col, _cr_w in zip(_cr_cols, _cr_windows):
+                _cr_col.metric(
+                    f"{_cr_w.label} volatility",
+                    f"{_cr_w.annualised_pct:.1f}%" if _cr_w.ok else "Unavailable",
+                    help=crypto_risk.ANNUALISATION_NOTE if _cr_w.ok else
+                         (f"Needs {_cr_w.days} daily bars; this range has "
+                          f"{_cr_w.observations}."))
+            st.caption(crypto_risk.ANNUALISATION_NOTE)
+
+            _cr_dd = crypto_risk.drawdown_profile(_cr_closes)
+            _cr_dom = crypto_market.dominance(
+                ticker_symbol, crypto_data.load_global())
+            _cr_d1, _cr_d2, _cr_d3 = st.columns(3)
+            if _cr_dd.ok:
+                _cr_d1.metric("Max drawdown",
+                              f"{_cr_dd.max_drawdown_pct:.1f}%",
+                              help="Worst peak-to-trough fall inside the "
+                                   "selected date range.")
+                _cr_d1.caption(
+                    f"Peak {_cr_dd.peak_date:%d %b %Y} → trough "
+                    f"{_cr_dd.trough_date:%d %b %Y}")
+                _cr_d2.metric("Below its peak",
+                              f"{_cr_dd.current_drawdown_pct:.1f}%",
+                              help="Where the price sits against the "
+                                   "highest close in this range.")
+                _cr_d2.caption(
+                    "Recovered to a new high." if _cr_dd.recovered
+                    else f"{_cr_dd.days_since_peak} days since that peak.")
+            else:
+                _cr_d1.metric("Max drawdown", "Unavailable",
+                              help=_cr_dd.error or "Needs price history.")
+                _cr_d2.metric("Below its peak", "Unavailable",
+                              help=_cr_dd.error or "Needs price history.")
+            if _cr_dom.ok:
+                _cr_d3.metric("Dominance", f"{_cr_dom.share_pct:.2f}%",
+                              help="Share of TOTAL crypto market cap, as "
+                                   "reported across the whole market — not "
+                                   "reconstructed from the 250-coin page, "
+                                   "whose total excludes eighteen thousand "
+                                   "other coins.")
+                _cr_d3.caption(crypto_market.describe_dominance(_cr_dom))
+            else:
+                _cr_d3.metric("Dominance", "Unavailable",
+                              help=_cr_dom.error or "Market totals unavailable.")
+
+            # --- trend and levels ---------------------------------------
+            _cr_cross = crypto_market.moving_average_cross(_cr_closes)
+            _cr_levels = crypto_market.support_resistance(_cr_closes)
+            _cr_rv = crypto_market.relative_volume(
+                df['Volume'] if 'Volume' in df else None)
+            _cr_t1, _cr_t2, _cr_t3 = st.columns(3)
+            _cr_t1.metric(
+                "50/200-day cross",
+                {"Fired": "Golden cross", "Not fired": "Death cross"}
+                .get(_cr_cross.state, "Unchecked"),
+                help="A signal that could not be evaluated is reported as "
+                     "unchecked, never as 'no cross' — an all-clear nobody "
+                     "performed.")
+            _cr_t1.caption(_cr_cross.detail)
+            if _cr_levels.ok:
+                _cr_t2.metric(
+                    "Nearest support",
+                    crypto_screener.crypto_compact(_cr_levels.support)
+                    if _cr_levels.support else "None below",
+                    help="The highest pivot low under the current price — "
+                         "a level the price actually turned at, not a "
+                         "level claimed to hold.")
+                _cr_t2.caption(
+                    "Resistance "
+                    + (crypto_screener.crypto_compact(_cr_levels.resistance)
+                       if _cr_levels.resistance
+                       else "none above — the price is at the top of its range")
+                    + f" · {_cr_levels.pivot_count} pivots in range")
+            else:
+                _cr_t2.metric("Nearest support", "Unavailable",
+                              help=_cr_levels.error or "Needs price history.")
+            if _cr_rv.ok:
+                _cr_t3.metric("Relative volume", f"{_cr_rv.ratio:.2f}x",
+                              help="Today's volume against the trailing "
+                                   f"{_cr_rv.window_days}-day average, that "
+                                   "bar EXCLUDED — including it puts the "
+                                   "value under test into its own baseline.")
+            else:
+                _cr_t3.metric("Relative volume", "Unavailable",
+                              help=_cr_rv.error or "Needs volume history.")
+
+            # --- leverage ------------------------------------------------
+            with st.expander("Liquidation distance", expanded=False):
+                st.caption(crypto_risk.LIQUIDATION_NOTE)
+                _cr_l1, _cr_l2 = st.columns(2)
+                _cr_lev = _cr_l1.number_input(
+                    "Leverage (x)", min_value=1.0, max_value=125.0,
+                    value=10.0, step=1.0, key="crypto_leverage")
+                _cr_mm = _cr_l2.number_input(
+                    "Maintenance margin (%)", min_value=0.0, max_value=50.0,
+                    value=crypto_risk.DEFAULT_MAINTENANCE_MARGIN_PCT,
+                    step=0.1, key="crypto_maintenance_margin")
+                _cr_liq = crypto_risk.liquidation_distance(
+                    float(_cr_closes.iloc[-1]) if _cr_closes is not None
+                    and len(_cr_closes) else None,
+                    float(_cr_lev), float(_cr_mm))
+                if _cr_liq.ok:
+                    st.metric("Adverse move to liquidation",
+                              f"{_cr_liq.move_to_liquidation_pct:.2f}%",
+                              help="Follows from the leverage and the "
+                                   "maintenance margin alone.")
+                    if _cr_liq.liquidation_price is not None:
+                        st.caption(
+                            "A long is liquidated near "
+                            + crypto_screener.crypto_compact(
+                                _cr_liq.liquidation_price) + ".")
+                    _cr_ctx = crypto_risk.liquidation_context(
+                        _cr_liq.move_to_liquidation_pct, _cr_windows)
+                    if _cr_ctx:
+                        st.caption(_cr_ctx)
+                else:
+                    st.info(_cr_liq.error)
+
+            # --- correlation ---------------------------------------------
+            _cr_corrs = []
+            for _cr_label, _cr_sym in _cr_pairs:
+                if (_cr_prices is not None and ticker_symbol in _cr_prices
+                        and _cr_sym in _cr_prices):
+                    _cr_corrs.append(crypto_risk.correlate(
+                        _cr_prices[ticker_symbol], _cr_prices[_cr_sym],
+                        _cr_label, _cr_sym))
+                else:
+                    _cr_corrs.append(crypto_risk.Correlation(
+                        _cr_label, _cr_sym,
+                        error="No overlapping price history was returned."))
+            # Rendered as metrics rather than a dataframe, deliberately.
+            # Three rows do not need a data grid, and the grid measured
+            # itself at 52px here — it mounts inside a tab that is not
+            # the active one on first render and never re-measures, so
+            # every column but the first was clipped. Metrics cannot
+            # collapse that way and match the rest of this panel.
+            st.markdown("**Correlation of daily returns**")
+            _cr_cor_cols = st.columns(len(_cr_corrs) or 1)
+            for _cr_col, _cr_c in zip(_cr_cor_cols, _cr_corrs):
+                _cr_col.metric(
+                    f"vs {_cr_c.label}",
+                    f"{_cr_c.coefficient:+.2f}" if _cr_c.ok else "Unavailable",
+                    help="Daily returns over the days both markets "
+                         "traded. Withheld rather than estimated where "
+                         "too few days overlap.")
+                _cr_col.caption(
+                    f"{_cr_c.strength} · {_cr_c.observations} shared days "
+                    f"({_cr_c.symbol})" if _cr_c.ok else _cr_c.error)
+            st.caption(crypto_risk.WEEKEND_OVERLAP_NOTE)
+
+            # --- what this build cannot judge ----------------------------
+            _cr_prof = None
+            _cr_uni, _ = crypto_data.load_universe()
+            _cr_res = crypto_data.resolve(ticker_symbol, _cr_uni)
+            if _cr_res.ok:
+                _cr_prof = crypto_data.load_profile(_cr_res.row.coin_id)
+            _cr_dev = crypto_risk.developer_health(_cr_prof)
+            with st.expander("Project health and unscored risks",
+                             expanded=False):
+                st.markdown(f"**Repository: {_cr_dev.verdict}**")
+                st.caption(_cr_dev.detail)
+                st.caption(crypto_risk.REGULATORY_UNAVAILABLE)
+                st.caption(crypto_risk.AUDIT_UNAVAILABLE)
+                st.caption(crypto_risk.HACK_HISTORY_UNAVAILABLE)
 
     with tab_risk:
         # --- QUANTITATIVE CALCULATIONS ---

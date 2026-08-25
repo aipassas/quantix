@@ -71,7 +71,11 @@ HEADER_STATS: Dict[str, Tuple[str, ...]] = {
         "price", "change_pct", "expense_ratio_pct", "net_assets",
         "dividend_yield_pct", "fund_category", "fund_pe",
     ),
-    asset_class.CRYPTO: ("price", "change_pct", "market_cap"),
+    # The header the task asks for: price, 24h change, market cap, 24h
+    # volume, dominance. All five are reported by CoinGecko in the same
+    # two calls the panel already makes, so the strip adds no fetch.
+    asset_class.CRYPTO: ("price", "change_pct", "market_cap",
+                         "volume_24h", "dominance_pct", "supply_mined_pct"),
     asset_class.FOREX: ("price", "change_pct"),
     asset_class.FUTURE: ("price", "change_pct"),
     asset_class.INDEX: ("price", "change_pct"),
@@ -208,7 +212,10 @@ _TAB_OVERRIDES: Dict[str, Dict[int, str]] = {
         3: "Risk & Fund Technicals",
         5: "Peers & Flows",
     },
-    asset_class.CRYPTO: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
+    # Tab 2 was "Valuation (n/a)" until crypto got an on-chain valuation
+    # engine. It is a real panel now — NVT against its own measured
+    # history, stock-to-flow with a measured flow — so the label says so.
+    asset_class.CRYPTO: {2: "On-Chain & Valuation", 5: "Peers (n/a)"},
     asset_class.FOREX: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
     asset_class.FUTURE: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
     asset_class.INDEX: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
