@@ -6,6 +6,8 @@ missing 19 of the 24 largest bond ETFs, including AGG, BND, LQD, HYG and
 TLT — so "Treasuries for Safety" returned nothing at all, because the
 shortest treasury fund in that universe was IEI at 4.09 years.
 """
+import numpy as np
+import pandas as pd
 import pytest
 
 import bond_screener as bs
@@ -350,3 +352,138 @@ def test_the_bond_panel_is_gated_on_the_fund_actually_holding_bonds():
                / "finance.py").read_text(encoding="utf-8")
     assert "bond_screener.looks_like_bond_fund(_bd_name)" in finance
     assert "if _bd_is_bond:" in finance
+
+
+# --- the universe build, mocked ----------------------------------------------
+# The only path that touches the network, and the one that produced the
+# empty-preset bug. Mocking it is the only way to exercise the merge
+# without a live call.
+
+def _install_universe(monkeypatch, screen_rows, closes, seeded_info=None):
+    import sys
+    import types
+
+    import etf_screener
+
+    monkeypatch.setattr(etf_screener, "load_universe",
+                        lambda *a, **k: (tuple(screen_rows), None))
+
+    class _Ticker:
+        def __init__(self, symbol):
+            self.info = (seeded_info or {}).get(
+                symbol, {"longName": f"{symbol} Bond ETF", "yield": 0.04})
+
+    fake = types.ModuleType("yfinance")
+    fake.Ticker = _Ticker
+    fake.download = lambda *a, **k: pd.concat({"Close": closes}, axis=1)
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+
+
+def _screen_row(symbol, name):
+    import etf_screener
+    return etf_screener.EtfRow(
+        symbol=symbol, name=name, price=100.0, expense_ratio_pct=0.10,
+        assets=1e10, dividend_yield_pct=4.0, return_1y_pct=2.0)
+
+
+def _closes_for(symbols, rows=400):
+    rng = np.random.default_rng(3)
+    index = pd.date_range("2024-01-01", periods=rows, freq="B")
+    yields = pd.Series(4.0 + np.cumsum(rng.normal(0, 0.03, rows)), index=index)
+    data = {"^TNX": yields}
+    for i, symbol in enumerate(symbols):
+        # Each fund is given a different, KNOWN duration so the merge and
+        # the regression can both be checked.
+        duration = 1.0 + i
+        returns = -duration * yields.diff().fillna(0.0) / 100.0
+        data[symbol] = 100 * (1 + returns).cumprod()
+    return pd.DataFrame(data, index=index)
+
+
+def test_the_universe_merges_the_screen_with_the_seed_list(monkeypatch):
+    """THE BUG THIS FIXES. The screen alone was missing 19 of the 24
+    largest bond ETFs, so a preset could match nothing."""
+    screen = [_screen_row("IEF", "iShares 7-10 Year Treasury Bond ETF"),
+              _screen_row("SPY", "SPDR S&P 500 ETF Trust")]
+    symbols = ["IEF"] + list(bs.CORE_BOND_FUNDS)
+    _install_universe(monkeypatch, screen, _closes_for(symbols))
+
+    rows, error = bs.load_bond_universe.__wrapped__()
+    assert error is None
+    have = {r.symbol for r in rows}
+    # The equity fund from the screen is excluded...
+    assert "SPY" not in have
+    # ...the bond fund from the screen is kept, and not duplicated...
+    assert sum(1 for r in rows if r.symbol == "IEF") == 1
+    # ...and every seeded core fund is present.
+    for symbol in ("AGG", "TLT", "HYG", "SHY"):
+        assert symbol in have, symbol
+
+
+def test_the_universe_measures_a_duration_for_every_fund(monkeypatch):
+    screen = [_screen_row("IEF", "iShares 7-10 Year Treasury Bond ETF")]
+    symbols = ["IEF"] + list(bs.CORE_BOND_FUNDS)
+    _install_universe(monkeypatch, screen, _closes_for(symbols))
+
+    rows, _ = bs.load_bond_universe.__wrapped__()
+    measured = [r for r in rows if r.duration is not None]
+    assert len(measured) == len(rows)
+    # The generator gave each fund a distinct duration, so they must not
+    # all come back the same — which is what a broken merge would do.
+    assert len({round(r.duration, 1) for r in measured}) > 3
+
+
+def test_a_failed_price_download_still_yields_a_universe(monkeypatch):
+    """Without durations, but with names, yields and costs — better than
+    an empty screener."""
+    import sys
+    import types
+
+    import etf_screener
+
+    monkeypatch.setattr(etf_screener, "load_universe",
+                        lambda *a, **k: ((_screen_row(
+                            "IEF", "iShares 7-10 Year Treasury Bond ETF"),), None))
+    fake = types.ModuleType("yfinance")
+    fake.Ticker = lambda s: type("T", (), {
+        "info": {"longName": f"{s} Bond ETF", "yield": 0.04}})()
+    fake.download = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+
+    rows, error = bs.load_bond_universe.__wrapped__()
+    assert rows, "the universe must survive a price failure"
+    assert all(r.duration is None for r in rows)
+    assert all(r.spread_bps is None for r in rows)
+
+
+def test_a_screen_failure_falls_back_to_the_seed_list(monkeypatch):
+    """The seeded funds are the point: they do not depend on the screen."""
+    import etf_screener
+
+    monkeypatch.setattr(etf_screener, "load_universe",
+                        lambda *a, **k: ((), "screen unavailable"))
+    _install_universe(monkeypatch, [], _closes_for(list(bs.CORE_BOND_FUNDS)))
+    monkeypatch.setattr(etf_screener, "load_universe",
+                        lambda *a, **k: ((), "screen unavailable"))
+
+    rows, error = bs.load_bond_universe.__wrapped__()
+    assert rows, "the seed list must still load"
+    assert "AGG" in {r.symbol for r in rows}
+
+
+def test_a_universe_with_nothing_at_all_reports_the_error(monkeypatch):
+    import sys
+    import types
+
+    import etf_screener
+
+    monkeypatch.setattr(etf_screener, "load_universe",
+                        lambda *a, **k: ((), "screen unavailable"))
+    fake = types.ModuleType("yfinance")
+    fake.Ticker = lambda s: (_ for _ in ()).throw(RuntimeError("no data"))
+    fake.download = lambda *a, **k: pd.DataFrame()
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+
+    rows, error = bs.load_bond_universe.__wrapped__()
+    assert rows == ()
+    assert error
