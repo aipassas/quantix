@@ -84,6 +84,7 @@ import asset_views
 import etf_analysis
 import etf_comparison
 import etf_pipeline
+import etf_risk
 import etf_technicals
 import etf_screener
 import streamlit.components.v1 as components
@@ -5537,6 +5538,161 @@ else:
 
             # --- what is deliberately absent ------------------------------
             st.caption(etf_technicals.NAV_PREMIUM_UNAVAILABLE)
+
+            # --- risk: tracking, capture, concentration (PHASE 1.3) ----
+            st.markdown("---")
+            st.subheader("Fund risk")
+            _rk_bench = etf_comparison.load_prices(
+                (ticker_symbol, benchmark_symbol), period="3y")[0]
+            _rk_track = _rk_cap = None
+            if (_rk_bench is not None and ticker_symbol in _rk_bench
+                    and benchmark_symbol in _rk_bench):
+                _rk_track = etf_risk.tracking(
+                    _rk_bench[ticker_symbol], _rk_bench[benchmark_symbol],
+                    benchmark_symbol)
+                _rk_cap = etf_risk.capture_ratios(
+                    _rk_bench[ticker_symbol], _rk_bench[benchmark_symbol])
+
+            _rk1, _rk2, _rk3 = st.columns(3)
+            if _rk_track is not None and _rk_track.ok:
+                _rk1.metric(
+                    f"Tracking error vs {benchmark_symbol}",
+                    f"{_rk_track.tracking_error_pct:.2f}%",
+                    help="Annualised standard deviation of the daily "
+                         "return difference. Measured over three years.")
+                _rk1.caption(_rk_track.band)
+                _rk2.metric(
+                    "Cumulative gap",
+                    f"{_rk_track.cumulative_gap_pct:+.2f}%",
+                    help="Total return over the same window, fund minus "
+                         "benchmark. This is where a fee shows up; the "
+                         "daily figure beside it is mostly closing-price "
+                         "mismatch.")
+                _rk2.caption(
+                    f"{_rk_track.annualised_gap_pct:+.2f}% a year over "
+                    f"{_rk_track.days} trading days")
+            else:
+                _rk1.metric(f"Tracking error vs {benchmark_symbol}",
+                            "Unavailable",
+                            help="Needs overlapping daily history for the "
+                                 "fund and the benchmark.")
+                _rk2.metric("Cumulative gap", "Unavailable",
+                            help="Needs overlapping daily history for the "
+                                 "fund and the benchmark.")
+            if _rk_cap is not None and _rk_cap.ok:
+                _rk3.metric(
+                    "Up / down capture",
+                    f"{_rk_cap.up_pct:.0f}% / {_rk_cap.down_pct:.0f}%",
+                    help="Share of the benchmark's average up-day and "
+                         "down-day move this fund captured. Measured on "
+                         "the BENCHMARK's direction, which is what makes "
+                         "it a capture ratio.")
+                if _rk_cap.asymmetry is not None:
+                    _rk3.caption(
+                        f"{_rk_cap.asymmetry:+.0f}pp asymmetry — "
+                        + ("more of the rise than the fall"
+                           if _rk_cap.asymmetry > 0 else
+                           "more of the fall than the rise"))
+            else:
+                _rk3.metric("Up / down capture", "Unavailable",
+                            help="Needs overlapping daily history for the "
+                                 "fund and the benchmark.")
+            st.caption(etf_risk.BENCHMARK_IS_YOUR_CHOICE)
+            st.caption(etf_risk.PRICE_INDEX_FLATTERS_A_FUND)
+
+            # --- concentration and liquidity ---------------------------
+            _rk_prof = etf_analysis.load_profile(ticker_symbol)
+            _rk_conc = etf_risk.concentration(
+                _rk_prof.top_holdings if _rk_prof.ok else ())
+            _rk_info = ticker_bundle.info or {}
+            _rk_liq = etf_risk.liquidity(
+                price=_rk_info.get("regularMarketPrice"),
+                volume=_rk_info.get("averageVolume") or _rk_info.get("volume"),
+                assets=_rk_prof.net_assets if _rk_prof.ok else None,
+                bid=_rk_info.get("bid"), ask=_rk_info.get("ask"))
+
+            _rc1, _rc2, _rc3 = st.columns(3)
+            if _rk_conc.ok:
+                _rc1.metric("Concentration (HHI)",
+                            f"{_rk_conc.herfindahl:.4f}",
+                            help="Sum of squared weights over the "
+                                 "disclosed holdings. 1.0 would be a "
+                                 "single position.")
+                _rc1.caption(
+                    f"Effective {_rk_conc.effective_holdings:.0f} equally "
+                    "weighted positions")
+                _rc2.metric("Largest holding",
+                            f"{_rk_conc.max_holding_pct:.2f}%",
+                            help="The single biggest position among the "
+                                 "disclosed holdings.")
+                _rc2.caption(_rk_conc.max_holding_symbol or "")
+            else:
+                _rc1.metric("Concentration (HHI)", "Unavailable",
+                            help="This fund discloses no holdings — normal "
+                                 "for a bond or commodity fund.")
+                _rc2.metric("Largest holding", "Unavailable",
+                            help="This fund discloses no holdings.")
+            if _rk_liq.turnover_pct is not None:
+                _rc3.metric("Daily volume / AUM",
+                            f"{_rk_liq.turnover_pct:.2f}%",
+                            help="Average daily dollar volume against fund "
+                                 "size — how much of the fund changes "
+                                 "hands on an ordinary day.")
+            else:
+                _rc3.metric("Daily volume / AUM", "Unavailable",
+                            help="Needs both a volume and a fund size.")
+            _rc3.caption(_rk_liq.detail)
+            if _rk_conc.ok:
+                st.caption(etf_risk.TOP_TEN_CONCENTRATION_NOTE)
+            st.caption(etf_risk.BID_ASK_MOSTLY_ABSENT)
+
+            # --- historical extremes and sector stress -----------------
+            _rk_ext = etf_risk.historical_extremes(df["Close"])
+            if _rk_ext.worst_day_pct is not None:
+                _rk_worst = (f"Worst single day in the loaded range: "
+                             f"{_rk_ext.worst_day_pct:.2f}%"
+                             + (f" on {_rk_ext.worst_day_date}"
+                                if _rk_ext.worst_day_date else ""))
+                if _rk_ext.worst_month_pct is not None:
+                    _rk_worst += (f" · worst month "
+                                  f"{_rk_ext.worst_month_pct:.2f}%"
+                                  f" in {_rk_ext.worst_month_label}")
+                st.caption(_rk_worst + ". Historical, not a forecast — but "
+                           "it needs no model, because it happened.")
+
+            if _rk_prof.ok and _rk_prof.sector_weights:
+                st.markdown("**Sector stress test**")
+                _rk_shock = st.slider(
+                    "Shock applied to each sector (%)", min_value=-50,
+                    max_value=20, value=-30, step=5,
+                    help="First-order only: it assumes every other sector "
+                         "holds still, which a real rout never does.")
+                _rk_rows = etf_risk.sector_stress(
+                    _rk_prof.sector_weights, float(_rk_shock),
+                    etf_technicals.SECTOR_LABELS)
+                _rk_table = pd.DataFrame([
+                    {"Sector": r.sector, "Weight %": r.weight_pct,
+                     "Fund impact %": r.fund_impact_pct}
+                    for r in _rk_rows])
+                for _rk_col in ("Weight %", "Fund impact %"):
+                    _rk_table[_rk_col] = pd.to_numeric(
+                        _rk_table[_rk_col], errors="coerce")
+                st.dataframe(
+                    _rk_table, width="stretch", hide_index=True,
+                    column_config={
+                        "Weight %": st.column_config.NumberColumn(
+                            "Weight %", format="%.1f%%"),
+                        "Fund impact %": st.column_config.NumberColumn(
+                            "Fund impact %", format="%+.2f%%")},
+                    key="etf_sector_stress")
+                _rk_total = etf_risk.total_shock_impact(_rk_rows)
+                if _rk_total is not None:
+                    st.caption(
+                        f"Every sector moving {_rk_shock:+d}% at once would "
+                        f"move the fund {_rk_total:+.2f}% — which is the "
+                        "shock itself, because the weights sum to the whole "
+                        "fund. The value of the table is the per-sector "
+                        "split above it.")
 
     with tab_risk:
         # --- QUANTITATIVE CALCULATIONS ---
