@@ -66,6 +66,39 @@ class SymbolMatch:
         return " · ".join(bits)
 
 
+# Cached, unlike search_symbols itself. The failure path calls this on
+# EVERY rerun while an unresolvable ticker is loaded, and this page reruns
+# constantly (polling fragments), so an uncached call would mean several
+# Yahoo search requests a minute for a symbol that has not changed.
+# A day is right: which exchanges a fund lists on is not news.
+@st.cache_data(ttl=86400, show_spinner=False)
+def suggest_alternatives(symbol: str, limit: int = 6,
+                         searcher: Optional[Callable] = None
+                         ) -> Tuple[Tuple["SymbolMatch", ...], Optional[str]]:
+    """Real listings for a symbol that did not resolve.
+
+    The case this exists for: a fund quoted by its bare ticker everywhere
+    except this data source, which wants the exchange suffix. VWCE does
+    not resolve; VWCE.DE, VWCE.MI and VWCE.AS all do, and Yahoo's own
+    search maps one to the other — measured, "VWCE" returns seven
+    listings with VWCE.DE first.
+
+    The symbol itself is filtered out of the results: offering someone
+    the exact thing that just failed is noise.
+
+    `searcher` is injectable for the same reason search_symbols' is —
+    so the tests exercise this function rather than reimplementing its
+    filter and proving only that the test's own copy works.
+    """
+    symbol = (symbol or "").strip().upper()
+    if len(symbol) < 2:
+        return (), None
+    matches, error = search_symbols(symbol, max_results=limit + 2,
+                                    searcher=searcher)
+    matches = tuple(m for m in matches if m.symbol.upper() != symbol)
+    return matches[:limit], error
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def name_for(ticker: str) -> str:
     """A ticker's company name, or "" if it can't be resolved.

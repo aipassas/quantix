@@ -258,3 +258,39 @@ def test_no_yield_at_all_is_none_not_zero():
 
     assert _dividend_yield_pct({}, 100.0) is None
     assert _dividend_yield_pct({"dividendYield": 0}, 100.0) is None
+
+
+# --- a reported zero expense ratio means "not disclosed" ----------------------
+# Caught live on VWCE.DE, reported as "VWCE not found": once the symbol
+# resolved, the page said the fund costs 0.00% a year. Its real TER is
+# 0.22%.
+
+def test_a_zero_expense_ratio_is_read_as_undisclosed():
+    """Measured 2026-08-25, and the evidence is one-sided: every European
+    UCITS fund checked reports 0.00 (VWCE.DE, VUAA.DE, VWRL.AS — real
+    TERs 0.22%, 0.07%, 0.22%) while US funds report correctly. The case
+    that settles it is FZROX, which genuinely charges nothing and which
+    Yahoo reports as 0.56 — so this source never reports a true zero as
+    zero, and reading a zero as absent hides no real free fund."""
+    assert ea._undisclosed_if_zero(0.0) is None
+    assert ea._undisclosed_if_zero(-0.0) is None
+    assert ea._undisclosed_if_zero(None) is None
+    # Anything genuinely reported survives untouched.
+    assert ea._undisclosed_if_zero(0.000945) == 0.000945
+    assert ea._undisclosed_if_zero(0.0022) == 0.0022
+
+
+def test_an_undisclosed_fee_does_not_become_a_free_fund_downstream():
+    """The whole point: 0.00% would tell a European investor their fund is
+    free when it costs 22bp a year — the single largest CERTAIN drag on a
+    long-horizon return."""
+    profile = ea.EtfProfile(symbol="VWCE.DE", expense_ratio_pct=None)
+    assert ea.expense_gap_pct(profile) is None
+    assert not ea.expense_is_high(profile)
+    # And the drag illustration refuses rather than showing a free ride.
+    assert ea.expense_drag(profile.expense_ratio_pct, 30) is None
+
+
+def test_a_real_fee_still_produces_a_real_drag():
+    assert ea.expense_drag(0.22, 30) > 0
+    assert ea.expense_drag(0.0945, 30) > 0

@@ -25,6 +25,7 @@ from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
     search_symbols as ts_search_symbols,
+    suggest_alternatives as ts_suggest_alternatives,
     symbol_from_label as ts_symbol_from_label,
 )
 from historical_comparison import (
@@ -3882,7 +3883,38 @@ with symbol_header_container.container():
 if df.empty:
     detail = " ".join(ticker_bundle.errors) if ticker_bundle.errors else "No data returned by Yahoo Finance."
     log_event(logger, logging.ERROR, "analysis.aborted", ticker=ticker_symbol, reason=detail)
-    st.error(f"No reliable data found for '{ticker_symbol}'. {detail} Try again shortly or check the ticker symbol.")
+    st.error(f"No reliable data found for '{ticker_symbol}'. {detail}")
+
+    # "Check the ticker symbol" is unhelpful when the symbol is RIGHT and
+    # only lacks a venue. A European fund is quoted by its bare ticker
+    # everywhere except this data source, which needs the exchange suffix:
+    # VWCE does not resolve, VWCE.DE / VWCE.MI / VWCE.AS all do. Yahoo's
+    # own search already maps one to the other — measured, searching
+    # "VWCE" returns seven listings with VWCE.DE first — so the failure
+    # path runs the search the sidebar already uses and offers what it
+    # finds, rather than leaving the reader to guess a suffix.
+    _fail_matches, _fail_err = ts_suggest_alternatives(ticker_symbol)
+    if _fail_matches:
+        st.markdown(
+            f"**`{ticker_symbol}` is listed under a venue-specific symbol.** "
+            "Funds outside the US are quoted by their bare ticker on most "
+            "platforms, but this data source needs the exchange suffix. "
+            "These are the listings it has:")
+        for _fail_m in _fail_matches[:6]:
+            if st.button(_fail_m.label, key=f"fail_hit_{_fail_m.symbol}",
+                         width="stretch", help=_fail_m.detail or None):
+                st.session_state["_pending_ticker"] = _fail_m.symbol
+                log_event(logger, logging.INFO, "user.failed_ticker_recovery",
+                          typed=ticker_symbol, picked=_fail_m.symbol)
+                st.rerun()
+        st.caption(
+            "The same fund often lists on several exchanges in different "
+            "currencies — check the venue before picking, because the "
+            "price and the currency differ even though the holdings do not.")
+    elif _fail_err:
+        st.caption(_fail_err)
+    else:
+        st.caption("Try again shortly, or check the ticker symbol.")
 else:
     # Top-level panel navigation. Every section below keeps its EXACT
     # original execution order (nothing is reordered) — only which

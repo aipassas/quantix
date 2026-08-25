@@ -116,6 +116,26 @@ def _invert(value) -> Optional[float]:
     return ratio if ratio < 1000 else None
 
 
+def _undisclosed_if_zero(value: Optional[float]) -> Optional[float]:
+    """A reported expense ratio of exactly 0.00 means NOT DISCLOSED.
+
+    Measured 2026-08-25, and the evidence is one-sided. Every European
+    UCITS fund checked reports 0.00 — VWCE.DE, VUAA.DE and VWRL.AS all
+    do, against real TERs of 0.22%, 0.07% and 0.22% — while the US funds
+    report correctly (SPY 0.0945, VOO 0.03, QQQ 0.18).
+
+    The case that settles it is FZROX, which genuinely charges nothing:
+    Yahoo reports 0.56 for it. So this source never reports a true zero
+    as zero, which means a zero can be read as "absent" without hiding a
+    real free fund. Showing 0.00% would tell a European investor their
+    fund is free when it costs 22bp a year — on a long horizon that is
+    the single largest certain drag on their return.
+    """
+    if value is None:
+        return None
+    return None if abs(value) < 1e-12 else value
+
+
 def _cell(frame, row: str, column: str):
     try:
         return frame.loc[row, column]
@@ -162,7 +182,8 @@ def load_profile(symbol: str) -> EtfProfile:
         except Exception:
             log_exception(logger, "etf.holdings_unreadable", section="etf_analysis")
 
-        expense = _number(_cell(operations, "Annual Report Expense Ratio", symbol))
+        expense = _undisclosed_if_zero(
+            _number(_cell(operations, "Annual Report Expense Ratio", symbol)))
         category_expense = _number(_cell(operations, "Annual Report Expense Ratio",
                                          "Category Average"))
         turnover = _number(_cell(operations, "Annual Holdings Turnover", symbol))
