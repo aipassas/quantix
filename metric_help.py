@@ -292,6 +292,12 @@ CHART_HELP: Dict[str, str] = {
         "inferred from its top ten. Look for a single wedge above a third of the fund: a "
         "'large blend' fund built that way behaves like a sector fund when that sector "
         "drops. Weights may not total 100% when cash sits outside these buckets."),
+    "etf_fund_comparison": (
+        "Each fund rebased to 100 on the first date they ALL have, so the lines compare "
+        "one window rather than share prices that were never comparable. Look for a gap "
+        "that WIDENS steadily — a real difference in mandate or cost, where one step "
+        "apart is usually a single event. Funds tracking the same index should nearly "
+        "overlap."),
     "portfolio_performance": (
         "Your portfolio's value day by day against the benchmark, rebased to the same starting "
         "value so the gap between the two lines is the real comparison: above it you are "

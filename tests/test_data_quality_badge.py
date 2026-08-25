@@ -101,7 +101,9 @@ def test_the_badge_renders_inside_the_sticky_header():
     """"Prominent" means always on screen. Below the fold in a tab is
     where it already was."""
     header_start = FINANCE.index("with symbol_header_container.container():")
-    tabs_start = FINANCE.index("= st.tabs([")
+    # The strip is built from a computed label list now that tabs follow
+    # the asset class, so the anchor is the call rather than a literal.
+    tabs_start = FINANCE.index("_tab_objects = st.tabs(")
     badge_at = FINANCE.index("# --- Data quality badge")
     assert header_start < badge_at < tabs_start
 

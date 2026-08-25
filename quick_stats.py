@@ -85,6 +85,27 @@ STATS: Tuple[StatSpec, ...] = (
     StatSpec("debt_to_equity", "Debt/Equity", "fundamental", "number"),
     StatSpec("current_ratio", "Current Ratio", "fundamental", "number"),
     StatSpec("sector", "Sector", "fundamental", "text"),
+
+    # --- fund-shaped stats ----------------------------------------------
+    # A fund has no market cap, no net margin and no sector of its own, so
+    # offering those in its header is the same category error that had the
+    # data-quality badge grading ETFs on corporate filings. These come off
+    # the EtfProfile the Fund Decomposition panel already loads, so the
+    # strip still adds no fetch of its own.
+    #
+    # NAV and premium/discount are NOT here, deliberately, and the task
+    # did ask for them: Yahoo's navPrice is a stale close (measured — see
+    # etf_technicals.NAV_PREMIUM_UNAVAILABLE), so a premium built on it
+    # would read -2.70% on a fund that arbitrages to within 0.05%.
+    StatSpec("expense_ratio_pct", "Expense", "fund", "percent",
+             note="Net annual expense ratio, as reported by the fund."),
+    StatSpec("net_assets", "AUM", "fund", "money",
+             note="Total net assets."),
+    StatSpec("fund_category", "Category", "fund", "text",
+             note="The provider's own category for this fund."),
+    StatSpec("fund_pe", "Fund P/E", "fund", "number",
+             note="Whole-fund trailing P/E across its holdings, not the "
+                  "top ten — the top ten are only 37-46% of a fund."),
 )
 STATS_BY_KEY: Dict[str, StatSpec] = {s.key: s for s in STATS}
 
@@ -142,9 +163,29 @@ def format_value(spec: StatSpec, raw: Any) -> str:
     return f"{number:,.{spec.decimals}f}"
 
 
-def raw_value(spec: StatSpec, quote, standardized) -> Any:
-    """Pull one stat off whichever object owns it. Never raises."""
+# Fund stats read off an EtfProfile; the attribute names differ from the
+# stat keys where the stat key would otherwise collide with an equity one.
+_FUND_ATTRS: Dict[str, str] = {
+    "expense_ratio_pct": "expense_ratio_pct",
+    "net_assets": "net_assets",
+    "fund_category": "category",
+    "fund_pe": "price_earnings",
+}
+
+
+def raw_value(spec: StatSpec, quote, standardized, fund=None) -> Any:
+    """Pull one stat off whichever object owns it. Never raises.
+
+    `fund` is an etf_analysis.EtfProfile when the current symbol is one,
+    and None otherwise — a fund stat with no profile is simply not
+    reported rather than falling through to an equity field of the same
+    name.
+    """
     try:
+        if spec.source == "fund":
+            if fund is None or not getattr(fund, "ok", False):
+                return None
+            return getattr(fund, _FUND_ATTRS.get(spec.key, spec.key), None)
         if spec.source == "quote":
             if spec.key == "price":
                 value = getattr(quote, "price", None)
@@ -158,8 +199,8 @@ def raw_value(spec: StatSpec, quote, standardized) -> Any:
         return None
 
 
-def display(spec: StatSpec, quote, standardized) -> str:
-    return format_value(spec, raw_value(spec, quote, standardized))
+def display(spec: StatSpec, quote, standardized, fund=None) -> str:
+    return format_value(spec, raw_value(spec, quote, standardized, fund))
 
 
 # --- the user's selection -----------------------------------------------------
@@ -202,6 +243,40 @@ def selected() -> Tuple[str, ...]:
     # An explicitly empty selection is a real choice — hide the strip —
     # and must not silently spring back to the defaults.
     return cleaned if cleaned or chosen == [] else DEFAULT_KEYS
+
+
+def merge_selection(saved: Sequence[str], chosen: Sequence[str],
+                    applicable: Sequence[str]) -> Tuple[str, ...]:
+    """Fold one asset class's picks back into the saved list.
+
+    The picker only offers the stats that apply to the class on screen,
+    so saving its result verbatim would erase every stat belonging to the
+    others — customise the strip while looking at an ETF and a stock's
+    market cap, ROE and net margin would silently vanish from a selection
+    the reader had set up deliberately.
+
+    Order is preserved: the saved list's own order for the untouched
+    keys, with the newly chosen ones placed where the class's stats were.
+    """
+    applicable = set(applicable)
+    chosen = [k for k in chosen if k in applicable]
+    out: List[str] = []
+    placed = False
+    for key in saved:
+        if key in applicable:
+            if not placed:
+                out.extend(chosen)
+                placed = True
+            continue          # replaced by the new choice
+        out.append(key)
+    if not placed:
+        out.extend(chosen)
+    # Keys the reader has never had in their list at all still need a home.
+    for key in chosen:
+        if key not in out:
+            out.append(key)
+    seen = set()
+    return tuple(k for k in out if not (k in seen or seen.add(k)))
 
 
 def set_selected(keys: Sequence[str]) -> Tuple[bool, Optional[str]]:

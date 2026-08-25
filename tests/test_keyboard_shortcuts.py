@@ -32,21 +32,20 @@ FINANCE = (ROOT / "finance.py").read_text(encoding="utf-8")
 def test_the_tab_list_matches_the_tabs_finance_actually_creates():
     """Two lists of the same eight labels drift the first time one is
     renamed, and ⌘3 would then open the wrong panel."""
-    tree = ast.parse(FINANCE)
-    tabs_calls = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "tabs" and node.args
-        and isinstance(node.args[0], ast.List)
-        and len(node.args[0].elts) == len(kbd.MAIN_TABS)
-    ]
-    labels = [
-        tuple(e.value for e in call.args[0].elts
-              if isinstance(e, ast.Constant))
-        for call in tabs_calls
-    ]
-    assert kbd.MAIN_TABS in labels, (
-        f"MAIN_TABS does not match any st.tabs call; found {labels}")
+    # The strip is no longer a literal in finance.py: tab LABELS follow
+    # the asset class, so asset_views owns them and finance builds from
+    # it. The drift this guards against is the same one — MAIN_TABS must
+    # stay in step with the panels the app actually creates.
+    import asset_views
+
+    assert kbd.MAIN_TABS == asset_views.BASE_TABS, (
+        "MAIN_TABS has drifted from the tab strip asset_views builds")
+    assert "asset_views.tab_labels(asset_kind)" in FINANCE
+    assert "_tab_objects = st.tabs(_tab_labels)" in FINANCE
+    # Exactly eight panels are unpacked positionally, so the base strip
+    # must stay eight long or the unpacking breaks.
+    assert len(asset_views.BASE_TABS) == 8
+    assert "_tab_objects[:8]" in FINANCE
 
 
 def test_every_tab_has_a_numbered_shortcut_the_browser_allows():

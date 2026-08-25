@@ -144,7 +144,9 @@ def test_the_watchlist_label_keeps_its_own_direction_colour():
     # appears twice (the plain string, then the coloured wrap), so
     # splitting on it returns only the gap between the two.
     start = SOURCE.index("_wl_move = ")
-    end = SOURCE.index("_wl_label = f\"{_wl_snap.ticker}", start)
+    # The label now leads with the asset-type badge, so the anchor is
+    # the ticker placeholder wherever it sits in the f-string.
+    end = SOURCE.index("_wl_snap.ticker} · {_wl_move}", start)
     block = SOURCE[start:end]
     assert ":green[" in block, "gains lose their colour on the active chip"
     assert ":red[" in block, "losses lose their colour on the active chip"

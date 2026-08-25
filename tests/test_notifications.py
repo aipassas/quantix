@@ -206,7 +206,8 @@ def test_the_bell_sits_in_the_sticky_header_beside_the_profile_menu():
     assert "_nb_slot" in FINANCE
     header = FINANCE.index("with symbol_header_container.container():")
     bell = FINANCE.index("# --- Notification bell")
-    tabs = FINANCE.index("= st.tabs([")
+    # Anchored on the call: the tab labels are computed per asset class.
+    tabs = FINANCE.index("_tab_objects = st.tabs(")
     assert header < bell < tabs
 
 

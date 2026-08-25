@@ -38,7 +38,7 @@ contenteditable. Modifier combos still fire there, which is what a user
 pressing Cmd+K mid-sentence expects.
 """
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # The main analysis tabs, in the order finance.py creates them. A test
@@ -59,6 +59,11 @@ TRIGGERS: Dict[str, str] = {
     "new_alert": "kbd_trigger_new_alert",
     "close": "kbd_trigger_close",
 }
+
+# One hidden button per asset-class pill, clicked by the Alt+N binding.
+# Shares the kbd_trigger_ prefix so finance.py's existing hiding rule
+# covers these too.
+ASSET_TRIGGER_PREFIX = "kbd_trigger_asset_"
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,11 @@ SHORTCUTS: Tuple[Shortcut, ...] = (
     Shortcut("⌘⇧A", "Create an alert for the current ticker", "Actions",
              "The task asked for ⌘N; Chrome reserves that for New Window "
              "and the page never receives it."),
+    Shortcut("Alt+1 – Alt+6", "Switch asset class", "Navigation",
+             "Probed on the running page: Alt+digit arrives and is "
+             "preventable. Matched on the key's POSITION (event.code), "
+             "because macOS composes Option+1 into ¡ — matching on "
+             "event.key would fire on Windows and never on a Mac."),
 )
 
 
@@ -94,12 +104,20 @@ class Command:
     payload: Optional[int] = None   # tab index, for kind="tab"
 
 
-def _tab_commands() -> Tuple[Command, ...]:
+def _tab_commands(tab_labels: Optional[Sequence[str]] = None) -> Tuple[Command, ...]:
+    """`tab_labels` is the strip currently on screen.
+
+    Tab LABELS follow the asset class (a fund's third tab reads "Holdings
+    & Fund Profile", not "Fundamentals & Valuation"), so a palette built
+    from the module constant would offer to jump to a tab whose name is
+    not on the page. MAIN_TABS remains the fallback and the equity set.
+    """
+    names = tuple(tab_labels) if tab_labels else MAIN_TABS
     return tuple(
         Command(id=f"tab:{i}", label=f"Go to {name}", kind="tab",
                 keywords=tuple(name.lower().replace("&", " ").split()),
                 hint=f"⌘{i + 1}" if i < 9 else "", payload=i)
-        for i, name in enumerate(MAIN_TABS)
+        for i, name in enumerate(names)
     )
 
 
@@ -113,8 +131,8 @@ ACTION_COMMANDS: Tuple[Command, ...] = (
 )
 
 
-def commands() -> Tuple[Command, ...]:
-    return _tab_commands() + ACTION_COMMANDS
+def commands(tab_labels: Optional[Sequence[str]] = None) -> Tuple[Command, ...]:
+    return _tab_commands(tab_labels) + ACTION_COMMANDS
 
 
 def search(query: str, pool: Optional[Sequence[Command]] = None) -> Tuple[Command, ...]:
@@ -145,9 +163,21 @@ def search(query: str, pool: Optional[Sequence[Command]] = None) -> Tuple[Comman
     return tuple(command for _, _, command in scored)
 
 
-def shortcuts_by_category() -> Dict[str, List[Shortcut]]:
+def shortcuts_by_category(tab_labels: Optional[Sequence[str]] = None
+                          ) -> Dict[str, List[Shortcut]]:
+    """`tab_labels` is the strip currently on screen, so the ⌘1–⌘N note
+    lists the tabs the reader can actually see rather than the equity
+    labels — a panel that names a tab which is not on the page is worse
+    than one that names none."""
+    names = tuple(tab_labels) if tab_labels else MAIN_TABS
     grouped: Dict[str, List[Shortcut]] = {}
     for shortcut in SHORTCUTS:
+        if shortcut.keys.startswith("⌘1"):
+            shortcut = replace(
+                shortcut,
+                keys=f"⌘1 – ⌘{min(len(names), 9)}",
+                note="In tab order: " + ", ".join(
+                    f"{i + 1} {name}" for i, name in enumerate(names[:9])))
         grouped.setdefault(shortcut.category, []).append(shortcut)
     return grouped
 
@@ -178,6 +208,10 @@ def listener_html(enabled: bool = True, pending_tab: Optional[int] = None,
     """
     config = {
         "triggers": TRIGGERS,
+        "assetPrefix": ASSET_TRIGGER_PREFIX,
+        # Only tabs[0] is read, to identify the main strip among the
+        # page's nested tab groups — and "Overview" is the first tab for
+        # every asset class, so this stays correct as labels change.
         "tabs": list(MAIN_TABS),
         "enabled": bool(enabled),
         "pendingTab": pending_tab if isinstance(pending_tab, int) else None,
@@ -241,9 +275,31 @@ def listener_html(enabled: bool = True, pending_tab: Optional[int] = None,
         || target.isContentEditable === true;
   }
 
+  function clickAsset(index) {
+    const host = pdoc.querySelector(
+      '[class*="st-key-' + CONFIG.assetPrefix + index + '"]');
+    if (!host) return false;
+    const button = host.querySelector("button");
+    if (!button) return false;
+    button.click();
+    return true;
+  }
+
   const handler = function (event) {
     const mod = event.metaKey || event.ctrlKey;
     const typing = isTyping(event.target);
+
+    // Asset class: Alt+1..6. Matched on event.code, NOT event.key —
+    // macOS composes Option+1 into "\u00a1", so a key-based match would
+    // fire on Windows and never on a Mac. Probed on the running page:
+    // the event arrives with altKey true and is not defaultPrevented.
+    if (event.altKey && !mod && !event.shiftKey) {
+      const m = /^Digit([1-9])$/.exec(event.code || "");
+      if (m && !typing) {
+        if (clickAsset(parseInt(m[1], 10) - 1)) event.preventDefault();
+        return;
+      }
+    }
 
     // Bare keys yield to typing; "?" is a character someone enters into
     // the ticker box, and stealing it would be a bug.

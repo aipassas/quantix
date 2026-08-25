@@ -57,6 +57,7 @@ from typing import Dict, List, Optional, Tuple
 import streamlit as st
 
 from config import WATCHLIST_PANEL
+import asset_class
 from data_loader import load_ticker_bundle
 from local_store import atomic_write_text, store_path
 from logging_setup import get_logger, log_event, log_exception
@@ -75,6 +76,10 @@ class QuoteSnapshot:
     pe_ratio: Optional[float] = None
     status: str = "ok"          # "ok" | "unavailable"
     detail: str = ""
+    # What KIND of instrument this row is. Free: the bundle's info dict
+    # is already loaded for the quote, and quoteType is a field on it —
+    # so a mixed watchlist can badge its rows without a second fetch.
+    asset_class_key: str = asset_class.UNKNOWN
 
     @property
     def direction_icon(self) -> str:
@@ -294,6 +299,7 @@ def _load_quote(ticker: str) -> QuoteSnapshot:
         return QuoteSnapshot(ticker=ticker, status="unavailable", detail="; ".join(bundle.errors) or "no quote data returned")
 
     info = bundle.info
+    klass = asset_class.classify(info, ticker)
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     previous_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
     pe_ratio = info.get("trailingPE")
@@ -302,12 +308,14 @@ def _load_quote(ticker: str) -> QuoteSnapshot:
         return QuoteSnapshot(
             ticker=ticker, price=price, previous_close=previous_close, pe_ratio=pe_ratio,
             status="unavailable", detail="quote missing price or previous close",
+            asset_class_key=klass,
         )
 
     change_pct = (price - previous_close) / previous_close * 100
     return QuoteSnapshot(
         ticker=ticker, price=price, previous_close=previous_close,
         change_pct=change_pct, pe_ratio=pe_ratio, status="ok",
+        asset_class_key=klass,
     )
 
 

@@ -63,11 +63,36 @@ def test_every_spec_reads_a_field_that_exists(qs):
     import financial_standardization as fs
     import watchlist_panel as wp
 
+    import etf_analysis
+
     std_fields = {f.name for f in dataclasses.fields(fs.StandardizedFinancials)}
     quote_fields = {f.name for f in dataclasses.fields(wp.QuoteSnapshot)}
+    # A third source: fund stats read off an EtfProfile, via the alias map
+    # (the stat key and the profile attribute differ where the stat key
+    # would otherwise collide with an equity one).
+    fund_fields = {f.name for f in dataclasses.fields(etf_analysis.EtfProfile)}
     for spec in qs.STATS:
+        if spec.source == "fund":
+            attr = qs._FUND_ATTRS.get(spec.key, spec.key)
+            assert attr in fund_fields, f"{spec.key} -> {attr} is not on EtfProfile"
+            continue
         have = quote_fields if spec.source == "quote" else std_fields
         assert spec.key in have, f"{spec.key} is not on {spec.source}"
+
+
+def test_every_fund_stat_is_reachable_through_the_alias_map(qs):
+    """A fund key with no alias entry falls through to getattr on the raw
+    key, which silently returns None for every fund."""
+    for spec in qs.STATS:
+        if spec.source == "fund":
+            assert spec.key in qs._FUND_ATTRS, spec.key
+
+
+def test_a_fund_stat_with_no_profile_is_not_reported(qs):
+    """It must not fall through to an equity field of the same name."""
+    for spec in qs.STATS:
+        if spec.source == "fund":
+            assert qs.raw_value(spec, None, None, None) is None
 
 
 def test_defaults_are_all_real_keys(qs):

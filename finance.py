@@ -79,7 +79,9 @@ import date_range
 import notifications
 import loading_states
 import asset_class
+import asset_views
 import etf_analysis
+import etf_comparison
 import etf_technicals
 import etf_screener
 import streamlit.components.v1 as components
@@ -1009,6 +1011,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# See the note where this is assigned: read with a default because
+# asset_kind is not computed until far below this point.
+_kbd_tabs = asset_views.tab_labels(
+    st.session_state.get("asset_kind", asset_class.EQUITY))
 _kbd_pending_tab = st.session_state.pop("kbd_pending_tab", None)
 # Whichever panel just opened gets scrolled to and focused — see the
 # module docstring: they render far below the fold, so without this ⌘K
@@ -1040,6 +1046,19 @@ for _kbd_name, _kbd_key in keyboard_shortcuts.TRIGGERS.items():
         log_event(logger, logging.INFO, "user.keyboard_shortcut", action=_kbd_name)
         st.rerun()
 
+# One hidden button per asset-class pill, for Alt+1..6. They are hidden by
+# the same st-key-kbd_trigger_ rule as the others above. The pill itself
+# cannot be clicked from JS reliably (Streamlit rebuilds it every run), so
+# the shortcut goes through a real button and a deferred switch — the same
+# route the watchlist uses for the ticker.
+for _kbd_i, _kbd_view in enumerate(asset_views.VIEWS):
+    if st.button(_kbd_view.pill,
+                 key=f"{keyboard_shortcuts.ASSET_TRIGGER_PREFIX}{_kbd_i}"):
+        st.session_state["_pending_asset_view"] = _kbd_view.key
+        log_event(logger, logging.INFO, "user.keyboard_shortcut",
+                  action=f"asset:{_kbd_view.key}")
+        st.rerun()
+
 st.title(brand().title)
 
 # --- the palette and the shortcuts panel ---------------------------------
@@ -1050,7 +1069,8 @@ if st.session_state.get("kbd_palette_open"):
             "Command", key="kbd_palette_query", label_visibility="collapsed",
             placeholder="Jump to a tab, create an alert, open help…",
         )
-        _kbd_hits = keyboard_shortcuts.search(_kbd_query)
+        _kbd_hits = keyboard_shortcuts.search(
+            _kbd_query, keyboard_shortcuts.commands(_kbd_tabs))
         if not _kbd_hits:
             st.caption(f'Nothing matches "{_kbd_query.strip()}".')
         for _kbd_cmd in _kbd_hits[:8]:
@@ -1079,7 +1099,8 @@ if st.session_state.get("kbd_palette_open"):
 if st.session_state.get("kbd_shortcuts_open"):
     with st.container(border=True, key="kbd_shortcuts_panel"):
         st.caption("**Keyboard shortcuts**")
-        for _kbd_cat, _kbd_items in keyboard_shortcuts.shortcuts_by_category().items():
+        for _kbd_cat, _kbd_items in keyboard_shortcuts.shortcuts_by_category(
+                _kbd_tabs).items():
             st.caption(f"**{_kbd_cat}**")
             for _kbd_sc in _kbd_items:
                 st.markdown(
@@ -2840,7 +2861,44 @@ _pending_ticker = st.session_state.pop("_pending_ticker", None)
 if _pending_ticker:
     st.session_state["ticker_input"] = _pending_ticker
 
-ticker_symbol = st.sidebar.text_input("Stock Ticker", key="ticker_input").upper()
+# --- Asset class selector -----------------------------------------------------
+# A LENS, not a mode. It steers what the search suggests and which
+# examples are offered; it never overrides what a symbol actually IS.
+# Typing SPY with "Stocks" lit still analyses SPY as a fund, because the
+# classification comes from the data (asset_class.classify) and not from
+# this widget — a page that applied stock analysis to a fund because a
+# pill was left selected would be confidently wrong.
+#
+# Rendered in the sidebar directly above the ticker box it steers, and
+# BEFORE it, because the box's own placeholder depends on the selection.
+if "asset_view" not in st.session_state:
+    st.session_state["asset_view"] = asset_views.DEFAULT_VIEW
+_pending_view = st.session_state.pop("_pending_asset_view", None)
+if _pending_view in asset_views.VIEWS_BY_KEY:
+    st.session_state["asset_view"] = _pending_view
+
+_view_labels = list(asset_views.pill_labels())
+_view_current = asset_views.view(st.session_state.get("asset_view"))
+# No key= on this widget. The options are fixed here, but the same
+# session_state entry is written by the Alt+N shortcut and by the
+# deferred switch above, and a keyed widget restores its own stored value
+# over an externally applied one on the next run — the trap the screener's
+# criteria widgets already document.
+_view_pick = st.sidebar.pills(
+    "Asset class", _view_labels,
+    default=_view_current.pill, label_visibility="collapsed",
+    help="Steers the search suggestions and examples below. It does not "
+         "change how a symbol is analysed — that follows what the symbol "
+         "actually is.")
+if _view_pick and asset_views.key_for_pill(_view_pick) != st.session_state["asset_view"]:
+    st.session_state["asset_view"] = asset_views.key_for_pill(_view_pick)
+    _view_current = asset_views.view(st.session_state["asset_view"])
+
+ticker_symbol = st.sidebar.text_input(
+    "Stock Ticker", key="ticker_input",
+    placeholder=_view_current.placeholder).upper()
+st.sidebar.caption(
+    f"{_view_current.pill}: " + " · ".join(_view_current.examples))
 
 # --- Ticker autocomplete -----------------------------------------------------
 # Deliberately ADDITIVE: the free-text box above is untouched, because three
@@ -3230,6 +3288,13 @@ else:
     for _wl_snap in _wl_snapshots:
         _wl_row, _wl_remove = st.sidebar.columns([5, 1])
         _wl_is_active = _wl_snap.ticker == ticker_symbol
+        # A watchlist has always been able to mix asset types — it stores
+        # plain ticker strings — but every row looked identical, so a
+        # bond fund among four stocks was indistinguishable. The badge is
+        # the CLASSIFIED type, not whichever pill was lit when the ticker
+        # was added, and it costs no fetch: the quote already loaded the
+        # info dict that carries quoteType.
+        _wl_badge = asset_views.badge(_wl_snap.asset_class_key)
         with _wl_row:
             if _wl_snap.status == "ok":
                 # The direction is coloured on the LABEL rather than by the
@@ -3241,9 +3306,9 @@ else:
                     _wl_move = f":green[{_wl_move}]"
                 elif _wl_snap.change_pct < 0:
                     _wl_move = f":red[{_wl_move}]"
-                _wl_label = f"{_wl_snap.ticker} · {_wl_move}"
+                _wl_label = f"{_wl_badge} {_wl_snap.ticker} · {_wl_move}"
             else:
-                _wl_label = f"{_wl_snap.ticker} · n/a"
+                _wl_label = f"{_wl_badge} {_wl_snap.ticker} · n/a"
             # The active ticker gets the accent style so it's obvious which
             # row you're looking at. Deliberately NOT disabled: a disabled
             # primary button renders as a washed-out pill that reads as
@@ -3252,7 +3317,10 @@ else:
             if st.button(
                 _wl_label, key=f"wl_go_{_wl_snap.ticker}", width="stretch",
                 type="primary" if _wl_is_active else "secondary",
-                help=None if _wl_snap.status == "ok" else _wl_snap.detail,
+                help=(f"{asset_views.badge_title(_wl_snap.asset_class_key)}"
+                      if _wl_snap.status == "ok"
+                      else f"{asset_views.badge_title(_wl_snap.asset_class_key)} — "
+                           f"{_wl_snap.detail}"),
             ):
                 st.session_state["_pending_ticker"] = _wl_snap.ticker
                 log_event(logger, logging.INFO, "user.watchlist_switch", ticker=_wl_snap.ticker)
@@ -3390,6 +3458,13 @@ with st.spinner(f"Running deep audit on {ticker_symbol} & loading Macro Data..."
     # sector-percentile ranking run against it. Classified once here and
     # honoured by the panels that only make sense for a company.
     asset_kind = asset_class.classify(ticker_bundle.info, ticker_symbol)
+    # Parked for the blocks that run ABOVE this line. finance.py is a
+    # script, so name order is execution order: the keyboard palette and
+    # the shortcuts panel render ~2400 lines earlier and cannot see
+    # asset_kind on this run. They read this with an equity default,
+    # which is correct from the second run onward — and the panels are
+    # only ever opened by a keypress, which is always a later run.
+    st.session_state["asset_kind"] = asset_kind
 
 # ==========================================
 # SYMBOL HEADER (fill) — renders into the sticky slot reserved at the very
@@ -3627,17 +3702,33 @@ with symbol_header_container.container():
     with _pm_slot:
         profile_menu.render()
 
-    _qs_selected = quick_stats.selected()
+    # The user's saved choice is FILTERED to the stats that mean something
+    # for this asset class, then topped up from that class's own list.
+    # Before this, an ETF's header read "Market Cap · Not reported" beside
+    # "Net Margin · Not reported" and "ROE · Not reported" — three
+    # questions a fund cannot be asked, presented as data it failed to
+    # supply. Filtering rather than replacing keeps the saved selection
+    # intact: switching back to a stock restores it untouched.
+    _qs_applicable = asset_views.header_stats(asset_kind)
+    _qs_selected = tuple(k for k in quick_stats.selected() if k in _qs_applicable)
+    if len(_qs_selected) < len(_qs_applicable):
+        _qs_selected += tuple(k for k in _qs_applicable if k not in _qs_selected)
+    _qs_selected = _qs_selected[:quick_stats.MAX_SELECTED]
 
     @st.fragment(run_every=quick_stats.REFRESH_SECONDS)
     def _render_quick_stats():
         _qs_quote = load_quote_snapshots((ticker_symbol,))[0]
+        # Loaded only for a fund, and from the same cached profile the
+        # Fund Decomposition panel uses, so the strip still adds no fetch.
+        _qs_fund = (etf_analysis.load_profile(ticker_symbol)
+                    if asset_class.supports(asset_kind, asset_class.HOLDINGS)
+                    else None)
         _qs_specs = [quick_stats.STATS_BY_KEY[k] for k in _qs_selected
                      if k in quick_stats.STATS_BY_KEY]
         _qs_cols = st.columns(len(_qs_specs) + 1)
 
         for _qs_i, _qs_spec in enumerate(_qs_specs):
-            _qs_text = quick_stats.display(_qs_spec, _qs_quote, standardized)
+            _qs_text = quick_stats.display(_qs_spec, _qs_quote, standardized, _qs_fund)
             with _qs_cols[_qs_i]:
                 with st.popover(f"{_qs_spec.label} · {_qs_text}", width="stretch"):
                     st.markdown(f"**{_qs_spec.label}** — {_qs_text}")
@@ -3655,16 +3746,28 @@ with symbol_header_container.container():
                 st.caption(
                     f"Pick up to {quick_stats.MAX_SELECTED}. The order you choose is "
                     "the order they appear. Clearing them all hides the strip.")
+                st.caption(
+                    f"Showing the stats that apply to "
+                    f"{asset_class.with_article(asset_kind)}. Your choice is "
+                    "remembered across asset classes.")
                 _qs_choice = st.multiselect(
-                    "Stats shown", [s.key for s in quick_stats.STATS],
+                    "Stats shown", [s.key for s in quick_stats.STATS
+                                    if s.key in _qs_applicable],
                     default=list(_qs_selected),
                     format_func=lambda k: quick_stats.STATS_BY_KEY[k].label,
-                    key="quick_stats_choice", label_visibility="collapsed",
+                    label_visibility="collapsed",
                 )
                 _qs_save, _qs_reset = st.columns(2)
                 with _qs_save:
                     if st.button("Save", key="quick_stats_save", width="stretch"):
-                        _qs_ok, _qs_err = quick_stats.set_selected(_qs_choice)
+                        # Folded back into the saved list rather than
+                        # replacing it: the picker only offered this
+                        # class's stats, so a verbatim save would erase
+                        # every stat belonging to the others.
+                        _qs_ok, _qs_err = quick_stats.set_selected(
+                            quick_stats.merge_selection(
+                                quick_stats.selected(), _qs_choice,
+                                _qs_applicable))
                         if _qs_ok:
                             # scope="app": the strip's column count changes
                             # with the selection, and a fragment-only rerun
@@ -3675,7 +3778,6 @@ with symbol_header_container.container():
                 with _qs_reset:
                     if st.button("Reset", key="quick_stats_reset", width="stretch"):
                         quick_stats.reset()
-                        st.session_state.pop("quick_stats_choice", None)
                         st.rerun(scope="app")
 
                 st.markdown(
@@ -3791,11 +3893,19 @@ else:
     # Chart Workspace sits second, right after Overview: it's the primary
     # charting surface, so it gets a prominent position rather than being
     # buried mid-list among the analysis panels.
+    # Labels follow the asset class; POSITIONS never do. The eight panels
+    # below are unpacked positionally and each is several hundred lines,
+    # and ⌘1–⌘8 are bound to those positions — so a class re-labels its
+    # tabs ("Holdings & Fund Profile" rather than "Fundamentals &
+    # Valuation") and the one structural change is additive: a ninth
+    # comparison tab appended for funds only, which leaves every existing
+    # index untouched. See asset_views.
+    _tab_labels = list(asset_views.tab_labels(asset_kind))
+    _tab_objects = st.tabs(_tab_labels)
     (tab_overview, tab_chart_workspace, tab_fundamentals, tab_risk, tab_simulation,
-     tab_smart_money, tab_portfolio, tab_tearsheet) = st.tabs([
-        "Overview", "Chart Workspace", "Fundamentals & Valuation", "Risk & Technicals",
-        "Monte Carlo & Seasonality", "Smart Money & Peers", "Portfolio", "CIO Tear Sheet",
-    ])
+     tab_smart_money, tab_portfolio, tab_tearsheet) = _tab_objects[:8]
+    tab_comparison = (_tab_objects[8]
+                      if asset_views.has_comparison(asset_kind) else None)
 
 
     # ==========================================
@@ -8052,6 +8162,138 @@ else:
                     ".streamlit/secrets.toml (see .streamlit/secrets.toml.example) to enable emailing reports "
                     "directly from the app. Meanwhile, use Download PDF above and attach it manually."
                 )
+
+
+    # ==========================================
+    # FUND COMPARISON  (PHASE 1.6, funds only)
+    # ==========================================
+    # A ninth tab, APPENDED so every existing tab keeps its index and the
+    # ⌘1–⌘8 bindings keep pointing at the panel they always did.
+    if tab_comparison is not None:
+        with tab_comparison:
+            st.header("Compare funds side by side", anchor="fund-comparison")
+            st.caption(
+                f"Up to {etf_comparison.MAX_FUNDS} funds, {ticker_symbol} "
+                "included. Everything below is computed over the analysis "
+                "range in the sidebar, so the returns and the Sharpe are "
+                "over that window and not the funds' own published periods.")
+
+            _cmp_others = st.text_input(
+                "Compare against", key="etf_compare_input",
+                placeholder="e.g. QQQ, VTV",
+                help="Comma-separated fund tickers.")
+            _cmp_extra = [t.strip().upper()
+                          for t in (_cmp_others or "").replace(";", ",").split(",")
+                          if t.strip()]
+            _cmp_symbols = [ticker_symbol]
+            for _cmp_sym in _cmp_extra:
+                if _cmp_sym not in _cmp_symbols:
+                    _cmp_symbols.append(_cmp_sym)
+            _cmp_dropped = _cmp_symbols[etf_comparison.MAX_FUNDS:]
+            _cmp_symbols = _cmp_symbols[:etf_comparison.MAX_FUNDS]
+            if _cmp_dropped:
+                st.caption(
+                    f"Comparing the first {etf_comparison.MAX_FUNDS}; "
+                    f"ignored {', '.join(_cmp_dropped)}.")
+
+            if len(_cmp_symbols) < 2:
+                st.info(
+                    "Add at least one other fund to compare against — try "
+                    + ", ".join(asset_views.view(asset_class.ETF).examples) + ".")
+            else:
+                _cmp_closes, _cmp_err = etf_comparison.load_prices(
+                    tuple(_cmp_symbols), period="1y")
+                if _cmp_err:
+                    st.warning(_cmp_err)
+                _cmp_profiles = {sym: etf_analysis.load_profile(sym)
+                                 for sym in _cmp_symbols}
+                _cmp_bad = [sym for sym, prof in _cmp_profiles.items()
+                            if not prof.ok]
+                if _cmp_bad:
+                    st.warning(
+                        "No fund profile for " + ", ".join(_cmp_bad)
+                        + " — those columns will be mostly blank. Check the "
+                        "ticker is a fund.")
+                _cmp_yields = {}
+                for sym in _cmp_symbols:
+                    try:
+                        _cmp_info = load_ticker_bundle(sym, deep=False).info or {}
+                    except Exception:
+                        _cmp_info = {}
+                    _cmp_yields[sym] = _cmp_info.get("dividendYield")
+
+                _cmp_rows = etf_comparison.build_rows(
+                    _cmp_profiles, _cmp_closes, _cmp_yields)
+
+                # A plain table, not st.dataframe: the "best" mark is per
+                # ROW and there is no column_config for that.
+                _cmp_table = pd.DataFrame(
+                    [{"Metric": _r.label,
+                      **{sym: etf_comparison.format_value(_r, sym)
+                         for sym in _cmp_symbols},
+                      "Best": etf_comparison.best_symbol(_r) or "—"}
+                     for _r in _cmp_rows])
+                st.dataframe(_cmp_table, width="stretch", hide_index=True,
+                             key="etf_comparison_grid")
+                st.caption(
+                    "“Best” is only marked where better and worse are "
+                    "actually defined — a fund is not superior for holding "
+                    "more assets, and a tie is left unmarked rather than "
+                    "broken arbitrarily. Blank means the fund does not "
+                    "report that figure.")
+                st.caption(etf_comparison.TRACKING_ERROR_UNAVAILABLE)
+
+                # --- performance overlay -----------------------------
+                _cmp_rebased = etf_comparison.rebased(_cmp_closes)
+                if _cmp_rebased is None:
+                    st.info(
+                        "Not enough overlapping price history to chart these "
+                        "funds together.")
+                else:
+                    st.markdown("**Performance, rebased to 100**")
+                    _cmp_fig = go.Figure()
+                    for sym in _cmp_symbols:
+                        if sym in _cmp_rebased.columns:
+                            _cmp_fig.add_trace(go.Scatter(
+                                x=_cmp_rebased.index, y=_cmp_rebased[sym],
+                                mode="lines", name=sym))
+                    # Same template/transparent-background treatment every
+                    # other chart on the page gets, so the overlay follows
+                    # the active theme instead of Plotly's default white.
+                    _cmp_fig.update_layout(
+                        height=380, margin=dict(l=0, r=0, t=10, b=0),
+                        yaxis_title="Rebased (100 = start)",
+                        template=_plotly_template,
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)')
+                    st.plotly_chart(_cmp_fig, width="stretch")
+                    st.caption(chart_help("etf_fund_comparison"))
+
+                # --- holdings overlap --------------------------------
+                st.markdown("**Holdings overlap**")
+                st.caption(etf_comparison.HOLDINGS_CAVEAT)
+                _cmp_base = _cmp_symbols[0]
+                for _cmp_other in _cmp_symbols[1:]:
+                    _cmp_ov = etf_comparison.holdings_overlap(
+                        _cmp_profiles.get(_cmp_base),
+                        _cmp_profiles.get(_cmp_other))
+                    if not _cmp_ov.ok:
+                        st.caption(
+                            f"{_cmp_base} vs {_cmp_other}: neither fund "
+                            "discloses top holdings (normal for a bond or "
+                            "commodity fund).")
+                        continue
+                    st.caption(
+                        f"**{_cmp_base} vs {_cmp_other}** — "
+                        f"{len(_cmp_ov.shared)} shared "
+                        f"({_cmp_ov.shared_weight_pct:.1f}% of {_cmp_base}'s "
+                        f"disclosed top ten): "
+                        + (", ".join(_cmp_ov.shared) or "none"))
+                    st.caption(
+                        f"Only in {_cmp_base}: "
+                        + (", ".join(_cmp_ov.only_a) or "none")
+                        + f" · Only in {_cmp_other}: "
+                        + (", ".join(_cmp_ov.only_b) or "none"))
 
 
 # ==========================================
