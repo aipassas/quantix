@@ -37,10 +37,12 @@ MAX_FUNDS = 3
 CACHE_TTL_SECONDS = 3600
 
 TRACKING_ERROR_UNAVAILABLE = (
-    "Tracking error is not shown. It needs each fund's stated benchmark "
-    "as a return series, and this data source returns neither the "
-    "benchmark mapping nor the index history. Approximating it against a "
-    "benchmark we picked would be a different number under the same name."
+    "Tracking error is not shown in this grid. Each fund's OWN stated "
+    "benchmark is not in this data source, so there is no per-fund index "
+    "to measure against — and picking one per fund would put a different "
+    "number under the same name in every column. Where a single "
+    "benchmark IS meaningful, the Fund Risk panel measures tracking "
+    "against the Market Benchmark you set in the sidebar and says so."
 )
 
 HOLDINGS_CAVEAT = (

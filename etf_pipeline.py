@@ -49,8 +49,11 @@ WHAT IS GENUINELY ABSENT, checked rather than assumed:
   - Custodian and manager name. Absent from info.
   - ISIN for some funds: SPY, VTI, ARKK, TLT and GLD report one; QQQ and
     every European listing checked do not.
-  - Tracking error, which needs the benchmark mapping described in
-    etf_comparison.TRACKING_ERROR_UNAVAILABLE.
+  - Each fund's OWN stated benchmark. PHASE 1.3 measures tracking error
+    against the benchmark the READER chooses instead, which is a real
+    figure as long as the screen names it — see etf_risk. What stays
+    unavailable is the mapping from a fund to the index its prospectus
+    names.
 
 MORNINGSTAR NEEDS A KEY. There is no free tier and no keyless endpoint,
 and obtaining one means creating an account, which this build does not do
