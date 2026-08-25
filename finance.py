@@ -85,6 +85,9 @@ import etf_analysis
 import etf_comparison
 import etf_pipeline
 import etf_risk
+import bond_data
+import bond_market
+import bond_screener
 import etf_technicals
 import etf_screener
 import streamlit.components.v1 as components
@@ -1727,6 +1730,236 @@ if _screener_state:
 # market. Yahoo publishes a whole ETF table in one request, so this one
 # genuinely screens 250 funds you did not have to name in advance.
 st.markdown("---")
+# ==========================================
+# BOND MARKET — YIELD CURVE (PHASE 2.4)
+# ==========================================
+st.markdown("---")
+st.header("Treasury Yield Curve", anchor="yield-curve")
+_yc_curve = bond_data.load_curve()
+_yc_history, _yc_err = bond_market.load_curve_history("5y")
+if _yc_err:
+    st.caption(_yc_err)
+if not _yc_curve.ok:
+    st.info(_yc_curve.error or "The treasury curve could not be loaded.")
+else:
+    _yc_shape = bond_data.curve_shape(_yc_curve)
+    _yc_slope = bond_market.slope_history(_yc_history)
+    _yc1, _yc2, _yc3 = st.columns(3)
+    _yc1.metric("Curve shape", _yc_shape.label,
+                help="Measured between the shortest and longest maturities "
+                     "loaded, both of which are named beneath it.")
+    _yc1.caption(_yc_shape.detail)
+    if _yc_slope.ok:
+        _yc2.metric(f"{_yc_slope.short_label}-{_yc_slope.long_label} slope",
+                    f"{_yc_slope.current_pp:+.2f}pp",
+                    help="The classic recession signal. Negative means long "
+                         "money is priced below short.")
+        if _yc_slope.inverted_share_pct is not None:
+            _yc2.caption(
+                f"Inverted on {_yc_slope.inverted_share_pct:.0f}% of the "
+                f"last {_yc_slope.total_days} trading days")
+    else:
+        _yc2.metric("Curve slope", "Unavailable",
+                    help="Needs history for both ends of the curve.")
+    _yc3.metric("Source", _yc_curve.source.upper(),
+                help="FRED when a key is configured, Yahoo otherwise.")
+    if _yc_curve.missing:
+        _yc3.caption("Missing: " + ", ".join(_yc_curve.missing))
+
+    _yc_points = sorted(_yc_curve.points, key=lambda p: p.months)
+    _yc_fig = go.Figure()
+    _yc_fig.add_trace(go.Scatter(
+        x=[p.years for p in _yc_points], y=[p.yield_pct for p in _yc_points],
+        mode="lines+markers", name="Today",
+        text=[p.label for p in _yc_points]))
+    # Overlaying where the curve WAS is what makes a shift visible; a
+    # single line only ever shows today's shape.
+    if _yc_history is not None and not _yc_history.empty:
+        for _yc_label, _yc_days in (("1 month ago", 21), ("1 year ago", 252)):
+            if len(_yc_history) <= _yc_days:
+                continue
+            _yc_past = _yc_history.iloc[-1 - _yc_days]
+            _yc_xs, _yc_ys = [], []
+            for _yc_p in _yc_points:
+                _yc_v = _yc_past.get(_yc_p.label)
+                if _yc_v is not None and _yc_v == _yc_v:
+                    _yc_xs.append(_yc_p.years)
+                    _yc_ys.append(float(_yc_v))
+            if _yc_xs:
+                _yc_fig.add_trace(go.Scatter(
+                    x=_yc_xs, y=_yc_ys, mode="lines+markers",
+                    name=_yc_label, line=dict(dash="dot")))
+    _yc_fig.update_layout(
+        height=340, margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_title="Maturity (years)", yaxis_title="Yield (%)",
+        template=_plotly_template, paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(_yc_fig, width="stretch")
+    st.caption(chart_help("treasury_yield_curve"))
+
+    _yc_shifts = [sh for sh in bond_market.curve_shifts(_yc_history) if sh.ok]
+    if _yc_shifts:
+        _yc_table = pd.DataFrame([
+            {"Since": sh.label, **{k: v for k, v in sh.changes_bps.items()},
+             "Shape": sh.shape}
+            for sh in _yc_shifts])
+        for _yc_col in _yc_table.columns:
+            if _yc_col not in ("Since", "Shape"):
+                _yc_table[_yc_col] = pd.to_numeric(_yc_table[_yc_col],
+                                                   errors="coerce")
+        st.dataframe(
+            _yc_table, width="stretch", hide_index=True,
+            column_config={c: st.column_config.NumberColumn(c, format="%+.0fbp")
+                           for c in _yc_table.columns
+                           if c not in ("Since", "Shape")},
+            key="yield_curve_shifts")
+        st.caption(
+            "Change per maturity, in basis points. A curve where the long "
+            "end moved MORE than the short end is steepening, whichever "
+            "direction rates went overall.")
+    if not bond_data.fred_is_configured():
+        st.caption(bond_data.FRED_UNCONFIGURED)
+
+# ==========================================
+# BOND FUND SCREENER (PHASE 2.5)
+# ==========================================
+st.markdown("---")
+st.header("Bond Fund Screener", anchor="bond-screener")
+st.caption(bond_screener.INDIVIDUAL_BONDS_NOT_SCREENED)
+_bs_rows, _bs_err = bond_screener.load_bond_universe()
+if _bs_err:
+    st.warning(_bs_err)
+if not _bs_rows:
+    st.info("No bond funds could be loaded right now.")
+else:
+    st.caption(f"{len(_bs_rows)} bond funds loaded, each with a duration "
+               "measured from its own price behaviour.")
+    if "bond_criteria" not in st.session_state:
+        st.session_state["bond_criteria"] = [
+            {"metric": "duration", "operator": "<", "threshold": 5.0}]
+
+    st.markdown("**Preset screens**")
+    _bs_cols = st.columns(len(bond_screener.PRESETS))
+    for _bs_i, _bs_preset in enumerate(bond_screener.PRESETS):
+        with _bs_cols[_bs_i]:
+            if st.button(_bs_preset.name, key=f"bond_preset_{_bs_i}",
+                         width="stretch", help=_bs_preset.detail):
+                st.session_state["bond_criteria"] = [
+                    {"metric": c.metric, "operator": c.operator,
+                     "threshold": c.threshold}
+                    for c in _bs_preset.criteria]
+                st.rerun()
+
+    st.markdown("**Filters**")
+    _bs_remove = None
+    for _bs_i, _bs_c in enumerate(st.session_state["bond_criteria"]):
+        # Labels are prefixed AND numbered for the same reason the ETF
+        # screener's are: Streamlit hashes (label, options, index, help)
+        # to identify an unkeyed widget and label_visibility is not in
+        # that hash, so two identical rows collide outright.
+        _bs_suffix = "" if _bs_i == 0 else f" {_bs_i + 1}"
+        _bs_m, _bs_o, _bs_v, _bs_x = st.columns([3, 2, 3, 1])
+        with _bs_m:
+            _bs_keys = [m.key for m in bond_screener.METRICS]
+            _bs_metric = st.selectbox(
+                f"Bond metric{_bs_suffix}", _bs_keys,
+                index=_bs_keys.index(_bs_c["metric"])
+                if _bs_c["metric"] in _bs_keys else 0,
+                format_func=lambda k: bond_screener.METRICS_BY_KEY[k].label,
+                label_visibility="collapsed")
+        _bs_ops = bond_screener.operators_for(_bs_metric)
+        with _bs_o:
+            _bs_op = st.selectbox(
+                f"Bond op{_bs_suffix}", _bs_ops,
+                index=_bs_ops.index(_bs_c["operator"])
+                if _bs_c["operator"] in _bs_ops else 0,
+                label_visibility="collapsed")
+        with _bs_v:
+            if bond_screener.METRICS_BY_KEY[_bs_metric].kind == "text":
+                _bs_types = list(bond_screener.fund_types())
+                _bs_threshold = st.selectbox(
+                    f"Bond value{_bs_suffix}", _bs_types,
+                    index=_bs_types.index(str(_bs_c["threshold"]))
+                    if str(_bs_c["threshold"]) in _bs_types else 0,
+                    label_visibility="collapsed")
+            else:
+                _bs_threshold = st.number_input(
+                    f"Bond threshold{_bs_suffix}",
+                    value=float(_bs_c["threshold"])
+                    if isinstance(_bs_c["threshold"], (int, float)) else 0.0,
+                    label_visibility="collapsed")
+        with _bs_x:
+            if st.button("✕", key=f"bond_remove_{_bs_i}",
+                         help="Remove this filter"):
+                _bs_remove = _bs_i
+        st.session_state["bond_criteria"][_bs_i] = {
+            "metric": _bs_metric, "operator": _bs_op,
+            "threshold": _bs_threshold}
+
+    if _bs_remove is not None:
+        st.session_state["bond_criteria"].pop(_bs_remove)
+        st.rerun()
+    if st.button("+ Add bond filter", key="bond_add_filter"):
+        st.session_state["bond_criteria"].append(
+            {"metric": "yield_pct", "operator": ">", "threshold": 4.0})
+        st.rerun()
+
+    _bs_criteria = [bond_screener.BondCriterion(**c)
+                    for c in st.session_state["bond_criteria"]]
+    _bs_passed, _bs_unjudged = bond_screener.run(_bs_rows, _bs_criteria)
+    st.caption(
+        f"{len(_bs_passed)} of {len(_bs_rows)} funds match"
+        + (f" · {len(_bs_unjudged)} set aside because they do not report "
+           "every filtered metric" if _bs_unjudged else ""))
+
+    if not _bs_passed:
+        st.info("No fund passes every filter. Loosen one, or try a preset.")
+    else:
+        _bs_table = pd.DataFrame([
+            {"Symbol": m.row.symbol, "Name": m.row.name,
+             "Type": m.row.fund_type, "Yield %": m.row.yield_pct,
+             "Duration": m.row.duration, "Spread bp": m.row.spread_bps,
+             "ER %": m.row.expense_ratio_pct, "AUM": m.row.assets,
+             "1Y %": m.row.return_1y_pct}
+            for m in _bs_passed[:bond_screener.MAX_RESULTS_SHOWN]])
+        for _bs_col in ("Yield %", "Duration", "Spread bp", "ER %", "AUM",
+                        "1Y %"):
+            _bs_table[_bs_col] = pd.to_numeric(_bs_table[_bs_col],
+                                               errors="coerce")
+        st.dataframe(
+            _bs_table, width="stretch", hide_index=True,
+            column_config={
+                "Yield %": st.column_config.NumberColumn("Yield %",
+                                                         format="%.2f%%"),
+                # Streamlit draws its own muted "None" into any null
+                # numeric cell and gives no API to reword it, so the
+                # meaning goes in the column's help.
+                "Duration": st.column_config.NumberColumn(
+                    "Duration", format="%.2f",
+                    help="Years, measured by regressing the fund's daily "
+                         "return on the change in the 10-year yield. A "
+                         "NEGATIVE figure is not an error: rate-hedged "
+                         "funds short treasuries to strip duration out."),
+                "Spread bp": st.column_config.NumberColumn(
+                    "Spread bp", format="%+.0f",
+                    help="Yield over the treasury curve at the fund's own "
+                         "duration. Blank where that duration is at or "
+                         "below zero — a rate-hedged fund has no maturity "
+                         "on the curve to match."),
+                "ER %": st.column_config.NumberColumn("ER %", format="%.2f%%"),
+                "AUM": st.column_config.NumberColumn("AUM", format="compact"),
+                "1Y %": st.column_config.NumberColumn("1Y %", format="%.1f%%"),
+            },
+            key="bond_results_table")
+        if len(_bs_passed) > bond_screener.MAX_RESULTS_SHOWN:
+            st.caption(f"Showing the first {bond_screener.MAX_RESULTS_SHOWN}.")
+        st.download_button(
+            "Download these results (CSV)",
+            _bs_table.to_csv(index=False).encode("utf-8"),
+            file_name=f"quantix_bond_screen_{datetime.date.today()}.csv",
+            mime="text/csv", key="bond_csv")
+        st.caption(bond_screener.LADDER_UNAVAILABLE)
+
 st.header("ETF Screener")
 st.caption(
     "Screens a market-wide table of funds — no ticker list required, "
@@ -5645,6 +5878,123 @@ else:
             if _rk_conc.ok:
                 st.caption(etf_risk.TOP_TEN_CONCENTRATION_NOTE)
             st.caption(etf_risk.BID_ASK_MOSTLY_ABSENT)
+
+            # --- bond funds: rate risk and credit (PHASE 2.3) ----------
+            # Only for funds that actually hold bonds. A duration and a
+            # credit spread on an equity fund would be arithmetic
+            # performed on the wrong instrument.
+            #
+            # The fund's NAME comes from the bundle: EtfProfile carries a
+            # symbol, category, family and legal type but NO name — an
+            # assumption that took this panel down until it was checked.
+            _bd_name = str((ticker_bundle.info or {}).get("longName")
+                           or (ticker_bundle.info or {}).get("shortName") or "")
+            _bd_is_bond = (
+                bond_screener.looks_like_bond_fund(_bd_name)
+                or bond_screener.looks_like_bond_fund(
+                    _rk_prof.category if _rk_prof.ok else ""))
+            if _bd_is_bond:
+                st.markdown("---")
+                st.subheader("Bond risk")
+                _bd_fund = bond_data.load_bond_fund(ticker_symbol)
+                _bd_curve = bond_data.load_curve()
+                _bd_price = (ticker_bundle.info or {}).get("regularMarketPrice")
+                _bd_raw_yield = (ticker_bundle.info or {}).get("yield")
+                _bd_yield = (_bd_raw_yield * 100.0
+                             if _bd_raw_yield is not None and _bd_raw_yield < 1
+                             else _bd_raw_yield)
+                _bd_dur = _bd_fund.empirical_duration if _bd_fund.ok else None
+
+                _bd1, _bd2, _bd3 = st.columns(3)
+                if _bd_dur is not None:
+                    _bd1.metric("Duration (measured)", f"{_bd_dur:.2f} years",
+                                help=bond_data.REPORTED_DURATION_UNUSABLE)
+                    _bd1.caption(
+                        f"A 100bp rate rise costs about {_bd_dur:.1f}%"
+                        + (f" · R² {_bd_fund.duration_r_squared:.2f}"
+                           if _bd_fund.duration_r_squared is not None else ""))
+                    _bd_var = bond_market.value_at_risk(_bd_price, _bd_dur)
+                    if _bd_var is not None:
+                        _bd2.metric("1-day VaR (95%)", f"{_bd_var:.2f}%",
+                                    help="From the MEASURED daily volatility "
+                                         "of the 10-year yield (6.25bp), not "
+                                         "an assumed one. A 2% figure is an "
+                                         "ANNUAL volatility and overstates a "
+                                         "one-day loss about 32-fold.")
+                        _bd_dv01 = bond_market.dv01(_bd_price, _bd_dur)
+                        if _bd_dv01 is not None:
+                            _bd2.caption(
+                                f"DV01 {_bd_dv01:.4f} per 100 of face — what "
+                                "one basis point costs in money.")
+                else:
+                    _bd1.metric("Duration (measured)", "Unavailable",
+                                help="Needs enough overlapping price history "
+                                     "against the 10-year yield.")
+                    _bd2.metric("1-day VaR (95%)", "Unavailable",
+                                help="Needs a measured duration.")
+
+                _bd_spread = bond_market.credit_spread(
+                    ticker_symbol, _bd_yield, _bd_dur, _bd_curve)
+                if _bd_spread.ok:
+                    _bd3.metric("Credit spread",
+                                f"{_bd_spread.spread_bps:+.0f}bp",
+                                help="Yield over the treasury curve at this "
+                                     "fund's OWN duration, not at a fixed "
+                                     "ten years.")
+                    _bd3.caption(
+                        f"vs {_bd_spread.matched_treasury_pct:.2f}% at "
+                        f"{_bd_spread.duration:.1f}y ({_bd_spread.method})")
+                else:
+                    _bd3.metric("Credit spread", "Unavailable",
+                                help="Needs a yield and a positive measured "
+                                     "duration inside the loaded curve.")
+                st.caption(bond_market.SPREAD_UNDERSTATED)
+
+                _bd_rows = bond_data.rating_rows(_bd_fund) if _bd_fund.ok else []
+                if _bd_rows:
+                    _bd_table = pd.DataFrame(
+                        [{"Rating": label, "Weight %": pct}
+                         for label, pct in _bd_rows])
+                    _bd_table["Weight %"] = pd.to_numeric(
+                        _bd_table["Weight %"], errors="coerce")
+                    st.dataframe(
+                        _bd_table, width="stretch", hide_index=True,
+                        column_config={"Weight %": st.column_config.NumberColumn(
+                            "Weight %", format="%.1f%%")},
+                        key="bond_ratings_table")
+                    _bd_ig = _bd_fund.investment_grade_pct
+                    _bd_note = (f"{_bd_ig:.1f}% investment grade (AAA-BBB)."
+                                if _bd_ig is not None else "")
+                    if _bd_fund.government_pct:
+                        _bd_note += (f" {_bd_fund.government_pct:.1f}% is "
+                                     "government-issued — a SEPARATE axis "
+                                     "from the letters, which sum to 100% on "
+                                     "their own.")
+                    st.caption(_bd_note)
+
+                _bd_credit = _bd_fund.ok and (_bd_fund.government_pct or 0) < 80
+                _bd_stress = bond_market.stress_test(_bd_dur, _bd_credit)
+                if _bd_stress:
+                    st.markdown("**Historical stress scenarios**")
+                    _bd_st = pd.DataFrame([
+                        {"Scenario": r.scenario.label,
+                         "Move": (f"{r.scenario.shift_bps:+.0f}bp "
+                                  f"{r.scenario.kind}"),
+                         "Impact %": r.impact_pct,
+                         "Note": r.detail}
+                        for r in _bd_stress])
+                    _bd_st["Impact %"] = pd.to_numeric(_bd_st["Impact %"],
+                                                       errors="coerce")
+                    st.dataframe(
+                        _bd_st, width="stretch", hide_index=True,
+                        column_config={"Impact %": st.column_config.NumberColumn(
+                            "Impact %", format="%+.2f%%")},
+                        key="bond_stress_table")
+                    st.caption(
+                        "A blank impact means the scenario does not apply: a "
+                        "government fund RALLIES when credit spreads blow "
+                        "out, so applying a widening to it would invert the "
+                        "answer rather than estimate it.")
 
             # --- historical extremes and sector stress -----------------
             _rk_ext = etf_risk.historical_extremes(df["Close"])

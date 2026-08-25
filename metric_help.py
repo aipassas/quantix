@@ -292,6 +292,13 @@ CHART_HELP: Dict[str, str] = {
         "inferred from its top ten. Look for a single wedge above a third of the fund: a "
         "'large blend' fund built that way behaves like a sector fund when that sector "
         "drops. Weights may not total 100% when cash sits outside these buckets."),
+    "treasury_yield_curve": (
+        "What the government pays to borrow at each maturity, today against a "
+        "month and a year ago. Read the SHAPE first: upward is ordinary, and a "
+        "long maturity yielding LESS than a short one is inverted — the best "
+        "recession signal there is. Then the SHIFT: the whole curve "
+        "moving together reprices rates; the ends moving apart reprices "
+        "growth."),
     "etf_fund_comparison": (
         "Each fund rebased to 100 on the first date they ALL have, so the lines compare "
         "one window rather than share prices that were never comparable. Look for a gap "
