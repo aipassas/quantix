@@ -1,3 +1,7 @@
 -r requirements.txt
 pytest>=8.0
 pandas_ta>=0.4.0b0
+# Coverage for the ETF QA pass (PHASE 1.7). Run:
+#   pytest --cov=etf_analysis --cov=etf_screener --cov=etf_technicals \
+#          --cov=etf_comparison --cov=asset_class --cov=asset_views
+pytest-cov>=7.0
