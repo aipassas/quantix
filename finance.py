@@ -83,6 +83,7 @@ import asset_class
 import asset_views
 import etf_analysis
 import etf_comparison
+import etf_pipeline
 import etf_technicals
 import etf_screener
 import streamlit.components.v1 as components
@@ -4522,6 +4523,84 @@ else:
                         _etf_shown = (f"{_etf_part.score:.1f}/10"
                                       if _etf_part.score is not None else "not scored")
                         st.caption(f"**{_etf_part.name}** — {_etf_shown}. {_etf_part.detail}")
+
+                    # --- identity, lifecycle and performance ----------
+                    # PHASE 1.1. Everything here is either absent from the
+                    # panels above (ISIN, inception, dividend cadence) or
+                    # deliberately recomputed, because the provider's own
+                    # inception, beta and return fields are each wrong in
+                    # a different way — see etf_pipeline's docstring.
+                    _ident = etf_pipeline.load_identity(ticker_symbol)
+                    if _ident.ok:
+                        st.markdown("---")
+                        st.subheader("Fund identity & record")
+                        _id1, _id2, _id3 = st.columns(3)
+                        _id1.metric(
+                            "ISIN", _ident.isin or "Not reported",
+                            help="The fund's international securities "
+                                 "identifier. Not every listing reports "
+                                 "one — QQQ and the European listings "
+                                 "checked do not.")
+                        _id2.metric(
+                            "Distributions",
+                            _ident.dividend_frequency or "None",
+                            help="Derived from the median gap between "
+                                 "payments rather than counting a "
+                                 "trailing year, which over-counts "
+                                 "whenever a boundary payment lands "
+                                 "inside the window.")
+                        _id3.metric(
+                            "Beta vs S&P 500",
+                            "Unavailable" if _ident.beta is None
+                            else f"{_ident.beta:.2f}",
+                            help="Regressed from daily returns, not taken "
+                                 "from the provider's own field — that "
+                                 "field reports 2.40 for a long treasury "
+                                 "fund whose measured beta is near zero.")
+                        if _ident.beta is not None and _ident.beta_r_squared is not None:
+                            _id3.caption(
+                                f"R² {_ident.beta_r_squared:.2f}"
+                                + (" — barely explains this fund's moves, "
+                                   "which is itself the point for "
+                                   "something held to diversify away from "
+                                   "equities."
+                                   if _ident.beta_r_squared < 0.2 else ""))
+                        st.caption(etf_pipeline.describe_inception(_ident))
+                        if _ident.beta_disagrees_with_reported:
+                            st.caption(
+                                f"The data source reports a beta of "
+                                f"{_ident.reported_beta:.2f} for this fund; "
+                                f"regressed from its own prices it is "
+                                f"{_ident.beta:.2f}. The measured figure is "
+                                "the one shown.")
+
+                        _perf_rows = [
+                            {"Window": w.label,
+                             "Return": (None if w.return_pct is None
+                                        else w.return_pct),
+                             "Basis": ("annualised" if w.annualised
+                                       else "total" if w.return_pct is not None
+                                       else "not enough history")}
+                            for w in _ident.performance]
+                        _perf_table = pd.DataFrame(_perf_rows)
+                        _perf_table["Return"] = pd.to_numeric(
+                            _perf_table["Return"], errors="coerce")
+                        st.dataframe(
+                            _perf_table, width="stretch", hide_index=True,
+                            column_config={"Return": st.column_config.NumberColumn(
+                                "Return", format="%.2f%%")},
+                            key="etf_performance_windows")
+                        st.caption(
+                            "Computed from the price series. The provider's "
+                            "own return fields mix units — its year-to-date "
+                            "figure is a percent while its three- and "
+                            "five-year figures are fractions, 100x apart in "
+                            "the same response. Windows past a year are "
+                            "annualised so they can be read beside the "
+                            "shorter ones.")
+                        st.caption(etf_pipeline.GEOGRAPHIC_ALLOCATION_UNAVAILABLE)
+                        if not etf_pipeline.morningstar_is_configured():
+                            st.caption(etf_pipeline.MORNINGSTAR_UNCONFIGURED)
         else:
             st.markdown("---")
             st.header("Financial Metrics Validation Report")
