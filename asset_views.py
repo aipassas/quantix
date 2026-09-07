@@ -76,7 +76,11 @@ HEADER_STATS: Dict[str, Tuple[str, ...]] = {
     # two calls the panel already makes, so the strip adds no fetch.
     asset_class.CRYPTO: ("price", "change_pct", "market_cap",
                          "volume_24h", "dominance_pct", "supply_mined_pct"),
-    asset_class.FOREX: ("price", "change_pct"),
+    # The header the task asks for: rate, 1-day change, 52-week range,
+    # rate differential and positioning. Bid/ask is deliberately absent
+    # — Yahoo's is inverted on four of fourteen majors.
+    asset_class.FOREX: ("price", "change_pct", "range_52w_pct",
+                        "rate_differential_pct", "carry_ratio"),
     # The header the task asks for: price, 1-day change, 52-week range,
     # inventory and curve shape. Inventory is crude-only, so it is a
     # stat that resolves for one commodity and reports "Not reported"
@@ -221,7 +225,13 @@ _TAB_OVERRIDES: Dict[str, Dict[int, str]] = {
     # engine. It is a real panel now — NVT against its own measured
     # history, stock-to-flow with a measured flow — so the label says so.
     asset_class.CRYPTO: {2: "On-Chain & Valuation", 5: "Peers (n/a)"},
-    asset_class.FOREX: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
+    # Tab 2 was "Valuation (n/a)" while policy rates were thought
+    # unsourced. The BIS publishes them free, so parity, carry and PPP
+    # are real panels now. Tab 5 stays "Peers (n/a)": a currency has no
+    # competitors to benchmark, and the correlated-pair read lives with
+    # the risk it describes rather than earning a tab label it would
+    # only half fill.
+    asset_class.FOREX: {2: "Rates & Carry", 5: "Peers (n/a)"},
     # Tab 2 was "Valuation (n/a)" while the forward curve was thought
     # unavailable. It is a real panel now — curve shape, implied carry,
     # roll yield and crude inventory.

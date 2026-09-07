@@ -92,6 +92,10 @@ import commodity_curve
 import commodity_data
 import commodity_risk
 import commodity_screener
+import forex_data
+import forex_risk
+import forex_screener
+import forex_valuation
 import crypto_data
 import crypto_market
 import crypto_risk
@@ -2210,6 +2214,125 @@ else:
         st.caption(commodity_data.POLYGON_UNCONFIGURED)
 
 
+# ==========================================
+# FOREX SCREENER (PHASE 5.5)
+# ==========================================
+st.markdown("---")
+st.header("Currency Screener", anchor="forex-screener")
+st.caption(
+    f"The {len(forex_data.PAIRS)} pairs this build carries — the "
+    "majors, the yen crosses carry trades actually use, and two euro "
+    "crosses. Rate differentials come from BIS central bank rates and "
+    "the purchasing-power gap from World Bank factors, both free and "
+    "keyless.")
+_fs_rows, _fs_err = forex_screener.load_universe()
+if _fs_err:
+    st.warning(_fs_err)
+if not _fs_rows:
+    st.info("The currency board could not be loaded right now.")
+else:
+    if "forex_criteria" not in st.session_state:
+        st.session_state["forex_criteria"] = [
+            {"metric": "rate_differential_pct", "operator": ">",
+             "threshold": 0.0}]
+
+    st.markdown("**Preset screens**")
+    _fs_cols = st.columns(len(forex_screener.PRESETS))
+    for _fs_i, _fs_preset in enumerate(forex_screener.PRESETS):
+        with _fs_cols[_fs_i]:
+            if st.button(_fs_preset.name, key=f"forex_preset_{_fs_i}",
+                         width="stretch", help=_fs_preset.description):
+                st.session_state["forex_criteria"] = [
+                    {"metric": c.metric, "operator": c.operator,
+                     "threshold": c.threshold}
+                    for c in _fs_preset.criteria]
+                st.rerun()
+
+    st.markdown("**Filters**")
+    _fs_remove = None
+    for _fs_i, _fs_c in enumerate(st.session_state["forex_criteria"]):
+        # Numbered labels, no Streamlit key: an unkeyed widget is
+        # identified by hashing (label, options, index, help) and
+        # label_visibility is NOT in that hash. The operator list also
+        # changes with the metric — is/is not against < > — so a stored
+        # value would raise the moment the metric changed.
+        _fs_suffix = "" if _fs_i == 0 else f" {_fs_i + 1}"
+        _fs_m, _fs_o, _fs_v, _fs_x = st.columns([3, 2, 3, 1])
+        with _fs_m:
+            _fs_keys = [m.key for m in forex_screener.METRICS]
+            _fs_metric = st.selectbox(
+                f"Currency metric{_fs_suffix}", _fs_keys,
+                index=_fs_keys.index(_fs_c["metric"])
+                if _fs_c["metric"] in _fs_keys else 0,
+                format_func=lambda k: forex_screener.METRICS_BY_KEY[k].label,
+                label_visibility="collapsed")
+        _fs_ops = forex_screener.operators_for(_fs_metric)
+        with _fs_o:
+            _fs_op = st.selectbox(
+                f"Currency op{_fs_suffix}", _fs_ops,
+                index=_fs_ops.index(_fs_c["operator"])
+                if _fs_c["operator"] in _fs_ops else 0,
+                label_visibility="collapsed")
+        with _fs_v:
+            if forex_screener.METRICS_BY_KEY[_fs_metric].kind == "text":
+                _fs_choices = list(forex_screener.currencies())
+                _fs_threshold = st.selectbox(
+                    f"Currency value{_fs_suffix}", _fs_choices,
+                    index=_fs_choices.index(str(_fs_c["threshold"]))
+                    if str(_fs_c["threshold"]) in _fs_choices else 0,
+                    label_visibility="collapsed")
+            else:
+                _fs_threshold = st.number_input(
+                    f"Currency threshold{_fs_suffix}",
+                    value=float(_fs_c["threshold"])
+                    if isinstance(_fs_c["threshold"], (int, float)) else 0.0,
+                    label_visibility="collapsed")
+        with _fs_x:
+            if st.button("✕", key=f"forex_remove_{_fs_i}",
+                         help="Remove this filter"):
+                _fs_remove = _fs_i
+        st.session_state["forex_criteria"][_fs_i] = {
+            "metric": _fs_metric, "operator": _fs_op,
+            "threshold": _fs_threshold}
+
+    if _fs_remove is not None:
+        st.session_state["forex_criteria"].pop(_fs_remove)
+        st.rerun()
+    if st.button("+ Add currency filter", key="forex_add_filter"):
+        st.session_state["forex_criteria"].append(
+            {"metric": "volatility_pct", "operator": "<", "threshold": 8.0})
+        st.rerun()
+
+    _fs_criteria = [forex_screener.Criterion(**c)
+                    for c in st.session_state["forex_criteria"]]
+    _fs_passed, _fs_unjudged = forex_screener.run(_fs_rows, _fs_criteria)
+    st.caption(" · ".join(forex_screener.describe(c) for c in _fs_criteria)
+               or "No filters — every pair passes.")
+
+    if not _fs_passed:
+        st.info(
+            "No pair meets every filter."
+            + (f" {_fs_unjudged} could not be judged because they do not "
+               f"report one of the filtered fields."
+               if _fs_unjudged else ""))
+    else:
+        st.success(
+            f"{len(_fs_passed)} of {len(_fs_rows)} pairs match."
+            + (f" {_fs_unjudged} could not be judged, which is not the "
+               f"same as failing." if _fs_unjudged else ""))
+        _fs_table = forex_screener.results_frame(
+            _fs_passed[:forex_screener.MAX_RESULTS_SHOWN])
+        st.dataframe(_fs_table, hide_index=True, width="stretch",
+                     column_config=forex_screener.column_config(),
+                     key="forex_results_table")
+        st.download_button(
+            "Download these results (CSV)",
+            _fs_table.to_csv(index=False).encode("utf-8"),
+            file_name=f"quantix_forex_screen_{datetime.date.today()}.csv",
+            mime="text/csv", key="forex_csv")
+        st.caption(forex_data.BID_ASK_UNUSABLE)
+
+
 
 st.header("ETF Screener")
 st.caption(
@@ -4222,6 +4345,16 @@ with symbol_header_container.container():
         # steps; the crypto strip shipped once with the first done and
         # the second forgotten, and printed "Not reported" for all of
         # them.
+        # A currency pair's stats come off the same PairRow the screener
+        # builds. Declaring a stat and SOURCING it are separate steps —
+        # the crypto strip shipped once with only the first done.
+        if _qs_fund is None and asset_class.supports(
+                asset_kind, asset_class.RATE_PARITY):
+            _qs_rows, _ = forex_screener.load_universe()
+            _qs_pair = forex_data.parse_pair(ticker_symbol)
+            if _qs_pair is not None:
+                _qs_fund = next((r for r in _qs_rows
+                                 if r.code == _qs_pair.code), None)
         if _qs_fund is None and asset_class.supports(asset_kind,
                                                      asset_class.CURVE):
             _qs_com = commodity_data.COMMODITIES_BY_SYMBOL.get(
@@ -5471,6 +5604,169 @@ else:
                     # corn page, and put a note about corn on a crude
                     # one.
                     st.caption(commodity_curve.SPEC_FORMULA_NOTE)
+
+
+            # A currency pair has no filings either. What it has is two
+            # policy rates and two price levels: the differential is
+            # what holding it pays, and purchasing power is the anchor
+            # it drifts around. That is this class's valuation read.
+            if asset_class.supports(asset_kind, asset_class.RATE_PARITY):
+                st.markdown("---")
+                st.header("Rates & Carry", anchor="forex-rates")
+
+                _fx_pair = forex_data.parse_pair(ticker_symbol)
+                if _fx_pair is None:
+                    st.info(forex_data.validate_pair_symbol(ticker_symbol))
+                else:
+                    _fx_rates = forex_data.load_policy_rates()
+                    _fx_ppp = forex_data.load_ppp()
+                    _fx_spot = (float(df['Close'].iloc[-1])
+                                if 'Close' in df and len(df) else None)
+                    _fx_vols = forex_risk.volatility_windows(
+                        df['Close'] if 'Close' in df else None)
+                    _fx_year = (next((w for w in _fx_vols
+                                      if w.days == 260 and w.ok), None)
+                                or next((w for w in _fx_vols if w.ok), None))
+                    _fx_vol = _fx_year.annualised_pct if _fx_year else None
+
+                    if not _fx_rates.ok:
+                        st.warning(_fx_rates.error)
+                    _fx_base_rate = _fx_rates.get(_fx_pair.base)
+                    _fx_quote_rate = _fx_rates.get(_fx_pair.quote)
+                    _fx_carry = forex_valuation.carry(_fx_pair, _fx_rates,
+                                                      _fx_vol)
+                    _fx_val = forex_valuation.ppp_valuation(
+                        _fx_pair, _fx_spot, _fx_ppp)
+                    _fx_fwds = forex_valuation.forward_curve(
+                        _fx_spot,
+                        _fx_base_rate.rate_pct if _fx_base_rate else None,
+                        _fx_quote_rate.rate_pct if _fx_quote_rate else None)
+
+                    _fx1, _fx2, _fx3 = st.columns(3)
+                    if _fx_carry.ok:
+                        _fx1.metric(
+                            "Interest carry",
+                            f"{_fx_carry.differential_pct:+.2f}%/yr",
+                            help="Base policy rate minus quote, from BIS "
+                                 "central bank rates. Positive means "
+                                 "holding the pair earns interest.")
+                        _fx1.caption(
+                            forex_valuation.describe_carry(_fx_carry))
+                    else:
+                        _fx1.metric("Interest carry", "Unavailable",
+                                    help="Needs a policy rate for both "
+                                         "currencies.")
+                        _fx1.caption(_fx_carry.error)
+                    if _fx_val.ok:
+                        _fx2.metric(
+                            "Against purchasing power",
+                            f"{_fx_val.deviation_pct:+.1f}%",
+                            help="Spot against the World Bank's PPP "
+                                 "rate. Deviations of twenty percent "
+                                 "are ordinary and can last a decade — "
+                                 "an anchor, not a trade.")
+                        _fx2.caption(f"**{_fx_val.verdict}.** "
+                                     + forex_valuation.describe_ppp(_fx_val))
+                    else:
+                        _fx2.metric("Against purchasing power",
+                                    "Unavailable",
+                                    help="Needs a PPP factor for both "
+                                         "currencies.")
+                        _fx2.caption(_fx_val.error)
+                    _fx_1y = next((f for f in _fx_fwds
+                                   if f.months == 12 and f.ok), None)
+                    if _fx_1y is not None:
+                        _fx3.metric(
+                            "1-year forward", f"{_fx_1y.rate:,.4f}",
+                            help="Derived from covered interest parity, "
+                                 "not quoted — no free source publishes "
+                                 "an FX forward curve.")
+                        _fx3.caption(forex_valuation.describe_forward(
+                            _fx_1y, _fx_pair))
+                    else:
+                        _fx3.metric("1-year forward", "Unavailable",
+                                    help="Needs a spot rate and both "
+                                         "policy rates.")
+
+                    _fx_ok_fwds = [f for f in _fx_fwds if f.ok]
+                    if _fx_ok_fwds:
+                        _fx_table = pd.DataFrame([{
+                            "Tenor": f.tenor,
+                            "Forward": f.rate,
+                            "Annualised vs spot %": f.premium_pct,
+                        } for f in _fx_ok_fwds])
+                        for _fx_c in ("Forward", "Annualised vs spot %"):
+                            _fx_table[_fx_c] = pd.to_numeric(
+                                _fx_table[_fx_c], errors="coerce")
+                        st.dataframe(
+                            _fx_table, hide_index=True, width="stretch",
+                            column_config={
+                                "Forward": st.column_config.NumberColumn(
+                                    "Forward", format="%.4f"),
+                                "Annualised vs spot %":
+                                    st.column_config.NumberColumn(
+                                        "Annualised vs spot %",
+                                        format="%+.2f%%",
+                                        help="A discount means the base "
+                                             "currency pays more, and "
+                                             "parity prices the forward "
+                                             "to hand that back.")},
+                            key="forex_forward_table")
+                    st.caption(forex_data.FORWARDS_ARE_DERIVED)
+                    st.caption(forex_valuation.PARITY_IS_NOT_A_FORECAST)
+
+                    # --- the calendar, because a rate can move ----------
+                    _fx_events, _fx_cal_err = forex_data.load_calendar()
+                    if _fx_cal_err:
+                        st.info(_fx_cal_err)
+                    else:
+                        _fx_mine = forex_data.events_for(
+                            _fx_events, _fx_pair, high_impact_only=True)
+                        _fx_decisions = [e for e in _fx_mine
+                                         if e.is_rate_decision]
+                        st.markdown("**This week's high-impact events**")
+                        if _fx_decisions:
+                            st.warning(
+                                "A rate decision is scheduled for "
+                                + ", ".join(sorted({e.currency
+                                                    for e in _fx_decisions}))
+                                + " this week, so the carry above rests "
+                                  "on a differential that is about to "
+                                  "change.")
+                        if not _fx_mine:
+                            st.caption(
+                                "No high-impact release scheduled for "
+                                f"{_fx_pair.base} or {_fx_pair.quote} "
+                                "this week.")
+                        else:
+                            _fx_ev_table = pd.DataFrame([{
+                                "When": (e.when.strftime("%a %d %b %H:%M")
+                                         if e.when is not None else ""),
+                                "Currency": e.currency,
+                                "Event": e.title,
+                                "Forecast": e.forecast or "—",
+                                "Previous": e.previous or "—",
+                            } for e in _fx_mine])
+                            st.dataframe(_fx_ev_table, hide_index=True,
+                                         width="stretch",
+                                         key="forex_calendar_table")
+                        st.caption(forex_data.CALENDAR_IS_THIRD_PARTY)
+
+                    _fx_card = forex_valuation.scorecard(
+                        _fx_carry, _fx_val, _fx_fwds)
+                    with st.expander(
+                            f"Valuation scorecard — "
+                            f"{_fx_card.dimensions_scored} of "
+                            f"{_fx_card.dimensions_possible} dimensions "
+                            f"measured", expanded=False):
+                        for _fx_line in _fx_card.lines:
+                            st.markdown(
+                                f"**{_fx_line.label}: {_fx_line.value}** "
+                                f"({_fx_line.verdict})")
+                            if _fx_line.detail:
+                                st.caption(_fx_line.detail)
+                        st.caption(forex_data.BID_ASK_UNUSABLE)
+                        st.caption(forex_data.BROKER_FEEDS_UNCONFIGURED)
 
 
         else:
@@ -7018,6 +7314,129 @@ else:
                 if _cm_sigma:
                     st.caption(_cm_sigma)
                 st.caption(commodity_risk.BASIS_RISK_NOTE)
+
+
+        # --- forex: volatility, tail, carry unwind and neighbours -------
+        # Beside the fund, bond, crypto and commodity blocks, gated the
+        # same way. The carry-unwind read is the forex-specific half:
+        # being PAID to hold a position and losing more in a day than
+        # you ever gain in one is the shape that empties out when risk
+        # appetite turns.
+        if asset_class.supports(asset_kind, asset_class.RATE_PARITY):
+            st.markdown("---")
+            st.header("Currency Risk & Carry Unwind", anchor="forex-risk")
+
+            _fr_pair = forex_data.parse_pair(ticker_symbol)
+            _fr_closes = df['Close'] if 'Close' in df else None
+            # Its own five years: skew needs a long window, and the
+            # sidebar's range is usually one year.
+            _fr_hist, _ = load_price_history_only(
+                ticker_symbol,
+                start=(datetime.date.today()
+                       - datetime.timedelta(days=365 * 5)),
+                end=datetime.date.today())
+            _fr_long = (_fr_hist['Close']
+                        if _fr_hist is not None and not _fr_hist.empty
+                        and 'Close' in _fr_hist else _fr_closes)
+
+            _fr_windows = forex_risk.volatility_windows(_fr_long)
+            _fr_cols = st.columns(len(_fr_windows) + 1)
+            for _fr_col, _fr_w in zip(_fr_cols, _fr_windows):
+                _fr_col.metric(
+                    f"{_fr_w.label} volatility",
+                    f"{_fr_w.annualised_pct:.2f}%" if _fr_w.ok
+                    else "Unavailable",
+                    help=forex_risk.ANNUALISATION_NOTE if _fr_w.ok else
+                         (f"Needs {_fr_w.days} daily bars; this history "
+                          f"has {_fr_w.observations}."))
+            _fr_var = forex_risk.value_at_risk(_fr_long)
+            if _fr_var.ok:
+                _fr_cols[-1].metric(
+                    _fr_var.label, f"{_fr_var.parametric_pct:.2f}%",
+                    help="The parametric figure, with the historical one "
+                         "in the caption. They are shown together "
+                         "because currency returns are not normal, so "
+                         "where the historical figure is larger the "
+                         "normal assumption is understating the tail.")
+                _fr_cols[-1].caption(forex_risk.describe_var(_fr_var))
+            else:
+                _fr_cols[-1].metric("1-day VaR (95%)", "Unavailable",
+                                    help=_fr_var.error or "Needs history.")
+            st.caption(forex_risk.ANNUALISATION_NOTE)
+            st.caption(forex_risk.NO_TYPICAL_BAND)
+
+            # --- the tail, and what it means for a funded position ------
+            _fr_tail = forex_risk.tail_profile(_fr_long)
+            _fr_rates = forex_data.load_policy_rates()
+            _fr_carry = (forex_valuation.carry(_fr_pair, _fr_rates)
+                         if _fr_pair is not None else None)
+            _fr_diff = (_fr_carry.differential_pct
+                        if _fr_carry is not None and _fr_carry.ok else None)
+            _fr_t1, _fr_t2 = st.columns(2)
+            if _fr_tail.ok:
+                _fr_t1.metric(
+                    "Return skew", f"{_fr_tail.skew:+.2f}",
+                    help="Negative means losses have arrived larger than "
+                         "gains. Shown with the extremes beside it "
+                         "because skew is dominated by single days — "
+                         "EUR/GBP reads +2.15 purely on one bad print.")
+                _fr_t1.caption(
+                    f"Worst day {_fr_tail.worst_day_pct:.2f}%, best day "
+                    f"{_fr_tail.best_day_pct:+.2f}%, over "
+                    f"{_fr_tail.observations} observations.")
+            else:
+                _fr_t1.metric("Return skew", "Unavailable",
+                              help=_fr_tail.error or "Needs history.")
+            if _fr_pair is not None:
+                _fr_label, _fr_detail = forex_risk.unwind_risk(
+                    _fr_pair, _fr_diff, _fr_tail)
+                _fr_t2.metric(
+                    "Carry-unwind profile", _fr_label,
+                    help="Two conditions have to hold together: the "
+                         "position must be PAID to exist, and its losses "
+                         "must run larger than its gains. Either alone "
+                         "is unremarkable.")
+                _fr_t2.caption(_fr_detail)
+
+            # --- neighbours ---------------------------------------------
+            if _fr_pair is not None:
+                _fr_peers = forex_risk.peers_for(_fr_pair)
+                _fr_prices = etf_comparison.load_prices(
+                    tuple([ticker_symbol] + [s for _, s in _fr_peers]),
+                    period="2y")[0]
+                _fr_corrs = []
+                for _fr_lab, _fr_sym in _fr_peers:
+                    if (_fr_prices is not None
+                            and ticker_symbol in _fr_prices
+                            and _fr_sym in _fr_prices):
+                        _fr_corrs.append(forex_risk.correlate(
+                            _fr_prices[ticker_symbol], _fr_prices[_fr_sym],
+                            _fr_lab, _fr_sym))
+                    else:
+                        _fr_corrs.append(forex_risk.Correlation(
+                            _fr_lab, _fr_sym,
+                            error="No overlapping history was returned."))
+                if _fr_corrs:
+                    st.markdown("**Pairs sharing a leg with this one**")
+                    _fr_ccols = st.columns(len(_fr_corrs))
+                    for _fr_col, _fr_c in zip(_fr_ccols, _fr_corrs):
+                        _fr_col.metric(
+                            _fr_c.label,
+                            f"{_fr_c.coefficient:+.2f}" if _fr_c.ok
+                            else "Unavailable",
+                            help="Correlation of daily returns over the "
+                                 "days both pairs traded.")
+                        _fr_col.caption(
+                            f"{_fr_c.strength} · {_fr_c.observations} days"
+                            if _fr_c.ok else _fr_c.error)
+                    st.caption(forex_risk.concentration_note(_fr_corrs))
+
+            with st.expander("Risks this build does not score",
+                             expanded=False):
+                st.caption(forex_risk.IMPLIED_VOL_UNAVAILABLE)
+                st.caption(forex_risk.INTERVENTION_UNAVAILABLE)
+                st.caption(forex_risk.POLITICAL_RISK_UNAVAILABLE)
+                st.caption(forex_data.BID_ASK_UNUSABLE)
 
     with tab_risk:
         # --- QUANTITATIVE CALCULATIONS ---

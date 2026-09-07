@@ -147,6 +147,22 @@ STATS: Tuple[StatSpec, ...] = (
              note="What rolling a long position earns or costs a year "
                   "before any price move. Negative in contango, because "
                   "each contract is replaced by a dearer one."),
+
+    # --- forex stats ----------------------------------------------------
+    # These read off a forex_screener.PairRow, the same object the
+    # screener builds. Bid/ask is deliberately absent: Yahoo quotes an
+    # ask BELOW the bid on four of fourteen majors, so a spread here
+    # would be a fabricated number dressed as a measured one.
+    StatSpec("rate_differential_pct", "Carry", "forex", "percent",
+             note="Base policy rate minus quote, from BIS central bank "
+                  "rates. Positive means holding the pair earns "
+                  "interest. The rates are monthly and end-of-period, "
+                  "so a central bank may have moved since."),
+    StatSpec("carry_ratio", "Carry/Vol", "forex", "number",
+             note="The differential divided by the pair's annual "
+                  "volatility. A 3% carry on a pair that swings 9% a "
+                  "year is a different proposition from the same carry "
+                  "on one that swings 25%."),
 )
 STATS_BY_KEY: Dict[str, StatSpec] = {s.key: s for s in STATS}
 
@@ -216,6 +232,16 @@ _CRYPTO_ATTRS: Dict[str, str] = {
 
 
 # Commodity stats read off a commodity_screener.CommodityRow.
+# Forex stats read off a forex_screener.PairRow. The 52-week-range stat
+# is NOT here: it is shared with commodities and resolves through the
+# map below, which is why PairRow names that field the same way
+# CommodityRow does.
+_FOREX_ATTRS: Dict[str, str] = {
+    "rate_differential_pct": "rate_differential_pct",
+    "carry_ratio": "carry_ratio",
+}
+
+
 _COMMODITY_ATTRS: Dict[str, str] = {
     "range_52w_pct": "range_position_pct",
     "curve_shape": "curve_shape",
@@ -244,6 +270,12 @@ def raw_value(spec: StatSpec, quote, standardized, fund=None) -> Any:
             if fund is None or not getattr(fund, "ok", False):
                 return None
             return getattr(fund, _FUND_ATTRS.get(spec.key, spec.key), None)
+        if spec.source == "forex":
+            # `fund` carries whichever class-specific object the page
+            # loaded; for a currency pair that is a PairRow.
+            if fund is None:
+                return None
+            return getattr(fund, _FOREX_ATTRS.get(spec.key, spec.key), None)
         if spec.source == "commodity":
             # `fund` carries whichever class-specific object the page
             # loaded; for a futures contract that is a CommodityRow.

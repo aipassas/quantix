@@ -66,6 +66,7 @@ def test_every_spec_reads_a_field_that_exists(qs):
     import commodity_screener
     import crypto_data
     import etf_analysis
+    import forex_screener
 
     std_fields = {f.name for f in dataclasses.fields(fs.StandardizedFinancials)}
     quote_fields = {f.name for f in dataclasses.fields(wp.QuoteSnapshot)}
@@ -86,11 +87,25 @@ def test_every_spec_reads_a_field_that_exists(qs):
         {f.name for f in dataclasses.fields(commodity_screener.CommodityRow)}
         | {n for n in dir(commodity_screener.CommodityRow)
            if not n.startswith("_")})
+    # A sixth source: forex stats read off a forex_screener.PairRow.
+    pair_names = ({f.name for f in dataclasses.fields(forex_screener.PairRow)}
+                  | {n for n in dir(forex_screener.PairRow)
+                     if not n.startswith("_")})
     for spec in qs.STATS:
+        if spec.source == "forex":
+            attr = qs._FOREX_ATTRS.get(spec.key, spec.key)
+            assert attr in pair_names, f"{spec.key} -> {attr} is not on PairRow"
+            continue
         if spec.source == "commodity":
             attr = qs._COMMODITY_ATTRS.get(spec.key, spec.key)
             assert attr in commodity_names, (
                 f"{spec.key} -> {attr} is not on CommodityRow")
+            # The 52-week-range stat is shared with forex, so the same
+            # attribute has to exist on BOTH rows or it resolves for one
+            # class and reads "Not reported" for the other.
+            if spec.key == "range_52w_pct":
+                assert attr in pair_names, (
+                    f"{spec.key} -> {attr} is shared but missing on PairRow")
             continue
         if spec.source == "crypto":
             attr = qs._CRYPTO_ATTRS.get(spec.key, spec.key)

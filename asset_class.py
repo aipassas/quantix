@@ -75,10 +75,11 @@ SIMULATION = "simulation"          # Monte Carlo over returns
 HOLDINGS = "holdings"              # what a basket contains
 ON_CHAIN = "on_chain"              # settlement activity on a public ledger
 CURVE = "curve"                    # a term structure across delivery dates
+RATE_PARITY = "rate_parity"        # valuation from the two legs' interest rates
 
 ALL_CAPABILITIES: Tuple[str, ...] = (
     FUNDAMENTALS, DCF, SECTOR_PERCENTILE, PEERS, DIVIDENDS,
-    TECHNICALS, RISK, SIMULATION, HOLDINGS, ON_CHAIN, CURVE,
+    TECHNICALS, RISK, SIMULATION, HOLDINGS, ON_CHAIN, CURVE, RATE_PARITY,
 )
 
 
@@ -118,9 +119,12 @@ SPECS: Tuple[AssetClassSpec, ...] = (
         "BTC-USD"),
     AssetClassSpec(
         FOREX, "Currency pair",
-        (TECHNICALS, RISK, SIMULATION),
+        (TECHNICALS, RISK, SIMULATION, RATE_PARITY),
         "A currency pair is a relative price between two currencies. It "
-        "has no earnings, no balance sheet and no dividend.",
+        "has no earnings, no balance sheet and no dividend. What it has "
+        "instead is two policy rates and two price levels: the "
+        "differential between them is what holding the pair pays, and "
+        "purchasing power is the anchor it drifts around.",
         "EURUSD=X"),
     AssetClassSpec(
         FUTURE, "Futures contract",
@@ -184,8 +188,19 @@ MISSING_SOURCES: Dict[str, Tuple[str, ...]] = {
     INDEX: ("treasury yields arrive as an index level (^TNX); "
             "yield-to-maturity, duration and convexity need FRED or a "
             "bond data provider",),
-    FOREX: ("interest-rate parity needs policy rates for both currencies; "
-            "no rates provider is wired up",),
+    FOREX: ("bid and ask — Yahoo quotes an ask BELOW the bid on four of "
+            "fourteen majors and prices every yen cross about 1.1% away "
+            "from its own midpoint, so no spread is reported and the "
+            "mid price is used",
+            "implied volatility and the volatility smile, which need FX "
+            "option quotes no free source publishes; realised "
+            "volatility is computed from prices instead",
+            "quoted forward rates — forwards here are DERIVED from "
+            "covered interest parity, which is an arbitrage identity "
+            "rather than a forecast",
+            "intervention and political risk, which have no per-currency "
+            "feed and would be opinion wearing the authority of a "
+            "measurement",),
 }
 
 

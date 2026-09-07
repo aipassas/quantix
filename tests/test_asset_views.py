@@ -169,10 +169,25 @@ def test_a_class_with_no_issuer_offers_no_issuer_derived_stat():
 
 
 def test_a_class_with_nothing_but_a_price_gets_nothing_but_a_price():
-    """Forex, indices and unrecognised instruments have no term
-    structure and no ledger, so there is genuinely nothing to add."""
-    for klass in (asset_class.FOREX, asset_class.INDEX, asset_class.UNKNOWN):
+    """An index is a calculated level and an unrecognised instrument is
+    a mystery: neither has a term structure, a ledger or a policy rate,
+    so there is genuinely nothing to add.
+
+    Forex used to be in this list. It came out when the BIS turned out
+    to publish policy rates free — a currency pair has two of them, and
+    the differential is real measured data about that instrument.
+    """
+    for klass in (asset_class.INDEX, asset_class.UNKNOWN):
         assert set(av.header_stats(klass)) <= {"price", "change_pct"}, klass
+
+
+def test_a_currency_pair_gets_its_rate_differential_in_the_header():
+    stats = set(av.header_stats(asset_class.FOREX))
+    assert {"rate_differential_pct", "carry_ratio"} <= stats
+    assert not stats & ISSUER_DERIVED
+    # Bid/ask is deliberately absent: Yahoo quotes an ask BELOW the bid
+    # on four of fourteen majors, so a spread here would be fabricated.
+    assert not [s for s in stats if "bid" in s or "ask" in s or "spread" in s]
 
 
 def test_a_futures_contract_gets_its_term_structure_in_the_header():
