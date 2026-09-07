@@ -96,6 +96,7 @@ import forex_data
 import forex_risk
 import forex_screener
 import forex_valuation
+import voice_search
 import crypto_data
 import crypto_market
 import crypto_risk
@@ -1381,6 +1382,72 @@ if "screener_universe_text" not in st.session_state:
 
 if "screener_criteria" not in st.session_state:
     st.session_state["screener_criteria"] = [{"metric": "pe_ratio", "operator": "<", "threshold": 25.0}]
+
+# --- Ask in words (Voice Search) ---------------------------------------
+# Maps a spoken or typed sentence onto the SAME ScreenCriterion objects
+# the builder below edits and Run Screen executes — no second query
+# engine. The parse is deterministic over a closed vocabulary of
+# nineteen metrics, six operators and eleven sectors; see voice_search.
+with st.expander("Ask in words", expanded=False):
+    st.caption(
+        "Say or type a screen in plain English and it fills the filters "
+        "below. " + voice_search.describe_vocabulary())
+
+    _vs_col_q, _vs_col_go = st.columns([5, 1])
+    with _vs_col_q:
+        _vs_query = st.text_input(
+            "Screen in words", key="voice_query",
+            placeholder=voice_search.EXAMPLE_QUERIES[0],
+            label_visibility="collapsed",
+            help="A metric and a number — \"P/E under 20\" — or a "
+                 "sector. Anything it cannot turn into a filter is "
+                 "reported rather than quietly ignored.")
+    with _vs_col_go:
+        _vs_apply = st.button("Search", key="voice_apply", width="stretch")
+
+    # The dictation button lives in a component iframe: that is the only
+    # place a page script can run, and Streamlit's iframe carries
+    # "microphone" in its allow attribute (probed). It writes the
+    # transcript into the box above and clicks Search.
+    components.html(
+        voice_search.listener_html(query_key="voice_query",
+                                   apply_key="voice_apply",
+                                   palette=_theme),
+        height=voice_search.component_height())
+    st.caption(voice_search.SPEECH_SENDS_AUDIO_OFF_DEVICE)
+
+    if _vs_apply and (_vs_query or "").strip():
+        _vs_result = voice_search.parse(_vs_query)
+        st.session_state["voice_last_result"] = {
+            "summary": _vs_result.summary,
+            "ok": _vs_result.ok,
+            "criteria": [{"metric": c.metric, "operator": c.operator,
+                          "threshold": c.threshold}
+                         for c in _vs_result.criteria],
+        }
+        if _vs_result.ok:
+            # Straight into the builder's own state, so the filters
+            # below show exactly what was understood and Run Screen
+            # behaves identically to a hand-built screen.
+            st.session_state["screener_criteria"] = [
+                dict(c) for c in st.session_state["voice_last_result"]["criteria"]]
+        st.rerun()
+
+    _vs_last = st.session_state.get("voice_last_result")
+    if _vs_last:
+        if _vs_last["ok"]:
+            st.success(_vs_last["summary"])
+            st.caption(
+                "The filters below now hold that screen — edit them by "
+                "hand if the parse missed something, then press Run "
+                "Screen.")
+        else:
+            st.warning(_vs_last["summary"])
+
+    with st.popover("Examples", width="stretch"):
+        for _vs_example in voice_search.EXAMPLE_QUERIES:
+            st.markdown(f"· {_vs_example}")
+
 
 # Deferred clear of the save-name box, executed before that widget renders.
 # A compose box still holding what you just saved reads as "nothing
