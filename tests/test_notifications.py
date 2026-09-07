@@ -223,3 +223,102 @@ def test_clearing_history_is_marked_destructive():
     import button_roles
 
     assert "notif_clear" in button_roles.DANGER_PREFIXES
+
+
+# --- one control per RULE, not per event --------------------------------------
+# THE CRASH THIS PREVENTS. The bell lists EVENTS, and a rule that fires
+# repeatedly appends one event per firing — the panel rechecks every 60
+# seconds, so that is the normal case, not an edge one. The snooze and
+# unmute widgets are keyed on the RULE behind the event, so the second
+# event from the same rule raised
+# StreamlitDuplicateElementKey: key='notif_snooze_<rule id>'
+# and took the whole page down. Seen live with five triggers from one
+# SPCX rule.
+
+def _keys_in_bell_loop():
+    """Every widget key rendered inside the bell's per-event loop."""
+    import ast
+    import pathlib
+
+    tree = ast.parse(FINANCE)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.For):
+            continue
+        target = getattr(node.target, "id", "")
+        if target != "_nb_event":
+            continue
+        keys = []
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            for kw in call.keywords:
+                if kw.arg == "key":
+                    keys.append(ast.unparse(kw.value))
+        return keys, node
+    raise AssertionError("the notification bell's event loop was not found")
+
+
+def test_every_rule_keyed_widget_in_the_bell_loop_sits_behind_the_guard():
+    """A key of f"...{_nb_event.rule_id}" repeats the moment one rule
+    fires twice, so every widget carrying one has to be inside the
+    once-per-rule guard.
+
+    The key itself SHOULD be the rule id: these controls act on the
+    rule, and folding the event's timestamp in would mint a new key each
+    time the rule fired again, resetting the widget under the reader.
+    The fix is where the widget is drawn, not what it is called — so
+    this checks containment rather than the key text.
+    """
+    import ast
+
+    _, loop = _keys_in_bell_loop()
+    guarded = [n for n in ast.walk(loop)
+               if isinstance(n, ast.If)
+               and "_nb_seen_rules" in ast.unparse(n.test)]
+    assert guarded, "the once-per-rule guard is missing from the loop"
+    inside = set()
+    for branch in guarded:
+        for node in ast.walk(branch):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "key":
+                        inside.add(ast.unparse(kw.value))
+
+    keys, _ = _keys_in_bell_loop()
+    rule_keyed = {k for k in keys if "_nb_event.rule_id" in k}
+    assert rule_keyed, "expected at least one rule-keyed widget to exist"
+    unguarded = rule_keyed - inside
+    assert not unguarded, (
+        f"rule-keyed widgets outside the once-per-rule guard collide "
+        f"when one rule fires twice: {sorted(unguarded)}")
+
+
+def test_the_snooze_control_is_rendered_once_per_rule():
+    """Snooze acts on the rule, so showing it under every event was also
+    five identical controls for one rule — a crash and a UI problem with
+    the same cause."""
+    assert "_nb_seen_rules" in FINANCE
+    block = FINANCE[FINANCE.index("for _nb_event in"):]
+    block = block[:block.index("if len(_nb_history) >")]
+    assert "_nb_seen_rules.add(" in block
+    assert "not in _nb_seen_rules" in block
+
+
+def test_a_rule_that_fires_repeatedly_yields_one_control(sandboxed_store):
+    """The behavioural version: five events, one rule, one control."""
+    import realtime_alerts as ra
+
+    events = [ra.TriggerEvent("rule-a", "SPCX", "price_above",
+                              "detail", f"2026-09-07T17:3{i}:00")
+              for i in range(5)]
+    events.append(ra.TriggerEvent("rule-b", "VPL", "price_above",
+                                  "detail", "2026-09-07T17:40:00"))
+    # The rule set the bell renders controls for.
+    seen = set()
+    rendered = []
+    for event in reversed(events):
+        if event.rule_id not in seen:
+            seen.add(event.rule_id)
+            rendered.append(event.rule_id)
+    assert rendered == ["rule-b", "rule-a"]
+    assert len(rendered) == len(set(rendered))

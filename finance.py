@@ -4262,6 +4262,15 @@ with symbol_header_container.container():
             else:
                 _nb_unread_ids = {id(e) for e in _nb_unread}
                 _nb_rules = {r.id: r for r in st.session_state.get("rt_alert_rules", [])}
+                # Snooze and unmute act on the RULE, and the list is of
+                # EVENTS — a rule that fires repeatedly appends one event
+                # per firing, which with a 60-second recheck is the normal
+                # case. Rendering the control under every event both
+                # crashed the page (two widgets keyed on the same rule id
+                # is a StreamlitDuplicateElementKey) and showed the reader
+                # five identical "Snooze SPCX" boxes for one rule. It is
+                # drawn once, under the newest event for each rule.
+                _nb_seen_rules: set = set()
                 for _nb_event in list(reversed(_nb_history))[:notifications.DROPDOWN_LIMIT]:
                     _nb_new = "**NEW** · " if id(_nb_event) in _nb_unread_ids else ""
                     st.markdown(
@@ -4273,7 +4282,9 @@ with symbol_header_container.container():
                     # Snooze acts on the RULE behind the event. The event
                     # has already happened; muting the rule is what stops
                     # it firing again.
-                    if _nb_event.rule_id in _nb_rules:
+                    if (_nb_event.rule_id in _nb_rules
+                            and _nb_event.rule_id not in _nb_seen_rules):
+                        _nb_seen_rules.add(_nb_event.rule_id)
                         _nb_until = notifications.mutes().get(_nb_event.rule_id)
                         if _nb_until:
                             st.caption(notifications.describe_mute(_nb_until))
