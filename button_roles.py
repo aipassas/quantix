@@ -57,6 +57,7 @@ DANGER_INLINE: Tuple[str, ...] = (
     "crypto_remove_",      # remove a crypto screener criterion
     "commodity_remove_",   # remove a commodity screener criterion
     "forex_remove_",       # remove a currency screener criterion
+    "journal_remove_",     # delete an investment journal entry
     "collab_rm_",          # remove a note's tag
     "collab_del_",         # delete a team note
     "scenario_delete_",    # delete a saved scenario

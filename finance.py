@@ -96,6 +96,7 @@ import forex_data
 import forex_risk
 import forex_screener
 import forex_valuation
+import investment_journal
 import voice_search
 import crypto_data
 import crypto_market
@@ -4759,6 +4760,223 @@ else:
                                 "Change": _hc_delta_text(_hc_m),
                             })
                         st.dataframe(pd.DataFrame(_hc_table), width="stretch", hide_index=True)
+
+        # ==========================================
+        # INVESTMENT JOURNAL (why you decided, and what happened)
+        # ==========================================
+        # Beside Team Notes and on the same tab, for the same reason: the
+        # decision is about THIS stock. Private to the signed-in user,
+        # where a team note is shared.
+        st.markdown("---")
+        with st.expander(f"Investment Journal — {ticker_symbol}",
+                         expanded=False):
+            if "journal_store" not in st.session_state:
+                st.session_state["journal_store"] = investment_journal.load_store()
+            _ij_store = st.session_state["journal_store"]
+
+            if _ij_store.corrupt:
+                st.error(
+                    "The journal file on this instance can't be read, so "
+                    "nothing is shown and nothing will be saved — writing "
+                    "now would overwrite entries still in the file. Move "
+                    f"or delete {investment_journal.STORE_FILENAME} and "
+                    "reload.")
+            else:
+                st.caption(
+                    "Log why you decided something, then come back to it. "
+                    + investment_journal.NOT_A_SCOREBOARD)
+
+                # Deferred clear: popping the widget's own key inside the
+                # button handler does nothing, so a flag is set and the
+                # key assigned at the top of the next run.
+                if st.session_state.pop("journal_clear", False):
+                    st.session_state["journal_reasoning"] = ""
+
+                _ij_a, _ij_b, _ij_c = st.columns([1, 1, 1])
+                _ij_action = _ij_a.selectbox(
+                    "Decision", investment_journal.ACTIONS,
+                    key="journal_action",
+                    help="What you did, or decided not to do. Watch is "
+                         "not a bet and is not scored against the price.")
+                _ij_conviction = _ij_b.selectbox(
+                    "Conviction", investment_journal.CONVICTION_LEVELS,
+                    index=1, key="journal_conviction",
+                    help=investment_journal.CONVICTION_IS_THE_LEARNABLE_PART)
+                _ij_date = _ij_c.date_input(
+                    "Decided on", value=datetime.date.today(),
+                    max_value=datetime.date.today(), key="journal_date",
+                    help="The day the decision applies to, which may not "
+                         "be the day you are writing it down.")
+                _ij_reasoning = st.text_area(
+                    "Reasoning", key="journal_reasoning", height=110,
+                    placeholder="What made this look right today — the "
+                                "thesis, the trigger, what would change "
+                                "your mind.",
+                    help="Required. An entry without it records that you "
+                         "acted but not why, which is the half worth "
+                         "coming back to.")
+
+                if st.button("Save entry", key="journal_save",
+                             type="primary"):
+                    _ij_price = None
+                    try:
+                        _ij_price = float((ticker_bundle.info or {}).get(
+                            "regularMarketPrice") or 0) or None
+                    except Exception:              # noqa: BLE001
+                        _ij_price = None
+                    _ij_store, _ij_err = investment_journal.add_entry(
+                        _ij_store, ticker_symbol, _ij_action, _ij_reasoning,
+                        conviction=_ij_conviction,
+                        decided_on=(_ij_date if isinstance(
+                            _ij_date, datetime.date) else None),
+                        price_at_decision=_ij_price)
+                    if _ij_err:
+                        st.warning(_ij_err)
+                    else:
+                        _ij_save_err = investment_journal.save_store(_ij_store)
+                        if _ij_save_err:
+                            st.error(_ij_save_err)
+                        else:
+                            st.session_state["journal_store"] = _ij_store
+                            st.session_state["journal_clear"] = True
+                            st.rerun()
+
+                # --- what has happened since ------------------------------
+                _ij_mine = _ij_store.for_ticker(ticker_symbol)
+                if not _ij_mine:
+                    st.caption(
+                        f"No entries for {ticker_symbol} yet. The first "
+                        "one is worth writing before you act, not after.")
+                else:
+                    _ij_oldest = min(
+                        (e.decided_date for e in _ij_mine
+                         if e.decided_date), default=datetime.date.today())
+                    _ij_hist, _ = load_price_history_only(
+                        ticker_symbol,
+                        start=_ij_oldest - datetime.timedelta(days=7),
+                        end=datetime.date.today())
+                    _ij_prices = (_ij_hist["Close"]
+                                  if _ij_hist is not None
+                                  and not _ij_hist.empty
+                                  and "Close" in _ij_hist else None)
+                    _ij_bench_hist, _ = load_price_history_only(
+                        benchmark_symbol,
+                        start=_ij_oldest - datetime.timedelta(days=7),
+                        end=datetime.date.today())
+                    _ij_bench = (_ij_bench_hist["Close"]
+                                 if _ij_bench_hist is not None
+                                 and not _ij_bench_hist.empty
+                                 and "Close" in _ij_bench_hist else None)
+
+                    _ij_outcomes = {}
+                    _ij_shown = []
+                    for _ij_e in _ij_mine:
+                        _ij_o = investment_journal.measure_outcome(
+                            _ij_e, _ij_prices, _ij_bench, benchmark_symbol)
+                        _ij_outcomes[_ij_e.id] = _ij_o
+                        if _ij_o.mature:
+                            _ij_shown.append(_ij_e.id)
+
+                    # Seeing a mature outcome freezes that entry's
+                    # conviction — the record only tests anything if the
+                    # confidence predates the result.
+                    if _ij_shown:
+                        _ij_store, _ij_changed = (
+                            investment_journal.mark_outcome_seen(
+                                _ij_store, _ij_shown))
+                        if _ij_changed:
+                            investment_journal.save_store(_ij_store)
+                            st.session_state["journal_store"] = _ij_store
+                            _ij_mine = _ij_store.for_ticker(ticker_symbol)
+
+                    st.markdown(f"**{len(_ij_mine)} entr"
+                                f"{'y' if len(_ij_mine) == 1 else 'ies'} "
+                                f"for {ticker_symbol}**")
+                    for _ij_e in _ij_mine:
+                        _ij_o = _ij_outcomes.get(_ij_e.id)
+                        st.markdown(
+                            f"**{_ij_e.action}** · {_ij_e.decided_on} · "
+                            f"{_ij_e.conviction} conviction")
+                        st.caption(_rt_md_escape_dollar(_ij_e.reasoning))
+                        if _ij_o is not None:
+                            st.caption(
+                                _rt_md_escape_dollar(
+                                    investment_journal.describe_outcome(_ij_o)))
+                        if _ij_e.review_note:
+                            st.caption(
+                                "Reviewed: "
+                                + _rt_md_escape_dollar(_ij_e.review_note))
+                        if _ij_e.locked:
+                            st.caption(_ij_e.lock_reason)
+
+                        _ij_r1, _ij_r2 = st.columns([5, 1])
+                        _ij_review = _ij_r1.text_input(
+                            f"Review {_ij_e.id}",
+                            key=f"journal_review_{_ij_e.id}",
+                            placeholder="Looking back — what do you see "
+                                        "now that you did not then?",
+                            label_visibility="collapsed")
+                        if _ij_r2.button("Save", key=f"journal_rev_save_{_ij_e.id}"):
+                            if (_ij_review or "").strip():
+                                _ij_store, _ij_rev_err = (
+                                    investment_journal.add_review(
+                                        _ij_store, _ij_e.id, _ij_review))
+                                if _ij_rev_err:
+                                    st.warning(_ij_rev_err)
+                                else:
+                                    investment_journal.save_store(_ij_store)
+                                    st.session_state["journal_store"] = _ij_store
+                                    st.rerun()
+                        if st.button("Delete entry",
+                                     key=f"journal_remove_{_ij_e.id}"):
+                            _ij_store = investment_journal.delete_entry(
+                                _ij_store, _ij_e.id)
+                            investment_journal.save_store(_ij_store)
+                            st.session_state["journal_store"] = _ij_store
+                            st.rerun()
+                        st.divider()
+
+                # --- the pattern, across every ticker ---------------------
+                if _ij_store.entries:
+                    with st.expander("What your record shows", expanded=False):
+                        _ij_all_outcomes = dict(_ij_outcomes) if _ij_mine else {}
+                        _ij_rows = investment_journal.conviction_pattern(
+                            _ij_store.entries, _ij_all_outcomes)
+                        st.caption(
+                            investment_journal.describe_pattern(_ij_rows))
+                        _ij_table = pd.DataFrame([{
+                            "Conviction": r.conviction,
+                            "Decisions": r.decisions,
+                            "Matured": r.matured,
+                            "Went as expected %": r.hit_rate_pct,
+                        } for r in _ij_rows])
+                        _ij_table["Went as expected %"] = pd.to_numeric(
+                            _ij_table["Went as expected %"], errors="coerce")
+                        st.dataframe(
+                            _ij_table, hide_index=True, width="stretch",
+                            column_config={
+                                "Went as expected %":
+                                    st.column_config.NumberColumn(
+                                        "Went as expected %",
+                                        format="%.0f%%",
+                                        help="Blank until a band has at "
+                                             "least "
+                                             f"{investment_journal.MIN_DECISIONS_FOR_PATTERN}"
+                                             " matured decisions — a hit "
+                                             "rate over a handful is a "
+                                             "coin flip with a percentage "
+                                             "sign."),
+                                "Matured": st.column_config.NumberColumn(
+                                    "Matured", format="%d",
+                                    help="Decisions at least "
+                                         f"{investment_journal.MIN_DAYS_FOR_OUTCOME}"
+                                         " days old. Younger ones are not "
+                                         "counted: a week's move says "
+                                         "nothing about a thesis.")},
+                            key="journal_pattern_table")
+                        st.caption(
+                            investment_journal.CONVICTION_IS_THE_LEARNABLE_PART)
+
 
         # ==========================================
         # TEAM NOTES (per-ticker thread with @-mentions)
