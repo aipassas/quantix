@@ -81,6 +81,7 @@ import notifications
 import loading_states
 import asset_class
 import asset_views
+import earnings_materials
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -8058,6 +8059,112 @@ else:
             for _ac_gap in asset_class.missing_sources(asset_kind):
                 st.caption(f"Not sourced in this build: {_ac_gap}.")
         else:
+            # ==========================================
+            # EARNINGS MATERIALS & SEARCH
+            # ==========================================
+            # The backlog called this "Earnings Call Transcripts". It is
+            # not named that here because the transcripts do not exist:
+            # sampling 25 large caps, every one filed a text earnings
+            # exhibit, one filed its prepared remarks, and NONE contained
+            # analyst Q&A. The call is not a filed document. Naming the
+            # panel for the transcript would promise the Q&A and deliver
+            # a press release, so it is named for what it holds and the
+            # gap is stated in the panel rather than discovered.
+            #
+            # Fetching is behind a button on purpose: eight quarters is
+            # roughly twenty throttled SEC requests, which must not run
+            # on every rerun of a page that reruns constantly.
+            with st.expander(f"Earnings Materials — {ticker_symbol}", expanded=False):
+                st.caption(earnings_materials.TRANSCRIPTS_UNAVAILABLE)
+
+                _em_state_key = f"earnings_docs_{ticker_symbol}"
+                _em_col_a, _em_col_b = st.columns([1, 2])
+                with _em_col_a:
+                    _em_quarters = st.number_input(
+                        "Quarters to load",
+                        min_value=1,
+                        max_value=earnings_materials.EARNINGS_MATERIALS.max_quarters,
+                        value=earnings_materials.EARNINGS_MATERIALS.default_quarters,
+                        step=1,
+                        help=("Each quarter is one filing index plus one request "
+                              "per exhibit, throttled to stay inside the SEC's "
+                              "rate limit. Loading is cached afterwards."),
+                    )
+                with _em_col_b:
+                    st.write("")
+                    _em_load = st.button(
+                        "Load filings from SEC",
+                        key="earnings_load",
+                        help="Fetches the earnings 8-K exhibits from SEC EDGAR.",
+                    )
+
+                if _em_load:
+                    with st.spinner(f"Reading {int(_em_quarters)} quarter(s) of "
+                                    f"{ticker_symbol} filings from SEC EDGAR…"):
+                        _em_docs, _em_warnings = earnings_materials.load_documents(
+                            ticker_symbol, int(_em_quarters))
+                    st.session_state[_em_state_key] = (_em_docs, _em_warnings)
+
+                _em_loaded = st.session_state.get(_em_state_key)
+                if _em_loaded is None:
+                    st.info(
+                        "Nothing loaded yet. Choose how many quarters to read and "
+                        "press **Load filings from SEC** — the documents are then "
+                        "searchable across every quarter at once."
+                    )
+                else:
+                    _em_docs, _em_warnings = _em_loaded
+                    for _em_warning in _em_warnings:
+                        st.warning(_em_warning)
+                    if _em_docs:
+                        st.caption(earnings_materials.coverage_note(_em_docs))
+
+                        for _em_doc in _em_docs:
+                            st.markdown(
+                                f"- [{_em_doc.label}]({_em_doc.url}) — "
+                                f"{_em_doc.word_count:,} words"
+                            )
+
+                        _em_query = st.text_input(
+                            "Search these filings",
+                            key="earnings_query",
+                            placeholder="e.g. tariff, data center, guidance",
+                            help=("Whole-word and case-insensitive. Searching "
+                                  "\"AI\" will not match \"said\"."),
+                        )
+                        if _em_query.strip():
+                            _em_result = earnings_materials.search(_em_docs, _em_query)
+                            if not _em_result.total_hits:
+                                st.info(
+                                    f"No mention of \"{_em_result.query}\" in "
+                                    f"{_em_result.documents_searched} document(s). "
+                                    "That is a real absence, not a failed search."
+                                )
+                            else:
+                                _em_capped = (
+                                    " Capped at "
+                                    f"{earnings_materials.EARNINGS_MATERIALS.max_hits_per_document}"
+                                    " per document."
+                                    if any(
+                                        sum(1 for h in _em_result.hits if h.document is d)
+                                        >= earnings_materials.EARNINGS_MATERIALS.max_hits_per_document
+                                        for d in _em_docs)
+                                    else ""
+                                )
+                                st.success(
+                                    f"{_em_result.total_hits} mention(s) of "
+                                    f"\"{_em_result.query}\" across "
+                                    f"{_em_result.documents_matched} of "
+                                    f"{_em_result.documents_searched} document(s)."
+                                    f"{_em_capped}"
+                                )
+                                for _em_hit in _em_result.hits:
+                                    st.markdown(
+                                        f"**{_em_hit.document.label}** — "
+                                        f"[open filing]({_em_hit.document.url})"
+                                    )
+                                    st.markdown(f"> {_em_hit.snippet}")
+
             # ==========================================
             # PROFESSIONAL MULTI-STAGE DCF ENGINE
             # ==========================================

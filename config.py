@@ -1033,6 +1033,54 @@ MONTE_CARLO = MonteCarloConfig()
 WALK_FORWARD = WalkForwardConfig()
 WATCHLIST_PANEL = WatchlistPanelConfig()
 BACKTEST_COST = BacktestCostConfig()
+@dataclass(frozen=True)
+class EarningsMaterialsConfig:
+    """Earnings documents filed with the SEC, searchable across quarters.
+
+    THE TICKET ASKED FOR CALL TRANSCRIPTS AND THEY ARE NOT OBTAINABLE.
+    Measured on 2026-09-07 across the latest earnings 8-K of 25 large
+    caps: 25 of 25 filed a text earnings exhibit, 1 of 25 filed its
+    prepared remarks (HUM), and 0 of 25 contained analyst Q&A. The call
+    is not a filed document; verbatim transcripts are a licensed product
+    with no free tier, and this build does not register accounts. So the
+    feature is named for what it holds and says so on screen.
+
+    THE USER-AGENT IS NOT COSMETIC. data.sec.gov refuses requests that do
+    not declare a real contact, and its fair-access policy asks for no
+    more than ten requests a second. `user_agent` is a config constant so
+    a licensee sets their own address rather than shipping someone
+    else's, and `request_interval_seconds` keeps the app inside the rate
+    limit even when a twelve-quarter fetch runs uncached.
+    """
+
+    # SEC fair-access policy. Format is "Name contact@example.com".
+    user_agent: str = "Quantix Research quantix-research@example.com"
+
+    # 0.12s between requests is ~8/second, inside the SEC's stated ten.
+    request_interval_seconds: float = 0.12
+
+    # One quarter costs one index request plus one per exhibit, so eight
+    # quarters is roughly twenty requests — two years of history for a
+    # few seconds on a cold cache.
+    default_quarters: int = 8
+    max_quarters: int = 20
+
+    # Below this, an "exhibit" is a cover page or a stub, not a document
+    # worth searching. Real releases measured 10,456 to 113,204 chars.
+    min_document_chars: int = 1500
+
+    # A financial supplement is a table; a narrative release is prose.
+    # Measured: JPM's supplement is ~34% digits, its narrative ~11%.
+    supplement_digit_share: float = 0.22
+
+    snippet_context_chars: int = 220
+
+    # A supplement can contain hundreds of "revenue"s. The reader needs
+    # to know the document is full of them, not scroll through each.
+    max_hits_per_document: int = 8
+
+
+EARNINGS_MATERIALS = EarningsMaterialsConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
