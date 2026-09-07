@@ -62,6 +62,7 @@ DANGER_INLINE: Tuple[str, ...] = (
     "collab_del_",         # delete a team note
     "scenario_delete_",    # delete a saved scenario
     "api_key_revoke_",     # revoke an issued API key
+    "webhook_remove_",     # delete a webhook endpoint and its history
     # The strategy builder renders its condition rows from one helper
     # called twice, so its remove buttons carry the caller's prefix
     # rather than a literal one. Both are listed; the AST test resolves

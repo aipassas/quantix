@@ -83,6 +83,7 @@ import asset_class
 import asset_views
 import earnings_materials
 import walkthroughs
+import webhooks
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -1717,6 +1718,29 @@ if screener_run_clicked:
         st.session_state["screener_results_state"] = {"results": _screener_results, "criteria": _screener_criteria_tuple}
         log_event(logger, logging.INFO, "user.screener_run", universe_size=len(_screener_universe), criteria_count=len(_screener_criteria_tuple))
 
+        # screener.match fires on the RUN, not on every rerun that redraws
+        # the results — the block below reads them back from session_state
+        # on every pass, and dispatching there would re-notify an
+        # automation on each redraw. Only matches are sent: an automation
+        # subscribing to this wants the hits, and "0 matched" is not an
+        # event anyone builds a workflow on.
+        try:
+            _wh_matches = tuple(r.ticker for r in _screener_results if r.passed_all)
+            if _wh_matches:
+                _wh_sc = webhooks.load_store()
+                if not _wh_sc.corrupt and webhooks.endpoints_for(_wh_sc, "screener.match"):
+                    _wh_sc, _ = webhooks.dispatch(_wh_sc, "screener.match",
+                        webhooks.screener_payload(
+                            "Stock Screener", _wh_matches,
+                            criteria_summary="; ".join(
+                                f"{c.metric} {c.operator} {c.threshold}"
+                                for c in _screener_criteria_tuple),
+                        ))
+                    webhooks.save_store(_wh_sc)
+                    st.session_state["webhook_store"] = _wh_sc
+        except Exception:
+            log_exception(logger, "webhooks.screener_dispatch_failed", section="webhooks")
+
 _screener_state = st.session_state.get("screener_results_state")
 if _screener_state:
     _screener_results = _screener_state["results"]
@@ -3001,6 +3025,7 @@ def _render_realtime_alerts_fragment():
     _rt_newly_triggered = rt_detect_new_triggers(_rt_results, st.session_state.get("rt_alert_prev_active", {}))
 
     if _rt_newly_triggered:
+        _rt_webhook_batch = []
         _rt_rules_by_id = {r.id: r for r in _rt_rules}
         _rt_now_iso = datetime.datetime.now().isoformat(timespec="seconds")
         for _rt_rid in _rt_newly_triggered:
@@ -3022,7 +3047,34 @@ def _render_realtime_alerts_fragment():
                 detail=_rt_result.detail, triggered_at=_rt_now_iso,
             ))
             log_event(logger, logging.INFO, "user.realtime_alert_triggered", ticker=_rt_rule.ticker, trigger_type=_rt_rule.trigger_type)
+            _rt_webhook_batch.append((_rt_rule, _rt_result))
         rt_save_store(st.session_state["rt_alert_rules"], st.session_state["rt_alert_history"])
+
+        # Push the same edge-triggered events to any registered webhook.
+        # Collected and dispatched once rather than inside the loop so the
+        # store is read and written a single time. Note a SNOOZED rule
+        # never reaches here — it `continue`s above — so muting an alert
+        # mutes it everywhere, which is what "mute" has to mean.
+        #
+        # Wrapped whole: this fragment polls constantly and a user's
+        # automation server being unreachable must never take the page
+        # down or stop the toast, the history and the bell.
+        if _rt_webhook_batch:
+            try:
+                _wh_live = webhooks.load_store()
+                if not _wh_live.corrupt and webhooks.endpoints_for(_wh_live, "alert.triggered"):
+                    for _wh_rule, _wh_res in _rt_webhook_batch:
+                        _wh_live, _ = webhooks.dispatch(_wh_live, "alert.triggered", {
+                            "rule_id": _wh_rule.id,
+                            "ticker": _wh_rule.ticker,
+                            "trigger_type": _wh_rule.trigger_type,
+                            "detail": _wh_res.detail,
+                            "triggered_at": _rt_now_iso,
+                        })
+                    webhooks.save_store(_wh_live)
+                    st.session_state["webhook_store"] = _wh_live
+            except Exception:
+                log_exception(logger, "webhooks.inapp_dispatch_failed", section="webhooks")
 
     st.session_state["rt_alert_prev_active"] = _rt_active_now
 
@@ -3542,6 +3594,160 @@ with st.sidebar.expander("API Keys", expanded=False):
         f"`python3 api_server.py` — it listens on {API_KEYS.default_host}:{API_KEYS.default_port} "
         f"and `GET /v1` lists every endpoint."
     )
+
+
+# --- Sidebar: Webhooks ---
+# The other half of the programmatic-access story from API Keys: keys let
+# something PULL from Quantix, webhooks let Quantix PUSH into it.
+#
+# Most of webhooks.py is destination checking rather than JSON posting,
+# and the two reasons are both measured, not assumed. A hostname
+# blocklist does not work (localtest.me and 127.0.0.1.nip.io are public
+# DNS names resolving to 127.0.0.1), and urllib follows redirects by
+# default, so a validated public URL that answers 302 -> 127.0.0.1
+# reaches loopback and returns the body with status 200.
+with st.sidebar.expander("Webhooks", expanded=False):
+    if "webhook_store" not in st.session_state:
+        st.session_state["webhook_store"] = webhooks.load_store()
+    _wh_store = st.session_state["webhook_store"]
+
+    st.caption(
+        "Webhooks push Quantix events into a CRM, an automation runner or your own "
+        "script. Where an API key lets something **pull** from Quantix, a webhook "
+        "lets Quantix **push** to it."
+    )
+
+    if _wh_store.corrupt:
+        st.error(
+            "The webhook store exists but could not be read, so nothing is listed "
+            "and Quantix will not overwrite it — that file holds your signing "
+            "secrets. Fix or move webhooks_store.json, then reload."
+        )
+    else:
+        _wh_fresh = st.session_state.get("_webhook_secret")
+        if _wh_fresh:
+            st.success("Endpoint added — copy the signing secret now.")
+            st.code(_wh_fresh, language=None)
+            st.warning(
+                "Your receiver needs this to verify that a delivery really came from "
+                "Quantix. It is not shown again here, though unlike an API key it IS "
+                "stored on disk — signing requires the secret itself, so "
+                "webhooks_store.json is a credential file."
+            )
+            if st.button("I've copied it", key="webhook_secret_dismiss"):
+                st.session_state.pop("_webhook_secret", None)
+                st.rerun()
+
+        if _wh_store.endpoints:
+            st.markdown("**Your endpoints**")
+            for _wh_ep in _wh_store.endpoints:
+                _wh_cols = st.columns([6, 1])
+                with _wh_cols[0]:
+                    _wh_state = "Active" if _wh_ep.active else "Paused"
+                    st.markdown(f"{_wh_state} · `{_wh_ep.host}`")
+                    st.caption(" · ".join([
+                        ", ".join(_wh_ep.events),
+                        _wh_ep.description or "no description",
+                    ]))
+                    if _wh_ep.disabled_reason:
+                        st.caption(f"⚠ {_wh_ep.disabled_reason}")
+                    _wh_log = webhooks.deliveries_for(_wh_store, _wh_ep.id)
+                    if _wh_log:
+                        _wh_last = _wh_log[0]
+                        st.caption(
+                            f"Last attempt {_wh_last.attempted_at[:16]} — "
+                            f"{_wh_last.summary}"
+                        )
+                with _wh_cols[1]:
+                    if st.button("✕", key=f"webhook_remove_{_wh_ep.id}",
+                                 help="Delete this endpoint and its delivery history."):
+                        _wh_store = webhooks.remove_endpoint(_wh_store, _wh_ep.id)
+                        st.session_state["webhook_store"] = _wh_store
+                        webhooks.save_store(_wh_store)
+                        st.rerun()
+
+                _wh_act = st.columns(2)
+                with _wh_act[0]:
+                    _wh_label = "Pause" if _wh_ep.active else "Resume"
+                    if st.button(_wh_label, key=f"webhook_toggle_{_wh_ep.id}"):
+                        _wh_store = webhooks.set_active(
+                            _wh_store, _wh_ep.id, not _wh_ep.active)
+                        st.session_state["webhook_store"] = _wh_store
+                        webhooks.save_store(_wh_store)
+                        st.rerun()
+                with _wh_act[1]:
+                    if st.button("Send test", key=f"webhook_test_{_wh_ep.id}",
+                                 help="Deliver a sample event so you can confirm your "
+                                      "receiver accepts it and the signature checks out."):
+                        _wh_store, _wh_res = webhooks.dispatch(
+                            _wh_store, _wh_ep.events[0], {
+                                "test": True,
+                                "note": "Sample delivery from the Quantix webhooks panel.",
+                            })
+                        st.session_state["webhook_store"] = _wh_store
+                        webhooks.save_store(_wh_store)
+                        for _wh_r in _wh_res:
+                            if _wh_r.ok:
+                                st.success(f"Delivered — {_wh_r.summary}")
+                            else:
+                                st.warning(f"Failed — {_wh_r.summary}")
+        else:
+            st.caption("No endpoints yet.")
+
+        st.markdown("---")
+        if st.session_state.pop("_webhook_clear_form", False):
+            st.session_state["webhook_url"] = ""
+            st.session_state["webhook_description"] = ""
+
+        _wh_url = st.text_input(
+            "Endpoint URL", key="webhook_url",
+            placeholder="https://example.com/hooks/quantix",
+            help="Quantix POSTs signed JSON here. Redirects are not followed — "
+                 "register the final URL.",
+        )
+        _wh_events = st.multiselect(
+            "Events", options=list(webhooks.EVENTS.keys()),
+            default=list(webhooks.DEFAULT_EVENTS), key="webhook_events",
+        )
+        for _wh_e in _wh_events:
+            st.caption(f"`{_wh_e}` — {webhooks.EVENTS[_wh_e]}")
+        _wh_desc = st.text_input(
+            "Description", key="webhook_description",
+            placeholder="e.g. n8n alert workflow",
+        )
+        _wh_private = st.checkbox(
+            "This is a service on my own machine or local network",
+            key="webhook_allow_private",
+            help="Quantix refuses private, loopback and link-local destinations by "
+                 "default — a public hostname that resolves inward is how a webhook "
+                 "gets used to reach things that were never meant to be reachable. "
+                 "Tick this only for a receiver you run yourself. Link-local "
+                 "addresses stay blocked either way: 169.254.169.254 is the cloud "
+                 "metadata service.",
+        )
+        if st.button("Add endpoint", type="primary", key="webhook_add"):
+            _wh_store, _wh_new, _wh_err = webhooks.add_endpoint(
+                _wh_store, _wh_url, tuple(_wh_events),
+                description=_wh_desc, allow_private=bool(_wh_private),
+            )
+            if _wh_err:
+                st.warning(_wh_err)
+            else:
+                st.session_state["webhook_store"] = _wh_store
+                webhooks.save_store(_wh_store)
+                st.session_state["_webhook_secret"] = _wh_new.secret
+                st.session_state["_webhook_clear_form"] = True
+                st.rerun()
+
+        with st.expander("How to verify a delivery", expanded=False):
+            st.caption(
+                "Every delivery carries the event name, a unique delivery id, a "
+                "timestamp and an HMAC-SHA256 signature over "
+                "\"<timestamp>.<raw body>\". The timestamp is inside the signed "
+                "string on purpose: a signature over the body alone stays valid "
+                "forever, so anyone who captures one delivery could replay it."
+            )
+            st.code(webhooks.receiver_example(), language="python")
 
 # --- Sidebar Controls ---
 # TradingView-style control rail: only Ticker/Date (used on every

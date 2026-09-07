@@ -132,7 +132,8 @@ def check(evaluator: Optional[Callable] = None,
 def run(post: bool, poster: Optional[Callable] = None,
         evaluator: Optional[Callable] = None,
         rules_loader: Optional[Callable] = None,
-        path: Optional[Path] = None) -> Tuple[int, List[str]]:
+        path: Optional[Path] = None,
+        webhook_poster: Optional[Callable] = None) -> Tuple[int, List[str]]:
     """Check, and post if asked. Returns (posted_count, messages)."""
     alerts, current_active, notes = check(
         evaluator=evaluator, rules_loader=rules_loader, path=path)
@@ -162,6 +163,27 @@ def run(post: bool, poster: Optional[Callable] = None,
 
     import slack_notify
 
+    # Webhooks are dispatched alongside Slack, not instead of it, and
+    # their outcome does NOT govern the active set. That asymmetry is
+    # deliberate. Slack is one channel whose failure means nobody was
+    # told, so it must retry. A user webhook is one of many destinations
+    # with its own per-endpoint failure accounting — counter, delivery
+    # log, auto-disable — so holding the whole active set back because a
+    # CRM is down would re-post every alert to Slack on the next run
+    # until that CRM came back, which is exactly the "muted within a
+    # day" failure this runner exists to avoid.
+    webhook_count, webhook_notes = _dispatch_webhooks(alerts, poster=webhook_poster)
+    messages.extend(webhook_notes)
+
+    if not slack_notify.is_configured():
+        # Slack is optional. When it is not set up at all, a webhook
+        # delivery is the only channel there is, so it has to be what
+        # advances the state — otherwise every run would re-deliver the
+        # same alerts to the webhooks forever.
+        if webhook_count:
+            save_active(current_active, path)
+        return webhook_count, messages
+
     ok, error = slack_notify.post_alerts(alerts, poster=poster)
     if ok:
         # Advance state ONLY after a successful post. On failure the
@@ -173,6 +195,46 @@ def run(post: bool, poster: Optional[Callable] = None,
 
     messages.append(f"FAILED to post — {error}")
     return 0, messages
+
+
+def _dispatch_webhooks(alerts: List[Tuple[str, str, str]],
+                       poster: Optional[Callable] = None) -> Tuple[int, List[str]]:
+    """Send each new alert to every subscribed webhook endpoint.
+
+    Never raises: an unreadable or absent webhook store must not stop
+    the Slack post, and a user's automation server being down is not an
+    alerting failure.
+    """
+    messages: List[str] = []
+    try:
+        import webhooks
+    except Exception:
+        return 0, messages
+    try:
+        store = webhooks.load_store()
+        if store.corrupt:
+            return 0, ["Webhook store is unreadable; no webhooks were sent."]
+        if not webhooks.endpoints_for(store, "alert.triggered"):
+            return 0, messages
+
+        delivered = 0
+        for ticker, trigger_type, detail in alerts:
+            store, results = webhooks.dispatch(store, "alert.triggered", {
+                "ticker": ticker,
+                "trigger_type": trigger_type,
+                "detail": detail,
+            }, poster=poster)
+            delivered += sum(1 for r in results if r.ok)
+        webhooks.save_store(store)
+        failed = sum(1 for d in store.deliveries[-len(alerts) or None:] if not d.ok)
+        messages.append(f"Delivered {delivered} webhook call(s).")
+        if failed:
+            messages.append(f"{failed} webhook call(s) failed — see the delivery log.")
+        return delivered, messages
+    except Exception:
+        log_exception(logger, "alert_watch.webhook_dispatch_failed",
+                      section="alert_watch")
+        return 0, ["Webhook dispatch failed; alerts were still evaluated."]
 
 
 def main() -> int:

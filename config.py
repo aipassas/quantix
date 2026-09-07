@@ -1081,6 +1081,66 @@ class EarningsMaterialsConfig:
 
 
 EARNINGS_MATERIALS = EarningsMaterialsConfig()
+@dataclass(frozen=True)
+class WebhooksConfig:
+    """User-registered outbound webhooks.
+
+    THIS IS NOT THE SLACK WEBHOOK WITH A TEXT BOX. SlackConfig above
+    describes ONE destination, pinned to hooks.slack.com, whose URL is a
+    credential read from secrets and never typed into the UI. This is
+    many destinations, arbitrary hosts, URLs entered by the user and
+    written to disk — which inverts the threat model and is why
+    webhooks.py is mostly destination checking rather than JSON posting.
+
+    PRIVATE DESTINATIONS ARE REFUSED BY DEFAULT AND OPTED INTO PER
+    ENDPOINT. On one person's laptop, letting the app POST to their own
+    localhost grants them nothing curl would not, and blocking it would
+    break the likely real use — an n8n or Home Assistant instance on the
+    same machine. The protection is for the HOSTED case that branding.py
+    exists to serve: a licensee running Quantix for other people must
+    not let one of them probe the host's internal network or read cloud
+    metadata at 169.254.169.254. Set allow_private_endpoints False to
+    remove the opt-in entirely for such a deployment.
+
+    THE SIGNING SECRET IS ON DISK, UNAVOIDABLY. api_keys stores only
+    sha256(key) because it only verifies; this must SIGN, and a hash
+    cannot sign. webhooks_store.json is therefore a credential file and
+    the panel says so rather than implying the secret is protected the
+    way an API key is.
+    """
+
+    store_filename: str = "webhooks_store.json"
+
+    # Enough for a CRM, an automation runner and a couple of scripts.
+    # A cap at all exists because every alert evaluation walks this list.
+    max_endpoints: int = 10
+
+    # A receiver that has not answered in this long is not going to.
+    request_timeout_seconds: int = 10
+
+    # A dead endpoint retried forever costs a timeout on every alert
+    # evaluation and tells the user nothing. Disable it and say why.
+    disable_after_failures: int = 5
+
+    # Bounded so the store cannot grow without limit, but deep enough to
+    # still hold the failures when someone comes looking a week later.
+    max_delivery_log: int = 200
+
+    # A screen over a large universe can match hundreds; the payload
+    # carries the count alongside the truncated list.
+    max_matches_in_payload: int = 50
+
+    # A receiver answering with a gigabyte must not hold the process.
+    max_response_bytes: int = 64 * 1024
+
+    # Operator switch for a hosted deployment: False removes the
+    # per-endpoint opt-in for private addresses altogether.
+    allow_private_endpoints: bool = True
+
+    user_agent: str = "Quantix-Webhook/1.0"
+
+
+WEBHOOKS = WebhooksConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

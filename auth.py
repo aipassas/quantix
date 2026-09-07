@@ -126,6 +126,13 @@ SHARED_STORES: Tuple[str, ...] = (
     # Which alert rules were breaching on the last headless check. Shared
     # for the same reason as the digest: the cron process has no session.
     "slack_alert_state.json",
+    # Registered webhook endpoints, their signing secrets and the
+    # delivery log. Shared for the same reason again: alert_watch.py
+    # delivers them under cron with no Streamlit session, so a
+    # per-user store would be invisible to the process that has to
+    # read it. Note this file is a CREDENTIAL file — unlike api_keys,
+    # which stores only hashes, signing requires the secret itself.
+    "webhooks_store.json",
 )
 
 
