@@ -82,6 +82,7 @@ import loading_states
 import asset_class
 import asset_views
 import earnings_materials
+import walkthroughs
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -3308,7 +3309,7 @@ with st.sidebar.expander("Help & Support", expanded=profile_menu.help_requested(
     _sp_query = st.text_input(
         "Search help", key="support_query",
         placeholder="e.g. sharpe, sign in, alerts, missing data",
-        help=f"Searches {len(_sp_index)} articles: the FAQ plus every metric and chart explanation in the app.",
+        help=f"Searches {len(_sp_index)} articles: the how-to walkthroughs, the FAQ, and every metric and chart explanation in the app.",
     )
     if _sp_query.strip():
         _sp_hits = support_search(_sp_query, _sp_index)
@@ -3329,6 +3330,36 @@ with st.sidebar.expander("Help & Support", expanded=profile_menu.help_requested(
             if _sp_art is not None:
                 with st.expander(_sp_art.title, expanded=False):
                     st.markdown(_rt_md_escape_dollar(_sp_art.body))
+
+    # --- Feature walkthroughs ---------------------------------------
+    # The backlog asked for a library of how-to VIDEOS. These are
+    # written instead, and walkthroughs.py records why: I cannot record
+    # video, an embed pointing at a URL that does not exist is a dead
+    # player, and a "coming soon" card is a promise with no date behind
+    # it. The same reasoning that kept a live-chat widget out of this
+    # panel. Every entry carries a video slot, so adding a URL makes a
+    # player appear above its steps without any rewrite here.
+    st.markdown("---")
+    st.markdown("**Feature walkthroughs**")
+    _wt_all = walkthroughs.all_walkthroughs()
+    if not walkthroughs.with_video():
+        st.caption(walkthroughs.VIDEOS_NOT_RECORDED)
+
+    _wt_titles = [w.title for w in _wt_all]
+    _wt_choice = st.selectbox(
+        "Pick a task", _wt_titles, key="walkthrough_pick",
+        help="Step-by-step instructions for each major feature.",
+    )
+    _wt_selected = next((w for w in _wt_all if w.title == _wt_choice), None)
+    if _wt_selected is not None:
+        if _wt_selected.has_video:
+            st.video(_wt_selected.video_url)
+        st.caption(f"Where: {_wt_selected.where}")
+        st.markdown(_rt_md_escape_dollar(_wt_selected.summary))
+        for _wt_i, _wt_step in enumerate(_wt_selected.steps, start=1):
+            _wt_control = f"  \n*{_wt_step.control}*" if _wt_step.control else ""
+            st.markdown(_rt_md_escape_dollar(
+                f"**{_wt_i}.** {_wt_step.text}{_wt_control}"))
 
     st.markdown("---")
     st.markdown("**Still stuck? Send a report**")

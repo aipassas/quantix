@@ -322,7 +322,20 @@ def build_index() -> Tuple[HelpArticle, ...]:
     Assembled at call time from metric_help rather than copied, so a
     definition edited for a tooltip is the same text search returns.
     """
+    import walkthroughs
+
     articles: List[HelpArticle] = list(FAQ)
+    # The how-to library joins this corpus rather than starting a second
+    # search over a second set of documents. A user asking "how do I
+    # export" must find the walkthrough in the same box that answers
+    # "what is WACC"; two boxes would mean the answer depends on which
+    # one you happened to type into. Imported here rather than at module
+    # scope so the dependency runs support -> walkthroughs one way only.
+    for walkthrough in walkthroughs.all_walkthroughs():
+        articles.append(HelpArticle(
+            id=walkthrough.id, title=walkthrough.title, body=walkthrough.body,
+            category="How-to", keywords=walkthrough.keywords,
+        ))
     for key, text in GLOSSARY.items():
         articles.append(HelpArticle(
             id=f"metric_{key}", title=title_for(key), body=text,

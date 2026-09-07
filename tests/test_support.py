@@ -45,9 +45,18 @@ class _FakeSender:
 
 def test_index_covers_the_faq_and_every_existing_help_entry():
     """Assembled from metric_help rather than re-typed — one fact, one
-    source, so a tooltip and its help article cannot disagree."""
+    source, so a tooltip and its help article cannot disagree.
+
+    The how-to walkthroughs are assembled in the same way and for the
+    same reason: one search over one corpus, so "how do I export" and
+    "what is WACC" are answered by the same box. The count stays exact
+    rather than becoming a >= so that a source silently dropping out of
+    the index still fails here."""
+    import walkthroughs
+
     index = build_index()
-    assert len(index) == len(FAQ) + len(GLOSSARY) + len(CHART_HELP)
+    assert len(index) == (len(FAQ) + len(walkthroughs.all_walkthroughs())
+                          + len(GLOSSARY) + len(CHART_HELP))
 
 
 def test_metric_articles_reuse_the_tooltip_text_verbatim():
