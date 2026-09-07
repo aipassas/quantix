@@ -299,6 +299,18 @@ CHART_HELP: Dict[str, str] = {
         "recession signal there is. Then the SHIFT: the whole curve "
         "moving together reprices rates; the ends moving apart reprices "
         "growth."),
+    "futures_curve": (
+        "What each delivery month costs today. Rising with time is contango — "
+        "the market charging for storage and financing. Falling is "
+        "backwardation, which is what a shortage of supply right now looks "
+        "like. A curve that RISES then FALLS is pricing a harvest, and "
+        "front-to-back it can look flat while saying a great deal."),
+    "commodity_seasonality": (
+        "Average change in each calendar month over the past decade. Heating "
+        "seasons and harvests are structural, not anomalies to smooth away. "
+        "Each bar rests on about ten observations, so read the shape and not "
+        "the decimals — and note this is the continuous front-month series, "
+        "whose moves include the roll between contracts."),
     "etf_fund_comparison": (
         "Each fund rebased to 100 on the first date they ALL have, so the lines compare "
         "one window rather than share prices that were never comparable. Look for a gap "

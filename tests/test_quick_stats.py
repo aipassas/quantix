@@ -63,6 +63,7 @@ def test_every_spec_reads_a_field_that_exists(qs):
     import financial_standardization as fs
     import watchlist_panel as wp
 
+    import commodity_screener
     import crypto_data
     import etf_analysis
 
@@ -80,7 +81,17 @@ def test_every_spec_reads_a_field_that_exists(qs):
     coin_names = ({f.name for f in dataclasses.fields(crypto_data.CoinRow)}
                   | {n for n in dir(crypto_data.CoinRow)
                      if not n.startswith("_")})
+    # A fifth source: commodity stats read off a CommodityRow.
+    commodity_names = (
+        {f.name for f in dataclasses.fields(commodity_screener.CommodityRow)}
+        | {n for n in dir(commodity_screener.CommodityRow)
+           if not n.startswith("_")})
     for spec in qs.STATS:
+        if spec.source == "commodity":
+            attr = qs._COMMODITY_ATTRS.get(spec.key, spec.key)
+            assert attr in commodity_names, (
+                f"{spec.key} -> {attr} is not on CommodityRow")
+            continue
         if spec.source == "crypto":
             attr = qs._CRYPTO_ATTRS.get(spec.key, spec.key)
             assert attr in coin_names, f"{spec.key} -> {attr} is not on CoinRow"

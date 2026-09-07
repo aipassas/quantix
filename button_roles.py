@@ -55,6 +55,7 @@ DANGER_INLINE: Tuple[str, ...] = (
     "etf_remove_",         # remove an ETF screener criterion
     "bond_remove_",        # remove a bond screener criterion
     "crypto_remove_",      # remove a crypto screener criterion
+    "commodity_remove_",   # remove a commodity screener criterion
     "collab_rm_",          # remove a note's tag
     "collab_del_",         # delete a team note
     "scenario_delete_",    # delete a saved scenario

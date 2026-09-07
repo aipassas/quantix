@@ -125,6 +125,28 @@ STATS: Tuple[StatSpec, ...] = (
                   "Not reported for an uncapped coin — that is an "
                   "answer, not a gap, and a zero there would state the "
                   "opposite."),
+
+    # --- commodity stats ------------------------------------------------
+    # These read off a commodity_screener.CommodityRow, the same object
+    # the screener builds, so the strip adds no fetch of its own. Curve
+    # shape and roll yield need the dated contracts, so they resolve only
+    # once that commodity's curve has been probed — "Not reported" there
+    # means not yet loaded, which the popover note says.
+    StatSpec("range_52w_pct", "52w Range", "commodity", "percent",
+             decimals=0,
+             note="Where the price sits in its own 52-week range — 0 at "
+                  "the low, 100 at the high. Not a valuation, a "
+                  "position."),
+    StatSpec("curve_shape", "Curve", "commodity", "text",
+             note="Contango, Backwardation, Flat or Humped. Humped is "
+                  "its own answer rather than a rounding of the other "
+                  "two: an agricultural curve that rises into old crop "
+                  "and falls into new crop is pricing a harvest, and "
+                  "front-to-back it can look flat."),
+    StatSpec("roll_yield_pct", "Roll", "commodity", "percent",
+             note="What rolling a long position earns or costs a year "
+                  "before any price move. Negative in contango, because "
+                  "each contract is replaced by a dearer one."),
 )
 STATS_BY_KEY: Dict[str, StatSpec] = {s.key: s for s in STATS}
 
@@ -193,6 +215,14 @@ _CRYPTO_ATTRS: Dict[str, str] = {
 }
 
 
+# Commodity stats read off a commodity_screener.CommodityRow.
+_COMMODITY_ATTRS: Dict[str, str] = {
+    "range_52w_pct": "range_position_pct",
+    "curve_shape": "curve_shape",
+    "roll_yield_pct": "roll_yield_pct",
+}
+
+
 _FUND_ATTRS: Dict[str, str] = {
     "expense_ratio_pct": "expense_ratio_pct",
     "net_assets": "net_assets",
@@ -214,6 +244,13 @@ def raw_value(spec: StatSpec, quote, standardized, fund=None) -> Any:
             if fund is None or not getattr(fund, "ok", False):
                 return None
             return getattr(fund, _FUND_ATTRS.get(spec.key, spec.key), None)
+        if spec.source == "commodity":
+            # `fund` carries whichever class-specific object the page
+            # loaded; for a futures contract that is a CommodityRow.
+            if fund is None:
+                return None
+            return getattr(fund, _COMMODITY_ATTRS.get(spec.key, spec.key),
+                           None)
         if spec.source == "crypto":
             # `fund` carries whichever class-specific object the page
             # loaded; for a coin that is a crypto_data.CoinRow. A crypto

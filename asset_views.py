@@ -77,7 +77,12 @@ HEADER_STATS: Dict[str, Tuple[str, ...]] = {
     asset_class.CRYPTO: ("price", "change_pct", "market_cap",
                          "volume_24h", "dominance_pct", "supply_mined_pct"),
     asset_class.FOREX: ("price", "change_pct"),
-    asset_class.FUTURE: ("price", "change_pct"),
+    # The header the task asks for: price, 1-day change, 52-week range,
+    # inventory and curve shape. Inventory is crude-only, so it is a
+    # stat that resolves for one commodity and reports "Not reported"
+    # for the rest — which is the honest state, not a gap.
+    asset_class.FUTURE: ("price", "change_pct", "range_52w_pct",
+                         "curve_shape", "roll_yield_pct"),
     asset_class.INDEX: ("price", "change_pct"),
     asset_class.UNKNOWN: ("price", "change_pct"),
 }
@@ -217,7 +222,10 @@ _TAB_OVERRIDES: Dict[str, Dict[int, str]] = {
     # history, stock-to-flow with a measured flow — so the label says so.
     asset_class.CRYPTO: {2: "On-Chain & Valuation", 5: "Peers (n/a)"},
     asset_class.FOREX: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
-    asset_class.FUTURE: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
+    # Tab 2 was "Valuation (n/a)" while the forward curve was thought
+    # unavailable. It is a real panel now — curve shape, implied carry,
+    # roll yield and crude inventory.
+    asset_class.FUTURE: {2: "Futures Curve", 5: "Peers (n/a)"},
     asset_class.INDEX: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
     asset_class.UNKNOWN: {2: "Valuation (n/a)", 5: "Peers (n/a)"},
 }

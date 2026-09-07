@@ -88,6 +88,10 @@ import etf_risk
 import bond_data
 import bond_market
 import bond_screener
+import commodity_curve
+import commodity_data
+import commodity_risk
+import commodity_screener
 import crypto_data
 import crypto_market
 import crypto_risk
@@ -2078,6 +2082,133 @@ else:
             file_name=f"quantix_crypto_screen_{datetime.date.today()}.csv",
             mime="text/csv", key="crypto_csv")
         st.caption(crypto_data.SOCIAL_UNAVAILABLE)
+
+# ==========================================
+# COMMODITY SCREENER (PHASE 4.5)
+# ==========================================
+st.markdown("---")
+st.header("Commodity Screener", anchor="commodity-screener")
+st.caption(
+    f"The {len(commodity_data.COMMODITIES)} benchmark futures contracts "
+    "this build carries — metals, energy, agriculture and livestock. "
+    "There are not a hundred liquid commodity markets worth screening, "
+    "and padding the list would lengthen the table without adding a row "
+    "anyone would trade.")
+_ms_rows, _ms_err = commodity_screener.load_universe(
+    st.session_state.get("_ms_curve_cache") or {})
+if _ms_err:
+    st.warning(_ms_err)
+if not _ms_rows:
+    st.info("The commodity board could not be loaded right now.")
+else:
+    if "commodity_criteria" not in st.session_state:
+        st.session_state["commodity_criteria"] = [
+            {"metric": "sector", "operator": "is",
+             "threshold": commodity_data.METALS}]
+
+    st.markdown("**Preset screens**")
+    _ms_cols = st.columns(len(commodity_screener.PRESETS))
+    for _ms_i, _ms_preset in enumerate(commodity_screener.PRESETS):
+        with _ms_cols[_ms_i]:
+            if st.button(_ms_preset.name, key=f"commodity_preset_{_ms_i}",
+                         width="stretch", help=_ms_preset.description):
+                st.session_state["commodity_criteria"] = [
+                    {"metric": c.metric, "operator": c.operator,
+                     "threshold": c.threshold}
+                    for c in _ms_preset.criteria]
+                st.rerun()
+
+    st.markdown("**Filters**")
+    _ms_remove = None
+    for _ms_i, _ms_c in enumerate(st.session_state["commodity_criteria"]):
+        # Numbered labels, no Streamlit key: an unkeyed widget is
+        # identified by hashing (label, options, index, help) and
+        # label_visibility is NOT in that hash, so two collapsed rows
+        # with matching parameters collide. And the operator list
+        # CHANGES with the metric (is/is not vs < >), which is the other
+        # reason a stored key would raise here.
+        _ms_suffix = "" if _ms_i == 0 else f" {_ms_i + 1}"
+        _ms_m, _ms_o, _ms_v, _ms_x = st.columns([3, 2, 3, 1])
+        with _ms_m:
+            _ms_keys = [m.key for m in commodity_screener.METRICS]
+            _ms_metric = st.selectbox(
+                f"Commodity metric{_ms_suffix}", _ms_keys,
+                index=_ms_keys.index(_ms_c["metric"])
+                if _ms_c["metric"] in _ms_keys else 0,
+                format_func=lambda k: commodity_screener.METRICS_BY_KEY[k].label,
+                label_visibility="collapsed")
+        _ms_ops = commodity_screener.operators_for(_ms_metric)
+        with _ms_o:
+            _ms_op = st.selectbox(
+                f"Commodity op{_ms_suffix}", _ms_ops,
+                index=_ms_ops.index(_ms_c["operator"])
+                if _ms_c["operator"] in _ms_ops else 0,
+                label_visibility="collapsed")
+        with _ms_v:
+            _ms_kind = commodity_screener.METRICS_BY_KEY[_ms_metric].kind
+            if _ms_kind == "text":
+                _ms_choices = (list(commodity_data.SECTORS)
+                               if _ms_metric == "sector"
+                               else list(commodity_screener.shapes()))
+                _ms_threshold = st.selectbox(
+                    f"Commodity value{_ms_suffix}", _ms_choices,
+                    index=_ms_choices.index(str(_ms_c["threshold"]))
+                    if str(_ms_c["threshold"]) in _ms_choices else 0,
+                    label_visibility="collapsed")
+            else:
+                _ms_threshold = st.number_input(
+                    f"Commodity threshold{_ms_suffix}",
+                    value=float(_ms_c["threshold"])
+                    if isinstance(_ms_c["threshold"], (int, float)) else 0.0,
+                    label_visibility="collapsed")
+        with _ms_x:
+            if st.button("✕", key=f"commodity_remove_{_ms_i}",
+                         help="Remove this filter"):
+                _ms_remove = _ms_i
+        st.session_state["commodity_criteria"][_ms_i] = {
+            "metric": _ms_metric, "operator": _ms_op,
+            "threshold": _ms_threshold}
+
+    if _ms_remove is not None:
+        st.session_state["commodity_criteria"].pop(_ms_remove)
+        st.rerun()
+    if st.button("+ Add commodity filter", key="commodity_add_filter"):
+        st.session_state["commodity_criteria"].append(
+            {"metric": "volatility_pct", "operator": ">", "threshold": 30.0})
+        st.rerun()
+
+    _ms_criteria = [commodity_screener.Criterion(**c)
+                    for c in st.session_state["commodity_criteria"]]
+    _ms_passed, _ms_unjudged = commodity_screener.run(_ms_rows, _ms_criteria)
+    st.caption(" · ".join(commodity_screener.describe(c)
+                          for c in _ms_criteria)
+               or "No filters — every commodity passes.")
+
+    if not _ms_passed:
+        st.info(
+            f"No commodity meets every filter."
+            + (f" {_ms_unjudged} could not be judged — curve columns "
+               f"resolve only once that commodity's dated contracts have "
+               f"been probed, which happens when you open its page."
+               if _ms_unjudged else ""))
+    else:
+        st.success(
+            f"{len(_ms_passed)} of {len(_ms_rows)} commodities match."
+            + (f" {_ms_unjudged} could not be judged, which is not the "
+               f"same as failing." if _ms_unjudged else ""))
+        _ms_table = commodity_screener.results_frame(
+            _ms_passed[:commodity_screener.MAX_RESULTS_SHOWN])
+        st.dataframe(_ms_table, hide_index=True, width="stretch",
+                     column_config=commodity_screener.column_config(),
+                     key="commodity_results_table")
+        st.download_button(
+            "Download these results (CSV)",
+            _ms_table.to_csv(index=False).encode("utf-8"),
+            file_name=f"quantix_commodity_screen_{datetime.date.today()}.csv",
+            mime="text/csv", key="commodity_csv")
+        st.caption(commodity_data.GEOPOLITICAL_UNAVAILABLE)
+        st.caption(commodity_data.POLYGON_UNCONFIGURED)
+
 
 
 st.header("ETF Screener")
@@ -4084,6 +4215,32 @@ with symbol_header_container.container():
         # and the valuation panel read — so the strip still adds no fetch
         # of its own. Dominance is market-wide rather than per-row, so it
         # is attached here from the reported global totals.
+        # A futures contract's stats come off the same CommodityRow the
+        # screener builds, and its curve columns off the curve the
+        # Futures Curve panel already cached — so the strip adds no
+        # fetch. Declaring a stat and SOURCING it are two separate
+        # steps; the crypto strip shipped once with the first done and
+        # the second forgotten, and printed "Not reported" for all of
+        # them.
+        if _qs_fund is None and asset_class.supports(asset_kind,
+                                                     asset_class.CURVE):
+            _qs_com = commodity_data.COMMODITIES_BY_SYMBOL.get(
+                ticker_symbol.upper())
+            if _qs_com is not None:
+                _qs_extra = {}
+                _qs_curve = commodity_data.load_curve(_qs_com.key)
+                if _qs_curve.ok:
+                    _qs_shape = commodity_curve.shape(_qs_curve)
+                    _qs_roll = commodity_curve.roll_yield(_qs_curve)
+                    _qs_extra = {_qs_com.key: {
+                        "curve_shape": (_qs_shape.label
+                                        if _qs_shape.ok else None),
+                        "roll_yield_pct": _qs_roll.annualised_pct,
+                        "open_interest": (_qs_curve.front.open_interest
+                                          if _qs_curve.front else None)}}
+                _qs_rows, _ = commodity_screener.load_universe(_qs_extra)
+                _qs_fund = next(
+                    (r for r in _qs_rows if r.key == _qs_com.key), None)
         if _qs_fund is None and asset_class.supports(asset_kind,
                                                      asset_class.ON_CHAIN):
             _qs_rows, _ = crypto_data.load_universe()
@@ -5114,6 +5271,207 @@ else:
                         st.caption(crypto_data.WHALE_UNAVAILABLE)
                         st.caption(crypto_data.EXCHANGE_RESERVE_UNAVAILABLE)
                         st.caption(crypto_data.SOCIAL_UNAVAILABLE)
+
+            # A futures contract has no filings either, and unlike a coin
+            # it has something better than a single price: a strip of
+            # dated contracts that prices carry, storage and scarcity
+            # directly. That is the valuation read for this class, in
+            # the same spirit as Fund Decomposition and On-Chain above.
+            if asset_class.supports(asset_kind, asset_class.CURVE):
+                st.markdown("---")
+                st.header("Futures Curve", anchor="futures-curve")
+
+                _fc_commodity = commodity_data.COMMODITIES_BY_SYMBOL.get(
+                    ticker_symbol.upper())
+                if _fc_commodity is None:
+                    st.info(
+                        "This build carries the forward curve for "
+                        f"{len(commodity_data.COMMODITIES)} benchmark "
+                        "contracts. "
+                        + ", ".join(c.continuous
+                                    for c in commodity_data.COMMODITIES)
+                        + " — a dated strip is probed for each. Other "
+                        "futures symbols get the price-derived analysis "
+                        "without a curve.")
+                else:
+                    _fc_curve = commodity_data.load_curve(_fc_commodity.key)
+                    if not _fc_curve.ok:
+                        st.warning(_fc_curve.error
+                                   or "No curve could be built.")
+                    else:
+                        # The short rate comes from the treasury curve
+                        # the bond module already loads and caches, so
+                        # this adds no fetch. The SHORTEST point is the
+                        # right one: cost of carry is financed at the
+                        # front, not at ten years.
+                        _fc_tnx = None
+                        _fc_tcurve = bond_data.load_curve()
+                        if getattr(_fc_tcurve, "points", ()):
+                            _fc_tnx = min(
+                                _fc_tcurve.points,
+                                key=lambda pt: pt.months).yield_pct
+                        _fc_shape = commodity_curve.shape(_fc_curve)
+                        _fc_carry = commodity_curve.implied_carry(
+                            _fc_curve, _fc_tnx)
+                        _fc_spread = commodity_curve.calendar_spread(_fc_curve)
+                        _fc_roll = commodity_curve.roll_yield(_fc_curve)
+
+                        _fc1, _fc2, _fc3 = st.columns(3)
+                        _fc1.metric(
+                            "Curve shape", _fc_shape.label,
+                            help="Contango, Backwardation, Flat or "
+                                 "Humped. Humped is a real fourth answer, "
+                                 "not a rounding: an agricultural curve "
+                                 "that rises into old crop and falls into "
+                                 "new crop can read flat front-to-back "
+                                 "while pricing a harvest.")
+                        _fc1.caption(_fc_shape.detail)
+                        if _fc_carry.ok:
+                            _fc2.metric(
+                                "Implied carry",
+                                f"{_fc_carry.annualised_pct:+.2f}%/yr",
+                                help="Inverted out of the quoted "
+                                     "contracts rather than computed from "
+                                     "assumed storage and convenience "
+                                     "yield — those are the unknowns a "
+                                     "reader wants the curve to reveal.")
+                            _fc2.caption(
+                                commodity_curve.describe_carry(_fc_carry))
+                        else:
+                            _fc2.metric("Implied carry", "Unavailable",
+                                        help="Needs two liquid contracts "
+                                             "spanning time.")
+                        if _fc_roll.ok:
+                            _fc3.metric(
+                                "Roll yield",
+                                f"{_fc_roll.annualised_pct:+.2f}%/yr",
+                                help="What rolling a long position earns "
+                                     "or costs before any price move. "
+                                     "Negative in contango.")
+                            _fc3.caption(
+                                commodity_curve.describe_roll(_fc_roll))
+                        else:
+                            _fc3.metric("Roll yield", "Unavailable",
+                                        help="Needs two liquid contracts.")
+                        st.caption(commodity_curve.ROLL_ANNUALISATION_CAVEAT)
+
+                        # The strip itself, with open interest beside each
+                        # price so a thin contract is visible as thin.
+                        _fc_liquid = {p.symbol
+                                      for p in _fc_curve.liquid_points}
+                        _fc_table = pd.DataFrame([{
+                            "Contract": p.label,
+                            "Symbol": p.symbol,
+                            "Price": p.price,
+                            "Open interest": p.open_interest,
+                            "Used for shape": p.symbol in _fc_liquid,
+                        } for p in _fc_curve.points])
+                        for _fc_col in ("Price", "Open interest"):
+                            _fc_table[_fc_col] = pd.to_numeric(
+                                _fc_table[_fc_col], errors="coerce")
+                        _fc_chart = go.Figure()
+                        _fc_chart.add_trace(go.Scatter(
+                            x=[p.label for p in _fc_curve.points],
+                            y=[p.price for p in _fc_curve.points],
+                            mode="lines+markers", name="Settlement"))
+                        _fc_chart.update_layout(
+                            height=300, margin=dict(l=0, r=0, t=10, b=0),
+                            yaxis_title=_fc_commodity.unit,
+                            xaxis_title="Delivery month",
+                            template=_plotly_template,
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)')
+                        st.plotly_chart(_fc_chart, width="stretch",
+                                        key="futures_curve_chart")
+                        st.caption(chart_help("futures_curve"))
+                        st.caption(
+                            f"{len(_fc_curve.points)} contracts quoted of "
+                            f"{_fc_curve.probed} probed; "
+                            f"{len(_fc_curve.liquid_points)} carry enough "
+                            f"open interest to set the shape. The "
+                            f"contract calendar is probed rather than "
+                            f"assumed — corn lists seven months of "
+                            f"eighteen and gold lists all of them.")
+                        with st.expander("Every contract on the strip",
+                                         expanded=False):
+                            st.dataframe(
+                                _fc_table, hide_index=True, width="stretch",
+                                column_config={
+                                    "Price": st.column_config.NumberColumn(
+                                        "Price", format="%.4g",
+                                        help=_fc_commodity.unit),
+                                    "Open interest":
+                                        st.column_config.NumberColumn(
+                                            "Open interest", format="%d",
+                                            help="Contracts held. A month "
+                                                 "quoting with a handful "
+                                                 "of lots has a price, "
+                                                 "not a market."),
+                                    "Used for shape":
+                                        st.column_config.CheckboxColumn(
+                                            "Used for shape",
+                                            help="Contracts below a "
+                                                 "fraction of the curve's "
+                                                 "largest open interest "
+                                                 "are excluded from the "
+                                                 "shape read.")},
+                                key="futures_curve_table")
+                        if _fc_spread.ok:
+                            st.caption(
+                                f"Nearest calendar spread "
+                                f"{_fc_spread.near_label}/"
+                                f"{_fc_spread.far_label}: "
+                                f"{_fc_spread.absolute:+.4g} "
+                                f"({_fc_spread.percent:+.2f}%). "
+                                + commodity_data.SPOT_UNAVAILABLE)
+
+                    # --- inventory, where a series exists ---------------
+                    if not commodity_data.inventory_available(
+                            _fc_commodity.key):
+                        st.info(commodity_data.inventory_note(
+                            _fc_commodity.key))
+                    else:
+                        _fc_inv, _fc_inv_err = (
+                            commodity_data.load_crude_inventory())
+                        if _fc_inv_err:
+                            st.warning(_fc_inv_err)
+                        else:
+                            _fc_read = commodity_curve.read_inventory(_fc_inv)
+                            _fc_label, _fc_detail = (
+                                commodity_curve.inventory_verdict(
+                                    _fc_read,
+                                    _fc_shape.label if _fc_curve.ok else ""))
+                            st.markdown("**US crude inventory**")
+                            _fi1, _fi2 = st.columns(2)
+                            _fi1.metric(
+                                "Commercial stocks",
+                                f"{_fc_read.latest:,.0f} kbbl"
+                                if _fc_read.ok else "Unavailable",
+                                (f"{_fc_read.change_4w_pct:+.1f}% vs 4w ago"
+                                 if _fc_read.change_4w_pct is not None
+                                 else None),
+                                help="EIA weekly US commercial crude "
+                                     "stocks, in thousand barrels.")
+                            _fi2.metric(
+                                "Against its own season", _fc_label,
+                                (f"{_fc_read.deviation_pct:+.1f}%"
+                                 if _fc_read.deviation_pct is not None
+                                 else None),
+                                help="Compared with the SAME WEEK of "
+                                     "prior years, not a flat mean — "
+                                     "crude stocks swing seasonally, and "
+                                     "a flat average would report the "
+                                     "season as news.")
+                            _fi2.caption(_fc_detail)
+                            st.caption(commodity_data.EIA_API_UNCONFIGURED)
+                    # The agricultural gap is already delivered by
+                    # inventory_note() for the commodity that needs it,
+                    # and by MISSING_SOURCES below. Repeating it here
+                    # printed the same paragraph twice in a row on a
+                    # corn page, and put a note about corn on a crude
+                    # one.
+                    st.caption(commodity_curve.SPEC_FORMULA_NOTE)
+
 
         else:
             st.markdown("---")
@@ -6522,6 +6880,144 @@ else:
                 st.caption(crypto_risk.REGULATORY_UNAVAILABLE)
                 st.caption(crypto_risk.AUDIT_UNAVAILABLE)
                 st.caption(crypto_risk.HACK_HISTORY_UNAVAILABLE)
+
+
+        # --- commodities: volatility, season and hedging value ----------
+        # Beside the fund, bond and crypto blocks, gated the same way.
+        # The seasonal read is the commodity-specific half: a heating
+        # season and a harvest are structural, not anomalies.
+        if asset_class.supports(asset_kind, asset_class.CURVE):
+            st.markdown("---")
+            st.header("Commodity Risk & Season", anchor="commodity-risk")
+
+            _cm_closes = df['Close'] if 'Close' in df else None
+            # Its own decade of history, loaded once and used for both
+            # the volatility windows and the seasonal read. A 1-year
+            # sidebar range gives ~251 bars and therefore 250 returns,
+            # so a 252-day window could never be computed on the app's
+            # own default — "1-year volatility: Unavailable" beside a
+            # year of prices reads as a bug, and is one.
+            _cm_hist, _ = load_price_history_only(
+                ticker_symbol,
+                start=(datetime.date.today()
+                       - datetime.timedelta(days=365 * 10)),
+                end=datetime.date.today())
+            _cm_long = (_cm_hist['Close']
+                        if _cm_hist is not None and not _cm_hist.empty
+                        and 'Close' in _cm_hist else None)
+            _cm_windows = commodity_risk.volatility_windows(
+                _cm_long if _cm_long is not None else _cm_closes)
+            _cm_cols = st.columns(len(_cm_windows))
+            for _cm_col, _cm_w in zip(_cm_cols, _cm_windows):
+                _cm_col.metric(
+                    f"{_cm_w.label} volatility",
+                    f"{_cm_w.annualised_pct:.1f}%" if _cm_w.ok
+                    else "Unavailable",
+                    help=commodity_risk.ANNUALISATION_NOTE if _cm_w.ok else
+                         (f"Needs {_cm_w.days} daily bars; this range has "
+                          f"{_cm_w.observations}."))
+            st.caption(commodity_risk.ANNUALISATION_NOTE)
+
+            # --- seasonality ---------------------------------------------
+            _cm_season_src = (_cm_long if _cm_long is not None
+                              else _cm_closes)
+            _cm_season = commodity_risk.seasonality(_cm_season_src)
+            if not _cm_season.ok:
+                st.info(_cm_season.error
+                        or "No seasonal pattern could be measured.")
+            else:
+                _cm_months = [m for m in _cm_season.months if m.scored]
+                _cm_fig = go.Figure()
+                _cm_fig.add_trace(go.Bar(
+                    x=[m.name[:3] for m in _cm_months],
+                    y=[m.average_pct for m in _cm_months],
+                    marker_color=['#22c55e' if m.average_pct >= 0
+                                  else '#ef4444' for m in _cm_months],
+                    hovertemplate=("%{x}: %{y:+.2f}% average"
+                                   "<extra></extra>")))
+                _cm_fig.update_layout(
+                    height=280, margin=dict(l=0, r=0, t=10, b=0),
+                    yaxis_title="Average monthly change %",
+                    xaxis_title="Calendar month",
+                    template=_plotly_template,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(_cm_fig, width="stretch",
+                                key="commodity_seasonality")
+                st.caption(chart_help("commodity_seasonality"))
+                st.caption(commodity_risk.describe_seasonality(_cm_season))
+
+            # --- the hedging thesis, tested -------------------------------
+            _cm_pairs = commodity_risk.HEDGE_BENCHMARKS
+            _cm_prices = etf_comparison.load_prices(
+                tuple([ticker_symbol] + [s for _, s, _ in _cm_pairs]),
+                period="2y")[0]
+            _cm_corrs = []
+            for _cm_label, _cm_sym, _cm_why in _cm_pairs:
+                if (_cm_prices is not None and ticker_symbol in _cm_prices
+                        and _cm_sym in _cm_prices):
+                    _cm_corrs.append((commodity_risk.correlate(
+                        _cm_prices[ticker_symbol], _cm_prices[_cm_sym],
+                        _cm_label, _cm_sym), _cm_why))
+                else:
+                    _cm_corrs.append((commodity_risk.Correlation(
+                        _cm_label, _cm_sym,
+                        error="No overlapping price history was returned."),
+                        _cm_why))
+            st.markdown("**Does it hedge what it is bought to hedge?**")
+            _cm_ccols = st.columns(len(_cm_corrs) or 1)
+            for _cm_col, (_cm_c, _cm_why) in zip(_cm_ccols, _cm_corrs):
+                _cm_col.metric(
+                    f"vs {_cm_c.label}",
+                    f"{_cm_c.coefficient:+.2f}" if _cm_c.ok else "Unavailable",
+                    help=_cm_why)
+                _cm_col.caption(
+                    f"{_cm_c.strength} · {_cm_c.observations} shared days "
+                    f"({_cm_c.symbol})" if _cm_c.ok else _cm_c.error)
+            _cm_dollar = next(
+                (c for c, _ in _cm_corrs if c.symbol == "DX-Y.NYB"), None)
+            if _cm_dollar is not None:
+                _cm_verdict, _cm_reason = commodity_risk.hedge_verdict(
+                    _cm_dollar)
+                st.caption(f"**{_cm_verdict}.** {_cm_reason}")
+
+            # --- shocks ----------------------------------------------------
+            with st.expander("Price shock", expanded=False):
+                st.caption(commodity_risk.SHOCK_NOTE)
+                _cm_position = st.number_input(
+                    "Position value (USD)", min_value=0.0, value=100000.0,
+                    step=1000.0, key="commodity_position_value")
+                _cm_price = (float(_cm_closes.iloc[-1])
+                             if _cm_closes is not None and len(_cm_closes)
+                             else None)
+                _cm_rows = commodity_risk.stress_test(_cm_price,
+                                                      _cm_position)
+                _cm_table = pd.DataFrame([{
+                    "Shock": r.shock_pct,
+                    "Price after": r.price_after,
+                    "Position after": r.resulting_value,
+                    "Profit / loss": r.profit_loss,
+                } for r in _cm_rows])
+                for _cm_c2 in ("Shock", "Price after", "Position after",
+                               "Profit / loss"):
+                    _cm_table[_cm_c2] = pd.to_numeric(_cm_table[_cm_c2],
+                                                      errors="coerce")
+                st.dataframe(
+                    _cm_table, hide_index=True, width="stretch",
+                    column_config={
+                        "Shock": st.column_config.NumberColumn(
+                            "Shock", format="%+.0f%%"),
+                        "Price after": st.column_config.NumberColumn(
+                            "Price after", format="%.4g"),
+                        "Position after": st.column_config.NumberColumn(
+                            "Position after", format="$%.0f"),
+                        "Profit / loss": st.column_config.NumberColumn(
+                            "Profit / loss", format="$%+.0f")},
+                    key="commodity_shock_table")
+                _cm_sigma = commodity_risk.shock_in_sigmas(-20.0, _cm_windows)
+                if _cm_sigma:
+                    st.caption(_cm_sigma)
+                st.caption(commodity_risk.BASIS_RISK_NOTE)
 
     with tab_risk:
         # --- QUANTITATIVE CALCULATIONS ---

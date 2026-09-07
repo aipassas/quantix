@@ -151,10 +151,37 @@ def test_an_equity_keeps_every_stat_it_had():
         assert key in equity, key
 
 
-def test_a_class_with_no_issuer_gets_only_price_shaped_stats():
+# Stats that can only come from an issuer's filings. A class with no
+# issuer must never offer one — that is the category error the header
+# mapping exists to prevent, and it is what this test is really about.
+ISSUER_DERIVED = frozenset({
+    "pe_ratio", "market_cap", "dividend_yield_pct", "beta", "price_to_book",
+    "net_margin", "return_on_equity", "debt_to_equity", "current_ratio",
+    "sector", "expense_ratio_pct", "net_assets", "fund_category", "fund_pe",
+})
+
+
+def test_a_class_with_no_issuer_offers_no_issuer_derived_stat():
     for klass in (asset_class.FOREX, asset_class.FUTURE, asset_class.INDEX,
                   asset_class.UNKNOWN):
+        leaked = set(av.header_stats(klass)) & ISSUER_DERIVED
+        assert not leaked, f"{klass} offers issuer-derived stats: {leaked}"
+
+
+def test_a_class_with_nothing_but_a_price_gets_nothing_but_a_price():
+    """Forex, indices and unrecognised instruments have no term
+    structure and no ledger, so there is genuinely nothing to add."""
+    for klass in (asset_class.FOREX, asset_class.INDEX, asset_class.UNKNOWN):
         assert set(av.header_stats(klass)) <= {"price", "change_pct"}, klass
+
+
+def test_a_futures_contract_gets_its_term_structure_in_the_header():
+    """A futures contract is the exception among the issuer-less
+    classes: the strip of dated contracts is real, measured data about
+    THIS instrument, and it is what the class is read for."""
+    stats = set(av.header_stats(asset_class.FUTURE))
+    assert {"curve_shape", "roll_yield_pct"} <= stats
+    assert not stats & ISSUER_DERIVED
 
 
 def test_beta_is_left_out_of_the_fund_header_on_purpose():

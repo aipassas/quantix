@@ -74,10 +74,11 @@ RISK = "risk"                      # return-derived: VaR, Sharpe, drawdown
 SIMULATION = "simulation"          # Monte Carlo over returns
 HOLDINGS = "holdings"              # what a basket contains
 ON_CHAIN = "on_chain"              # settlement activity on a public ledger
+CURVE = "curve"                    # a term structure across delivery dates
 
 ALL_CAPABILITIES: Tuple[str, ...] = (
     FUNDAMENTALS, DCF, SECTOR_PERCENTILE, PEERS, DIVIDENDS,
-    TECHNICALS, RISK, SIMULATION, HOLDINGS, ON_CHAIN,
+    TECHNICALS, RISK, SIMULATION, HOLDINGS, ON_CHAIN, CURVE,
 )
 
 
@@ -123,10 +124,12 @@ SPECS: Tuple[AssetClassSpec, ...] = (
         "EURUSD=X"),
     AssetClassSpec(
         FUTURE, "Futures contract",
-        (TECHNICALS, RISK, SIMULATION),
+        (TECHNICALS, RISK, SIMULATION, CURVE),
         "A futures contract is a dated claim on a deliverable, not a "
-        "business. Valuation depends on the forward curve and carry, "
-        "which this build does not yet source.",
+        "business, so it has no earnings to discount and no sector to "
+        "be ranked within. What it has instead is a term structure: the "
+        "strip of dated contracts prices carry, storage and scarcity "
+        "directly, which is the valuation read for this class.",
         "GC=F"),
     AssetClassSpec(
         INDEX, "Index",
@@ -168,8 +171,16 @@ MISSING_SOURCES: Dict[str, Tuple[str, ...]] = {
              "order-book depth — Binance and Kraken quote the prices "
              "CoinGecko already aggregates, and their depth endpoints "
              "need per-exchange integration",),
-    FUTURE: ("the forward curve needs quotes for every contract month; "
-             "Yahoo returns only the front month per symbol",),
+    FUTURE: ("a spot price — XAUUSD=X and XAGUSD=X return nothing, so "
+             "basis (futures minus spot) is not reported and the "
+             "calendar spread stands in for it",
+             "agricultural stocks, yields and acreage — USDA's "
+             "QuickStats API answers a keyless request with HTTP 401. "
+             "Inventory is sourced for US crude oil only",
+             "geopolitical and weather risk — there is no feed of "
+             "conflict or crop-condition exposure per commodity, and a "
+             "percentage assembled by hand would be an opinion wearing "
+             "the authority of a measurement",),
     INDEX: ("treasury yields arrive as an index level (^TNX); "
             "yield-to-maturity, duration and convexity need FRED or a "
             "bond data provider",),
