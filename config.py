@@ -1137,6 +1137,45 @@ class WebhooksConfig:
     # per-endpoint opt-in for private addresses altogether.
     allow_private_endpoints: bool = True
 
+    # --- redelivery -----------------------------------------------------
+    # A failed delivery is queued and retried with exponential backoff
+    # rather than dropped. THE GRANULARITY IS BOUNDED BY HOW OFTEN THE
+    # QUEUE IS DRAINED, and the honest statement of that is: alert_watch
+    # runs under cron on the digest's schedule, so a 60-second backoff
+    # does not mean the retry happens 60 seconds later — it means the
+    # item becomes ELIGIBLE then, and goes out on the next drain. The
+    # app drains opportunistically too, which shortens the wait whenever
+    # a tab happens to be open, but nothing here promises a deadline.
+    max_attempts: int = 6
+
+    # 60s, 4m, 16m, 64m, 4h, then capped. Six attempts spans about six
+    # hours, which covers a receiver restart or a short outage without
+    # hammering one that is simply gone.
+    backoff_base_seconds: int = 60
+    backoff_factor: float = 4.0
+    backoff_max_seconds: int = 6 * 60 * 60
+
+    # Jitter spreads a burst of retries that all failed at the same
+    # moment, so a receiver coming back up is not hit by every queued
+    # item at once. Expressed as a fraction of the computed delay.
+    backoff_jitter: float = 0.15
+
+    # A queue that grows without limit turns a dead receiver into a
+    # growing file. Oldest items are dropped first and the drop is
+    # recorded, because silently discarding a delivery is the one thing
+    # a retry queue must not do quietly.
+    max_queue_length: int = 500
+
+    # While one drainer holds an item, another skips it. Two processes
+    # can drain at once — cron and an open tab — and without a lease
+    # both would send the same item. Stale leases expire so a crashed
+    # drainer does not strand the queue.
+    lease_seconds: int = 300
+
+    # Bounds one drain pass so a long backlog cannot hold the page or
+    # overrun the cron slot.
+    max_drain_per_pass: int = 25
+
     user_agent: str = "Quantix-Webhook/1.0"
 
 

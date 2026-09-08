@@ -159,6 +159,11 @@ def run(post: bool, poster: Optional[Callable] = None,
         if current_active:
             save_active(current_active, path)
         messages.append("No newly triggered alerts.")
+        # A quiet run is exactly when a backlog should go out: the queue
+        # does not care whether anything new fired, and the common case
+        # for a retry is precisely a run with no new alerts.
+        _, retry_notes = _dispatch_webhooks([], poster=webhook_poster)
+        messages.extend(retry_notes)
         return 0, messages
 
     import slack_notify
@@ -214,10 +219,35 @@ def _dispatch_webhooks(alerts: List[Tuple[str, str, str]],
         store = webhooks.load_store()
         if store.corrupt:
             return 0, ["Webhook store is unreadable; no webhooks were sent."]
+
+        # DRAIN THE RETRY QUEUE FIRST, and do it even when this run has no
+        # new alerts. This cron job is the only drainer that works with
+        # the app shut, so it is what makes redelivery durable rather than
+        # a thing that happens to work while a tab is open. Draining
+        # before dispatching also means a receiver that has just come back
+        # gets the backlog in order rather than behind today's alert.
+        if store.queue:
+            store, drained = webhooks.drain(store, poster=poster,
+                                            save=webhooks.save_store)
+            webhooks.save_store(store)
+            if drained:
+                ok_count = sum(1 for d in drained if d.ok)
+                messages.append(
+                    f"Retried {len(drained)} queued webhook call(s), "
+                    f"{ok_count} delivered.")
+
         if not webhooks.endpoints_for(store, "alert.triggered"):
             return 0, messages
 
-        delivered = 0
+        if not alerts:
+            # A drain-only run. Nothing new to dispatch, and no message
+            # about it: "Delivered 0 webhook call(s)" on every quiet cron
+            # run is noise. Note `deliveries[-len(alerts) or None:]` would
+            # slice from None here — i.e. the WHOLE log — and report every
+            # historical failure as if it had just happened.
+            return 0, messages
+
+        delivered = failed = 0
         for ticker, trigger_type, detail in alerts:
             store, results = webhooks.dispatch(store, "alert.triggered", {
                 "ticker": ticker,
@@ -225,11 +255,13 @@ def _dispatch_webhooks(alerts: List[Tuple[str, str, str]],
                 "detail": detail,
             }, poster=poster)
             delivered += sum(1 for r in results if r.ok)
+            failed += sum(1 for r in results if not r.ok)
         webhooks.save_store(store)
-        failed = sum(1 for d in store.deliveries[-len(alerts) or None:] if not d.ok)
         messages.append(f"Delivered {delivered} webhook call(s).")
         if failed:
-            messages.append(f"{failed} webhook call(s) failed — see the delivery log.")
+            queued = len(store.queue)
+            messages.append(
+                f"{failed} webhook call(s) failed; {queued} queued for retry.")
         return delivered, messages
     except Exception:
         log_exception(logger, "alert_watch.webhook_dispatch_failed",

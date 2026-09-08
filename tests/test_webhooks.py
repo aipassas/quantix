@@ -579,3 +579,415 @@ def test_a_muted_rule_does_not_reach_a_webhook():
     muted = source.index("if notifications.is_muted(_rt_rid):")
     appended = source.index("_rt_webhook_batch.append(")
     assert muted < appended
+
+
+# --- queued redelivery --------------------------------------------------------
+#
+# The queue's whole job is to be honest about at-least-once delivery: it
+# keeps the delivery id stable so a receiver can deduplicate, re-signs
+# each attempt so a receiver enforcing a timestamp window does not reject
+# the retry, and refuses to retry what will never succeed.
+
+import datetime
+
+
+def _failing(status=500, error="HTTP 500"):
+    def post(url, body, headers, timeout):
+        return False, status, error
+    return post
+
+
+def _ok():
+    def post(url, body, headers, timeout):
+        return True, 200, ""
+    return post
+
+
+HALF = (lambda: 0.5)          # deterministic jitter for tests
+T0 = datetime.datetime(2026, 9, 8, 12, 0, 0)
+
+
+def _queued_store(resolver, poster=None):
+    store = w.WebhookStore(endpoints=(_endpoint(),))
+    return w.dispatch(store, "alert.triggered", {"ticker": "AAPL"},
+                      poster=poster or _failing(), jitter=HALF)[0]
+
+
+def test_a_retryable_failure_is_queued(resolver):
+    store = _queued_store(resolver)
+    assert len(store.queue) == 1
+    assert store.queue[0].attempts == 1
+    assert store.queue[0].data == {"ticker": "AAPL"}
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+def test_a_receiver_rejection_is_never_retried(resolver, status):
+    """The classic webhook bug: hammering someone's server with a request
+    they have already refused."""
+    store = w.WebhookStore(endpoints=(_endpoint(),))
+    store, deliveries = w.dispatch(store, "alert.triggered", {},
+                                   poster=_failing(status, f"HTTP {status}"),
+                                   jitter=HALF)
+    assert deliveries[0].retryable is False
+    assert store.queue == ()
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 408, 429])
+def test_a_transient_failure_is_retried(resolver, status):
+    """408 and 429 are the two 4xx that invite a retry."""
+    assert w.is_retryable_status(status) is True
+
+
+def test_no_status_at_all_is_retryable():
+    """Connection refused, DNS blip, TLS failure, read timeout."""
+    assert w.is_retryable_status(None) is True
+
+
+def test_a_refused_destination_is_not_retried(resolver):
+    """Same shape as a connection error — no status — but a URL the user
+    has to change, and retrying would re-resolve a hostile name on a
+    schedule."""
+    resolver["inward.example"] = ["10.0.0.9"]
+    store = w.WebhookStore(endpoints=(_endpoint(url="https://inward.example/h"),))
+    store, deliveries = w.dispatch(store, "alert.triggered", {}, jitter=HALF)
+    assert deliveries[0].retryable is False
+    assert store.queue == ()
+
+
+def test_the_delivery_id_is_stable_across_retries(resolver):
+    """The property the whole queue rests on: a receiver that has seen
+    this id can discard the duplicate."""
+    seen = []
+
+    def record_id(url, body, headers, timeout):
+        seen.append(headers[w.HEADER_DELIVERY])
+        return False, 500, "HTTP 500"
+
+    store = w.WebhookStore(endpoints=(_endpoint(),))
+    store, first = w.dispatch(store, "alert.triggered", {}, poster=record_id,
+                              jitter=HALF)
+    for _ in range(2):
+        due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+        store, _ = w.drain(store, now=due, poster=record_id, jitter=HALF)
+    assert len(seen) == 3
+    assert len(set(seen)) == 1
+    assert seen[0] == first[0].id
+
+
+def test_each_retry_is_signed_afresh_with_a_new_timestamp(resolver):
+    """Reusing the original signature would be rejected by any receiver
+    that checks the timestamp against a tolerance window — which the
+    panel's own snippet tells them to do."""
+    captured = []
+
+    def capture(url, body, headers, timeout):
+        captured.append((headers[w.HEADER_TIMESTAMP],
+                         headers[w.HEADER_SIGNATURE], body))
+        return False, 500, "HTTP 500"
+
+    store = w.WebhookStore(endpoints=(_endpoint(),))
+    store, _ = w.dispatch(store, "alert.triggered", {}, poster=capture, jitter=HALF)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    store, _ = w.drain(store, now=due, poster=capture, jitter=HALF)
+
+    assert len(captured) == 2
+    # Each attempt carries a signature that verifies against ITS OWN
+    # timestamp — i.e. it was recomputed, not carried over.
+    for timestamp, signature, body in captured:
+        assert w.verify(_endpoint().secret, timestamp, body, signature) is True
+    # The retry is signed for its own moment, so presenting it under a
+    # different timestamp fails. (Two attempts can land inside the same
+    # second in a test, so the timestamps themselves may match; what is
+    # asserted here is that the signature is bound to the timestamp.)
+    assert w.verify(_endpoint().secret, "2020-01-01T00:00:00", captured[1][2],
+                    captured[1][1]) is False
+    # And the retry is the SAME delivery, not a new one.
+    assert json.loads(captured[0][2])["id"] == json.loads(captured[1][2])["id"]
+
+
+def test_an_item_is_not_attempted_before_it_falls_due(resolver):
+    store = _queued_store(resolver)
+    assert w.due_items(store, T0) == ()
+    store, results = w.drain(store, now=T0, poster=_ok(), jitter=HALF)
+    assert results == ()
+    assert len(store.queue) == 1, "it must still be queued, not consumed"
+
+
+def test_a_due_item_is_attempted_and_a_success_dequeues_it(resolver):
+    store = _queued_store(resolver)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    store, results = w.drain(store, now=due, poster=_ok(), jitter=HALF)
+    assert [r.ok for r in results] == [True]
+    assert store.queue == ()
+
+
+def test_a_repeated_failure_reschedules_with_a_longer_delay(resolver):
+    store = _queued_store(resolver)
+    first_due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    store, _ = w.drain(store, now=first_due, poster=_failing(), jitter=HALF)
+    assert store.queue[0].attempts == 2
+    second_due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    # The second wait is measured from when the second attempt happened,
+    # and must be the longer of the two backoffs. (The first enqueue used
+    # the real clock, so T0 is not a valid baseline for it.)
+    second_delay = (second_due - first_due).total_seconds()
+    assert second_delay >= w.backoff_seconds(1, jitter=HALF)
+    assert w.backoff_seconds(2, jitter=HALF) > w.backoff_seconds(1, jitter=HALF)
+
+
+def test_backoff_grows_exponentially_and_is_capped(cfg):
+    delays = [w.backoff_seconds(i, jitter=HALF) for i in range(10)]
+    assert delays == sorted(delays), "must be non-decreasing"
+    assert delays[0] < delays[3]
+    assert max(delays) <= w.WEBHOOKS.backoff_max_seconds
+
+
+def test_backoff_is_jittered_around_the_computed_delay():
+    """Without jitter, everything that failed together becomes due
+    together and the receiver coming back gets the whole backlog at once."""
+    low = w.backoff_seconds(2, jitter=lambda: 0.0)
+    mid = w.backoff_seconds(2, jitter=lambda: 0.5)
+    high = w.backoff_seconds(2, jitter=lambda: 1.0)
+    assert low < mid < high
+
+
+def test_backoff_is_never_zero():
+    assert w.backoff_seconds(0, jitter=lambda: 0.0) >= 1
+
+
+def test_it_gives_up_after_max_attempts_and_says_so(resolver, cfg):
+    cfg(disable_after_failures=999)          # isolate the per-event budget
+    store = _queued_store(resolver)
+    for _ in range(w.WEBHOOKS.max_attempts + 2):
+        if not store.queue:
+            break
+        due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+        store, _ = w.drain(store, now=due, poster=_failing(), jitter=HALF)
+    assert store.queue == ()
+    assert "Gave up after" in store.deliveries[-1].error
+    assert store.deliveries[-1].attempt == w.WEBHOOKS.max_attempts
+
+
+def test_a_disabled_endpoint_holds_its_queue_rather_than_burning_attempts(resolver):
+    """Auto-disable fires before the per-event budget with the shipped
+    defaults; the queued work must survive so resuming releases it."""
+    store = _queued_store(resolver)
+    store = w.set_active(store, "e1", False)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    before = store.queue[0].attempts
+    store, results = w.drain(store, now=due, poster=_failing(), jitter=HALF)
+    assert results == ()
+    assert len(store.queue) == 1
+    assert store.queue[0].attempts == before, "a paused endpoint must not consume attempts"
+
+
+def test_resuming_releases_held_items(resolver):
+    store = _queued_store(resolver)
+    store = w.set_active(store, "e1", False)
+    store = w.set_active(store, "e1", True)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    store, results = w.drain(store, now=due, poster=_ok(), jitter=HALF)
+    assert [r.ok for r in results] == [True]
+
+
+def test_a_deleted_endpoint_drops_its_queued_items(resolver):
+    store = _queued_store(resolver)
+    store = w.remove_endpoint(store, "e1")
+    due = T0 + datetime.timedelta(days=1)
+    store, results = w.drain(store, now=due, poster=_ok(), jitter=HALF)
+    assert results == ()
+    assert store.queue == ()
+
+
+def test_a_lease_hides_an_item_from_a_second_drainer(resolver):
+    """Two drainers exist — cron and an open tab — and without this both
+    would send the same item."""
+    store = _queued_store(resolver)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    leased = w._lease(store, (store.queue[0].id,), due)
+    assert w.due_items(leased, due) == ()
+
+
+def test_a_stale_lease_expires_so_a_crash_cannot_strand_an_item(resolver):
+    store = _queued_store(resolver)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    leased = w._lease(store, (store.queue[0].id,), due)
+    after = due + datetime.timedelta(seconds=w.WEBHOOKS.lease_seconds + 1)
+    assert len(w.due_items(leased, after)) == 1
+
+
+def test_the_lease_is_published_before_any_request_goes_out(resolver):
+    """A lease only prevents a double send if the other process can SEE
+    it, and it cannot see anything still in this process's memory."""
+    order = []
+    saved_leases = []
+
+    def saver(store):
+        order.append("save")
+        # Ordering alone is not enough — what matters is that the store
+        # HANDED to save already carries the lease. Saving an un-leased
+        # store first and leasing afterwards keeps this order and
+        # publishes nothing, which is the bug this guards.
+        saved_leases.append([bool(q.leased_until) for q in store.queue])
+
+    def poster(url, body, headers, timeout):
+        order.append("post")
+        return True, 200, ""
+
+    store = _queued_store(resolver)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    w.drain(store, now=due, poster=poster, jitter=HALF, save=saver)
+    assert order and order[0] == "save", f"save must precede post, got {order}"
+    assert saved_leases and all(saved_leases[0]), (
+        "the store published before sending must already hold the lease, "
+        f"got {saved_leases}")
+
+
+def test_a_failing_save_does_not_stop_the_drain(resolver):
+    def bad_save(store):
+        raise OSError("disk full")
+
+    store = _queued_store(resolver)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    store, results = w.drain(store, now=due, poster=_ok(), jitter=HALF, save=bad_save)
+    assert [r.ok for r in results] == [True]
+
+
+def test_force_ignores_the_clock_but_not_the_lease(resolver):
+    store = _queued_store(resolver)
+    assert w.due_items(store, T0) == ()
+    assert len(w.due_items(store, T0, force=True)) == 1
+    leased = w._lease(store, (store.queue[0].id,), T0)
+    assert w.due_items(leased, T0, force=True) == ()
+
+
+def test_a_forced_attempt_that_fails_backs_off_from_real_now(resolver):
+    store = _queued_store(resolver)
+    store, _ = w.drain(store, now=T0, force=True, poster=_failing(), jitter=HALF)
+    due = datetime.datetime.fromisoformat(store.queue[0].next_attempt_at)
+    assert T0 < due < T0 + datetime.timedelta(seconds=w.WEBHOOKS.backoff_max_seconds + 60)
+
+
+def test_a_drain_can_be_limited_to_one_endpoint(resolver):
+    store = w.WebhookStore(endpoints=(
+        _endpoint(id="a", url="https://a.example/h"),
+        _endpoint(id="b", url="https://b.example/h"),
+    ))
+    store, _ = w.dispatch(store, "alert.triggered", {}, poster=_failing(), jitter=HALF)
+    assert len(store.queue) == 2
+    store, results = w.drain(store, force=True, endpoint_id="a",
+                             poster=_ok(), jitter=HALF)
+    assert [r.endpoint_id for r in results] == ["a"]
+    assert len(store.queue) == 1
+
+
+def test_one_pass_is_bounded(resolver, cfg):
+    cfg(max_drain_per_pass=2, disable_after_failures=999)
+    store = w.WebhookStore(endpoints=(_endpoint(),))
+    for i in range(5):
+        store, _ = w.dispatch(store, "alert.triggered", {"n": i},
+                              poster=_failing(), jitter=HALF)
+    assert len(store.queue) == 5
+    store, results = w.drain(store, force=True, poster=_ok(), jitter=HALF)
+    assert len(results) == 2
+
+
+def test_the_queue_is_bounded_and_a_drop_is_recorded(resolver, cfg):
+    cfg(max_queue_length=2, disable_after_failures=999)
+    store = w.WebhookStore(endpoints=(_endpoint(),))
+    for i in range(4):
+        store, _ = w.dispatch(store, "alert.triggered", {"n": i},
+                              poster=_failing(), jitter=HALF)
+    assert len(store.queue) == 2
+    assert any("Dropped from the retry queue" in d.error for d in store.deliveries), \
+        "a silently discarded delivery is the one thing a retry queue must not do"
+
+
+def test_an_unparseable_due_date_is_treated_as_due_not_stranded(resolver):
+    store = _queued_store(resolver)
+    store = dataclasses.replace(store, queue=(
+        dataclasses.replace(store.queue[0], next_attempt_at="not a date"),))
+    assert len(w.due_items(store, T0)) == 1
+
+
+def test_the_queue_survives_a_store_round_trip(tmp_path, resolver):
+    """Durability is the entire point: a queue that died with the process
+    would just be a retry loop."""
+    store = _queued_store(resolver)
+    path = tmp_path / "webhooks_store.json"
+    assert w.save_store(store, path) is True
+
+    loaded = w.load_store(path)
+    assert len(loaded.queue) == 1
+    assert loaded.queue[0].id == store.queue[0].id
+    assert loaded.queue[0].data == {"ticker": "AAPL"}
+    assert loaded.queue[0].attempts == 1
+    assert loaded.queue[0].next_attempt_at == store.queue[0].next_attempt_at
+
+
+def test_a_malformed_queue_row_is_dropped_not_fatal(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"queue": [
+        {"endpoint_id": "e1", "id": "q1", "event": "alert.triggered",
+         "data": {}, "attempts": 1},
+        {"no_endpoint": True},
+        "not a dict",
+    ]}))
+    loaded = w.load_store(path)
+    assert len(loaded.queue) == 1
+
+
+def test_queue_summary_says_due_not_scheduled(resolver):
+    """Nothing here can promise when a drain will happen, so the wording
+    must not imply a deadline."""
+    store = _queued_store(resolver)
+    summary = w.queue_summary(store, "e1")
+    assert "waiting to retry" in summary
+    assert "due" in summary
+    assert "scheduled" not in summary.lower()
+
+
+def test_queue_summary_is_empty_when_nothing_is_queued():
+    assert w.queue_summary(w.WebhookStore()) == ""
+
+
+def test_queue_summary_flags_a_paused_endpoint(resolver):
+    store = _queued_store(resolver)
+    store = w.set_active(store, "e1", False)
+    assert "Held" in w.queue_summary(store, "e1")
+
+
+def test_a_short_secret_is_not_blindly_redacted():
+    """A one-character secret turned "could not resolve" into "could not
+    rewhsec_***olve" — mangling a message the user has to act on."""
+    endpoint = _endpoint(secret="s")
+    assert w.redact("could not resolve 'x'", (endpoint,)) == "could not resolve 'x'"
+
+
+# --- redelivery wiring --------------------------------------------------------
+
+def test_the_cron_runner_drains_the_queue():
+    """The only drainer that works with the app shut, which is what makes
+    redelivery durable rather than incidental."""
+    source = ALERT_WATCH.read_text()
+    assert "webhooks.drain(" in source
+
+
+def test_the_cron_runner_drains_even_when_no_alerts_fired():
+    """A quiet run is exactly when a backlog should go out."""
+    source = ALERT_WATCH.read_text()
+    # The phrase appears twice — once in the --check dry run, which must
+    # NOT deliver anything, and once on the real quiet run, which must.
+    index = source.rindex('messages.append("No newly triggered alerts.")')
+    assert "_dispatch_webhooks" in source[index:index + 500]
+
+
+def test_the_app_drains_opportunistically_and_publishes_the_lease():
+    source = FINANCE.read_text()
+    assert "webhooks.drain(_wh_live, save=webhooks.save_store)" in source
+
+
+def test_the_panel_surfaces_the_queue():
+    source = FINANCE.read_text()
+    assert "queue_summary(" in source
+    assert "webhook_drain_" in source

@@ -72,6 +72,7 @@ import hmac
 import logging
 import ipaddress
 import json
+import random
 import secrets
 import socket
 import urllib.error
@@ -164,6 +165,12 @@ class Delivery:
     ok: bool
     status: Optional[int] = None
     error: str = ""
+    # Whether trying again could plausibly succeed. Set explicitly at
+    # every return site rather than inferred from the error text: a
+    # refused DESTINATION and a refused REQUEST both arrive with no
+    # status, and only one of them is worth another attempt.
+    retryable: bool = False
+    attempt: int = 1
 
     @property
     def summary(self) -> str:
@@ -173,9 +180,37 @@ class Delivery:
 
 
 @dataclass(frozen=True)
+class QueuedDelivery:
+    """One delivery waiting to be retried.
+
+    `id` IS THE DELIVERY ID AND IT DOES NOT CHANGE ACROSS RETRIES. That
+    is the property the whole queue rests on: a receiver that has
+    already processed this id can discard the duplicate, so an at-least-
+    once queue becomes effectively-once at the far end. Generating a
+    fresh id per attempt would make every retry look like a new event
+    and fire the automation twice.
+
+    `data` is kept rather than the rendered body, because the body has
+    to be REBUILT and RE-SIGNED at each attempt — see drain().
+    """
+    id: str
+    endpoint_id: str
+    event: str
+    data: dict
+    attempts: int
+    next_attempt_at: str
+    created_at: str
+    last_error: str = ""
+    # Held by whichever process is currently attempting this item, so a
+    # second drainer skips it. Expires, so a crash cannot strand it.
+    leased_until: str = ""
+
+
+@dataclass(frozen=True)
 class WebhookStore:
     endpoints: Tuple[Endpoint, ...] = ()
     deliveries: Tuple[Delivery, ...] = ()
+    queue: Tuple[QueuedDelivery, ...] = ()
     # True when the file existed but could not be parsed. Distinguished
     # from "no file yet" so a corrupt store is never silently replaced by
     # the next write — the same rule screener_templates follows, and the
@@ -244,8 +279,26 @@ def load_store(path: Optional[Path] = None) -> WebhookStore:
             ok=bool(item.get("ok", False)),
             status=int(status) if isinstance(status, (int, float)) else None,
             error=str(item.get("error") or ""),
+            retryable=bool(item.get("retryable", False)),
+            attempt=int(item.get("attempt") or 1),
         ))
-    return WebhookStore(tuple(endpoints), tuple(deliveries))
+    queue: List[QueuedDelivery] = []
+    for item in raw.get("queue", []) or []:
+        if not isinstance(item, dict) or not str(item.get("endpoint_id", "")).strip():
+            continue
+        data = item.get("data")
+        queue.append(QueuedDelivery(
+            id=str(item.get("id") or uuid.uuid4().hex),
+            endpoint_id=str(item["endpoint_id"]),
+            event=str(item.get("event") or ""),
+            data=data if isinstance(data, dict) else {},
+            attempts=int(item.get("attempts") or 0),
+            next_attempt_at=str(item.get("next_attempt_at") or ""),
+            created_at=str(item.get("created_at") or ""),
+            last_error=str(item.get("last_error") or ""),
+            leased_until=str(item.get("leased_until") or ""),
+        ))
+    return WebhookStore(tuple(endpoints), tuple(deliveries), tuple(queue))
 
 
 def save_store(store: WebhookStore, path: Optional[Path] = None) -> bool:
@@ -268,8 +321,17 @@ def save_store(store: WebhookStore, path: Optional[Path] = None) -> bool:
         "deliveries": [{
             "id": d.id, "endpoint_id": d.endpoint_id, "event": d.event,
             "attempted_at": d.attempted_at, "ok": d.ok, "status": d.status,
-            "error": d.error,
+            "error": d.error, "retryable": d.retryable, "attempt": d.attempt,
         } for d in store.deliveries],
+        # The queue is persisted with the payload DATA, not a rendered
+        # body: each retry rebuilds and re-signs, so storing the bytes
+        # would freeze a timestamp that a receiver will later reject.
+        "queue": [{
+            "id": q.id, "endpoint_id": q.endpoint_id, "event": q.event,
+            "data": q.data, "attempts": q.attempts,
+            "next_attempt_at": q.next_attempt_at, "created_at": q.created_at,
+            "last_error": q.last_error, "leased_until": q.leased_until,
+        } for q in store.queue],
     }
     atomic_write_text(path, json.dumps(payload, indent=2))
     return True
@@ -506,7 +568,14 @@ def redact(text: str, endpoints: Tuple[Endpoint, ...] = ()) -> str:
     secret that reached a log is a secret that has to be rotated."""
     out = str(text or "")
     for endpoint in endpoints:
-        if endpoint.secret:
+        # A plausible secret only. new_secret() produces ~49 characters,
+        # so anything very short is a test fixture or a hand-edited store
+        # — and blind-replacing a one-character "secret" rewrites every
+        # occurrence of that letter, which turned "could not resolve"
+        # into "could not rewhsec_***olve". Mangling the message a user
+        # has to act on is a worse outcome than not redacting a string
+        # that cannot be a real secret.
+        if endpoint.secret and len(endpoint.secret) >= 8:
             out = out.replace(endpoint.secret, "whsec_***")
     return out
 
@@ -557,14 +626,46 @@ def _post(url: str, body: bytes, headers: Dict[str, str],
         return False, None, f"{type(exc).__name__}: {exc}"
 
 
+def is_retryable_status(status: Optional[int]) -> bool:
+    """Whether another attempt could plausibly succeed.
+
+    THE IMPORTANT HALF IS WHAT IS *NOT* RETRIED. A 4xx means the receiver
+    understood the request and rejected it — a bad path, a rejected
+    signature, a schema it does not accept. Retrying that six times
+    changes nothing and hammers someone else's server with a request they
+    have already refused; it is the classic webhook bug. The two
+    exceptions are 408 (the receiver timed out reading) and 429 (it is
+    explicitly asking us to come back later), which are both invitations
+    to retry.
+
+    A 3xx is terminal too: Quantix does not follow redirects, so the
+    endpoint is misconfigured and only the user can fix it.
+
+    No status at all — a connection refused, a DNS blip, a TLS handshake
+    that died, a read timeout — is the case retrying exists for.
+    """
+    if status is None:
+        return True
+    if status in (408, 429):
+        return True
+    if 500 <= status < 600:
+        return True
+    return False
+
+
 def deliver(endpoint: Endpoint, event: str, data: dict,
-            poster: Optional[Callable] = None) -> Delivery:
+            poster: Optional[Callable] = None,
+            delivery_id: str = "", attempt: int = 1) -> Delivery:
     """Send one event to one endpoint. Never raises.
+
+    `delivery_id` is passed in when this is a RETRY, so the id a receiver
+    sees is the same one it saw before and can be deduplicated against.
+    The timestamp and signature are still regenerated — see drain().
 
     `poster` is injected so tests and the UI's "send test event" run the
     whole signing and recording path without a network.
     """
-    delivery_id = uuid.uuid4().hex
+    delivery_id = delivery_id or uuid.uuid4().hex
     timestamp = _now_iso()
     payload = build_payload(event, data, delivery_id, timestamp)
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -582,8 +683,16 @@ def deliver(endpoint: Endpoint, event: str, data: dict,
     # address afterwards, and this is the only check that would see it.
     ok, error = validate_url(endpoint.url, allow_private=endpoint.allow_private)
     if not ok:
+        # NOT retryable, and this is exactly why `retryable` is set
+        # explicitly rather than sniffed from the error. A refused
+        # destination has no status, which looks identical to a refused
+        # connection — but one is a network blip worth retrying and the
+        # other is a URL the user has to change. Retrying an SSRF
+        # refusal would also mean re-resolving a hostile name on a
+        # schedule.
         return Delivery(delivery_id, endpoint.id, event, timestamp, False,
-                        None, redact(error, (endpoint,)))
+                        None, redact(error, (endpoint,)),
+                        retryable=False, attempt=attempt)
 
     send = poster or _post
     try:
@@ -596,9 +705,12 @@ def deliver(endpoint: Endpoint, event: str, data: dict,
         ok, status, error = False, None, f"{type(exc).__name__}: {exc}"
     if not ok:
         log_event(logger, logging.WARNING, "webhooks.delivery_failed",
-                  section="webhooks", endpoint=endpoint.id, kind=event)
+                  section="webhooks", endpoint=endpoint.id, kind=event,
+                  attempt=attempt)
     return Delivery(delivery_id, endpoint.id, event, timestamp, bool(ok),
-                    status, redact(error, (endpoint,)))
+                    status, redact(error, (endpoint,)),
+                    retryable=(not ok and is_retryable_status(status)),
+                    attempt=attempt)
 
 
 def record(store: WebhookStore, delivery: Delivery) -> WebhookStore:
@@ -636,8 +748,286 @@ def record(store: WebhookStore, delivery: Delivery) -> WebhookStore:
     return replace(store, endpoints=tuple(endpoints), deliveries=deliveries)
 
 
+# --- the retry queue ----------------------------------------------------------
+#
+# WHAT "QUEUED REDELIVERY" HONESTLY MEANS HERE. There is no daemon. The
+# queue is durable state in the same store file, and it is DRAINED by
+# whoever runs next: alert_watch.py on its cron schedule (the reliable
+# path, which works with the app shut) and the running app
+# opportunistically (which shortens the wait whenever a tab is open).
+#
+# So a backoff of 60 seconds does not promise delivery 60 seconds later.
+# It makes the item ELIGIBLE at that point; it goes out on the next
+# drain. Saying "retry in 60s" while the only drainer runs every 15
+# minutes would be a promise the app cannot keep, so the panel words it
+# as "due" rather than "scheduled".
+#
+# DELIVERY IS AT-LEAST-ONCE, MADE EFFECTIVELY-ONCE AT THE RECEIVER. Two
+# drainers can overlap, a lease can expire mid-flight, and a receiver can
+# process a request whose response never got back to us. The queue does
+# not pretend otherwise: it keeps the delivery id STABLE across attempts
+# so a receiver that records ids can discard the duplicate, and the
+# panel's verification snippet says so.
+
+
+def backoff_seconds(attempts: int, jitter: Optional[Callable] = None) -> int:
+    """Delay before attempt number `attempts` + 1.
+
+    Exponential from `backoff_base_seconds`, capped, then jittered. The
+    jitter is not decoration: when a receiver goes down, every queued
+    item fails at the same moment and would otherwise become due at the
+    same moment, so the machine coming back up gets the whole backlog in
+    one burst. Spreading them is the difference between a retry and a
+    retry storm.
+    """
+    attempts = max(0, int(attempts))
+    delay = WEBHOOKS.backoff_base_seconds * (WEBHOOKS.backoff_factor ** attempts)
+    delay = min(delay, WEBHOOKS.backoff_max_seconds)
+    spread = delay * WEBHOOKS.backoff_jitter
+    roll = jitter() if jitter is not None else random.random()
+    # Jitter is symmetric around the computed delay, and the result is
+    # floored at one second so a test with a stubbed roll of 0 cannot
+    # produce a zero-delay item that spins.
+    return max(1, int(delay - spread + (2 * spread * roll)))
+
+
+def _parse_iso(value: str) -> Optional[datetime.datetime]:
+    try:
+        return datetime.datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def enqueue(store: WebhookStore, delivery: Delivery, data: dict,
+            now: Optional[datetime.datetime] = None,
+            jitter: Optional[Callable] = None) -> WebhookStore:
+    """Put a failed delivery in line for another attempt.
+
+    Only called for a delivery that is `retryable` and has attempts left.
+    The queue is bounded; when it is full the OLDEST item is dropped and
+    the drop is recorded in the delivery log, because a retry queue that
+    silently discards is worse than one that never existed.
+    """
+    now = now or datetime.datetime.now()
+    due = now + datetime.timedelta(seconds=backoff_seconds(delivery.attempt, jitter))
+    item = QueuedDelivery(
+        id=delivery.id,
+        endpoint_id=delivery.endpoint_id,
+        event=delivery.event,
+        data=dict(data or {}),
+        attempts=int(delivery.attempt),
+        next_attempt_at=due.isoformat(timespec="seconds"),
+        created_at=now.isoformat(timespec="seconds"),
+        last_error=delivery.summary,
+    )
+    queue = store.queue + (item,)
+    dropped = ()
+    if len(queue) > WEBHOOKS.max_queue_length:
+        overflow = len(queue) - WEBHOOKS.max_queue_length
+        dropped, queue = queue[:overflow], queue[overflow:]
+
+    store = replace(store, queue=queue)
+    for lost in dropped:
+        store = record(store, Delivery(
+            lost.id, lost.endpoint_id, lost.event,
+            now.isoformat(timespec="seconds"), False, None,
+            f"Dropped from the retry queue — it holds at most "
+            f"{WEBHOOKS.max_queue_length} items and older ones go first.",
+            retryable=False, attempt=lost.attempts,
+        ))
+    return store
+
+
+def queued_for(store: WebhookStore, endpoint_id: str) -> Tuple[QueuedDelivery, ...]:
+    return tuple(q for q in store.queue if q.endpoint_id == endpoint_id)
+
+
+def due_items(store: WebhookStore,
+              now: Optional[datetime.datetime] = None,
+              force: bool = False) -> Tuple[QueuedDelivery, ...]:
+    """Queued items eligible to go out now: due, and not leased by
+    another drainer.
+
+    An unparseable date is treated as DUE rather than skipped — a
+    corrupt timestamp must not park an item in the queue forever where
+    nobody would ever look at it again.
+    """
+    now = now or datetime.datetime.now()
+    out: List[QueuedDelivery] = []
+    for item in store.queue:
+        lease = _parse_iso(item.leased_until)
+        if lease is not None and lease > now:
+            continue                       # someone else is attempting it
+        if not force:
+            due = _parse_iso(item.next_attempt_at)
+            if due is not None and due > now:
+                continue
+        out.append(item)
+    return tuple(out)
+
+
+def _lease(store: WebhookStore, ids: Tuple[str, ...],
+           now: datetime.datetime) -> WebhookStore:
+    until = (now + datetime.timedelta(seconds=WEBHOOKS.lease_seconds)
+             ).isoformat(timespec="seconds")
+    return replace(store, queue=tuple(
+        replace(q, leased_until=until) if q.id in ids else q
+        for q in store.queue))
+
+
+def drain(store: WebhookStore, now: Optional[datetime.datetime] = None,
+          poster: Optional[Callable] = None,
+          jitter: Optional[Callable] = None,
+          save: Optional[Callable] = None,
+          force: bool = False,
+          endpoint_id: str = "") -> Tuple[WebhookStore, Tuple[Delivery, ...]]:
+    """Attempt every due item. Returns (store, deliveries).
+
+    `save` is called once the leases are taken and before any request
+    goes out. That ordering is the point: leases only prevent a double
+    send if the OTHER process can see them, and it cannot see anything
+    still sitting in this process's memory. Without it, cron and an open
+    tab would both find the same item due and both send it.
+
+    Never raises. A drain runs inside the alerts fragment and inside a
+    cron job, and neither may be taken down by a receiver.
+    """
+    now = now or datetime.datetime.now()
+    endpoints = {e.id: e for e in store.endpoints}
+
+    # `force` ignores the backoff clock — the panel's "Retry queued now"
+    # — but NOT the lease. Overriding both would let the button send an
+    # item another drainer is mid-flight on, which is the one thing the
+    # lease exists to prevent. Rescheduling still uses the real `now`,
+    # so a forced attempt that fails backs off from this moment rather
+    # than from whatever the caller pretended the time was.
+    ready = due_items(store, now, force=force)
+    if endpoint_id:
+        ready = tuple(q for q in ready if q.endpoint_id == endpoint_id)
+    ready = ready[:WEBHOOKS.max_drain_per_pass]
+    if not ready:
+        return store, ()
+
+    store = _lease(store, tuple(item.id for item in ready), now)
+    if save is not None:
+        try:
+            save(store)
+        except Exception:
+            log_exception(logger, "webhooks.lease_save_failed", section="webhooks")
+
+    results: List[Delivery] = []
+    for item in ready:
+        endpoint = endpoints.get(item.endpoint_id)
+        if endpoint is None:
+            # The endpoint was deleted while this sat in the queue.
+            # Nothing to deliver to and nothing to tell the user about,
+            # since remove_endpoint() already took its history.
+            store = _dequeue(store, item.id)
+            continue
+        if not endpoint.active:
+            # Paused or auto-disabled. Leave the item queued rather than
+            # dropping it: resuming the endpoint should not have silently
+            # lost what was waiting. The lease is cleared so it is
+            # eligible again the moment the endpoint comes back.
+            store = _release(store, item.id)
+            continue
+
+        attempt = item.attempts + 1
+        # RE-SIGNED WITH A FRESH TIMESTAMP, KEEPING THE ORIGINAL ID. A
+        # receiver that checks the timestamp against a tolerance window —
+        # which the panel's own snippet tells them to do — would reject a
+        # replayed signature from an hour ago, so reusing the original
+        # would guarantee every retry failed. The id is what stays
+        # constant, and the id is what deduplication uses.
+        delivery = deliver(endpoint, item.event, item.data, poster=poster,
+                           delivery_id=item.id, attempt=attempt)
+        results.append(delivery)
+        store = record(store, delivery)
+
+        if delivery.ok:
+            store = _dequeue(store, item.id)
+            continue
+        if not delivery.retryable or attempt >= WEBHOOKS.max_attempts:
+            store = _dequeue(store, item.id)
+            store = record(store, replace(
+                delivery,
+                error=_gave_up_reason(delivery, attempt),
+                attempted_at=now.isoformat(timespec="seconds"),
+            ))
+            continue
+        store = _reschedule(store, item, delivery, now, jitter)
+
+    return store, tuple(results)
+
+
+def queue_summary(store: WebhookStore, endpoint_id: str = "",
+                  now: Optional[datetime.datetime] = None) -> str:
+    """One line describing what is waiting, for the panel.
+
+    Says "due" rather than "scheduled" on purpose — see the section
+    comment above. Nothing here can promise when a drain will happen.
+    """
+    items = queued_for(store, endpoint_id) if endpoint_id else store.queue
+    if not items:
+        return ""
+    now = now or datetime.datetime.now()
+    ready = sum(1 for q in items
+                if (_parse_iso(q.next_attempt_at) or now) <= now)
+    held = ""
+    if endpoint_id:
+        endpoint = next((e for e in store.endpoints if e.id == endpoint_id), None)
+        if endpoint is not None and not endpoint.active:
+            held = " Held while this endpoint is paused — resuming releases them."
+    word = "delivery" if len(items) == 1 else "deliveries"
+    return (f"{len(items)} {word} waiting to retry, {ready} due now.{held}")
+
+
+# HOW AUTO-DISABLE AND THE RETRY BUDGET INTERACT, because the two limits
+# are easy to read as one. `disable_after_failures` counts CONSECUTIVE
+# failures on an ENDPOINT; `max_attempts` counts attempts at a single
+# EVENT. With the shipped defaults the endpoint limit (5) is reached
+# before the per-event one (6), so an endpoint that is simply down gets
+# disabled first and its queued items are HELD rather than burning
+# through their remaining attempts against a machine nobody is fixing.
+# Resuming the endpoint releases them with their attempt counts intact.
+# The per-event budget is what bounds an endpoint that fails
+# intermittently, where the consecutive counter keeps resetting and the
+# endpoint therefore never disables.
+def _gave_up_reason(delivery: Delivery, attempt: int) -> str:
+    if not delivery.retryable:
+        return (f"Gave up after attempt {attempt} — {delivery.summary}. "
+                "This will not succeed on a retry, so it was not queued again.")
+    return (f"Gave up after {attempt} attempts — {delivery.summary}. "
+            "The event was not delivered.")
+
+
+def _dequeue(store: WebhookStore, item_id: str) -> WebhookStore:
+    return replace(store, queue=tuple(q for q in store.queue if q.id != item_id))
+
+
+def _release(store: WebhookStore, item_id: str) -> WebhookStore:
+    """Drop the lease without consuming an attempt."""
+    return replace(store, queue=tuple(
+        replace(q, leased_until="") if q.id == item_id else q for q in store.queue))
+
+
+def _reschedule(store: WebhookStore, item: QueuedDelivery, delivery: Delivery,
+                now: datetime.datetime,
+                jitter: Optional[Callable] = None) -> WebhookStore:
+    attempts = item.attempts + 1
+    due = now + datetime.timedelta(seconds=backoff_seconds(attempts, jitter))
+    return replace(store, queue=tuple(
+        replace(q, attempts=attempts,
+                next_attempt_at=due.isoformat(timespec="seconds"),
+                last_error=delivery.summary, leased_until="")
+        if q.id == item.id else q
+        for q in store.queue))
+
+
 def dispatch(store: WebhookStore, event: str, data: dict,
-             poster: Optional[Callable] = None) -> Tuple[WebhookStore, Tuple[Delivery, ...]]:
+             poster: Optional[Callable] = None,
+             jitter: Optional[Callable] = None
+             ) -> Tuple[WebhookStore, Tuple[Delivery, ...]]:
     """Send one event to every endpoint subscribed to it.
 
     One endpoint's failure never stops the others, and nothing here can
@@ -649,6 +1039,13 @@ def dispatch(store: WebhookStore, event: str, data: dict,
         delivery = deliver(endpoint, event, data, poster=poster)
         store = record(store, delivery)
         deliveries.append(delivery)
+        # A first attempt that failed for a reason another attempt could
+        # fix goes in the queue. One that failed because the receiver
+        # rejected it, or because the destination is refused, does not —
+        # see is_retryable_status().
+        if (not delivery.ok and delivery.retryable
+                and WEBHOOKS.max_attempts > 1):
+            store = enqueue(store, delivery, data, jitter=jitter)
     return store, tuple(deliveries)
 
 

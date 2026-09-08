@@ -3062,6 +3062,14 @@ def _render_realtime_alerts_fragment():
         if _rt_webhook_batch:
             try:
                 _wh_live = webhooks.load_store()
+                if not _wh_live.corrupt and _wh_live.queue:
+                    # Opportunistic only. alert_watch under cron is the
+                    # drainer that makes redelivery durable; this one just
+                    # shortens the wait while a tab happens to be open.
+                    # The lease is what stops the two from double-sending,
+                    # and save= publishes it before any request goes out.
+                    _wh_live, _ = webhooks.drain(_wh_live, save=webhooks.save_store)
+                    webhooks.save_store(_wh_live)
                 if not _wh_live.corrupt and webhooks.endpoints_for(_wh_live, "alert.triggered"):
                     for _wh_rule, _wh_res in _rt_webhook_batch:
                         _wh_live, _ = webhooks.dispatch(_wh_live, "alert.triggered", {
@@ -3657,7 +3665,12 @@ with st.sidebar.expander("Webhooks", expanded=False):
                         st.caption(
                             f"Last attempt {_wh_last.attempted_at[:16]} — "
                             f"{_wh_last.summary}"
+                            + (f" (attempt {_wh_last.attempt})"
+                               if _wh_last.attempt > 1 else "")
                         )
+                    _wh_pending = webhooks.queue_summary(_wh_store, _wh_ep.id)
+                    if _wh_pending:
+                        st.caption(f"↻ {_wh_pending}")
                 with _wh_cols[1]:
                     if st.button("✕", key=f"webhook_remove_{_wh_ep.id}",
                                  help="Delete this endpoint and its delivery history."):
@@ -3675,6 +3688,19 @@ with st.sidebar.expander("Webhooks", expanded=False):
                         st.session_state["webhook_store"] = _wh_store
                         webhooks.save_store(_wh_store)
                         st.rerun()
+                if webhooks.queued_for(_wh_store, _wh_ep.id):
+                    if st.button("Retry queued now",
+                                 key=f"webhook_drain_{_wh_ep.id}",
+                                 help="Attempt every queued delivery for this "
+                                      "endpoint immediately instead of waiting "
+                                      "for it to fall due."):
+                        _wh_store = webhooks.drain(
+                            _wh_store, force=True, endpoint_id=_wh_ep.id,
+                            save=webhooks.save_store)[0]
+                        st.session_state["webhook_store"] = _wh_store
+                        webhooks.save_store(_wh_store)
+                        st.rerun()
+
                 with _wh_act[1]:
                     if st.button("Send test", key=f"webhook_test_{_wh_ep.id}",
                                  help="Deliver a sample event so you can confirm your "
