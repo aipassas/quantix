@@ -1180,6 +1180,43 @@ class WebhooksConfig:
 
 
 WEBHOOKS = WebhooksConfig()
+@dataclass(frozen=True)
+class SpreadsheetImportConfig:
+    """Importing holdings or a watchlist from a file or pasted text.
+
+    THE HARD PART IS NOT PARSING, IT IS SURVIVING A BROKER EXPORT. A
+    Schwab or Fidelity CSV opens with account name, a generated-on date
+    and a blank line, and feeding that straight to pandas raises a
+    ParserError rather than returning anything — measured. So the reader
+    scans for the header row, and `header_scan_lines` bounds that scan.
+
+    NOTHING IS WRITTEN UNTIL THE USER CONFIRMS. The importer builds a
+    preview with a verdict per row and the panel renders it; applying is
+    a separate action. Two things in a spreadsheet are silently
+    ambiguous — whether a cost column is per-share or a total, and
+    whether 01/02 is January 2nd — and both are shown as controls rather
+    than guessed, because each is wrong by a plausible-looking number
+    rather than by an error.
+    """
+
+    # 5 MB is far beyond any plausible holdings export (a 1,000-row CSV
+    # is ~60 KB) while still bounding what an upload can cost.
+    max_upload_bytes: int = 5 * 1024 * 1024
+
+    # Rows read from one file. A portfolio caps at 50 holdings and a
+    # watchlist at 10, so this only has to be large enough to show a
+    # long file's contents honestly before the caps apply.
+    max_rows: int = 1000
+
+    # How far to look for a header row past a broker's preamble.
+    header_scan_lines: int = 25
+
+    # Rows rendered in the preview table. The verdict counts are always
+    # for the whole file; this bounds only what is drawn.
+    max_preview_rows: int = 100
+
+
+SPREADSHEET_IMPORT = SpreadsheetImportConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

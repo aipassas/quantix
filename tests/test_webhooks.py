@@ -793,8 +793,11 @@ def test_resuming_releases_held_items(resolver):
 def test_a_deleted_endpoint_drops_its_queued_items(resolver):
     store = _queued_store(resolver)
     store = w.remove_endpoint(store, "e1")
-    due = T0 + datetime.timedelta(days=1)
-    store, results = w.drain(store, now=due, poster=_ok(), jitter=HALF)
+    # force=True rather than a hardcoded future date: _queued_store
+    # enqueues against the REAL clock, so "T0 + a day" is only in the
+    # future while today happens to be T0's date. That made this test
+    # pass on one day and fail on the next.
+    store, results = w.drain(store, force=True, poster=_ok(), jitter=HALF)
     assert results == ()
     assert store.queue == ()
 

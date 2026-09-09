@@ -84,6 +84,7 @@ import asset_views
 import earnings_materials
 import walkthroughs
 import webhooks
+import spreadsheet_import
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -10028,6 +10029,193 @@ else:
                 st.session_state["_pf_clear_form"] = True
                 log_event(logger, logging.INFO, "user.portfolio_holding_added")
                 st.rerun()
+
+        # ==========================================
+        # IMPORT FROM A SPREADSHEET
+        # ==========================================
+        # Covers both backlog items: "CSV/Excel Import" and "Batch
+        # Watchlist Import", which are the same pipeline with a different
+        # input — the second ticket says so itself. A file and a pasted
+        # block both become a DataFrame, then one preview, one apply.
+        #
+        # NOTHING IS WRITTEN UNTIL THE PREVIEW IS CONFIRMED. The two
+        # ambiguities a spreadsheet cannot settle — is the cost column
+        # per-share or a total, and is 01/02 January 2nd — are rendered
+        # as controls rather than guessed, because each is wrong by a
+        # plausible-looking number rather than by an error.
+        with st.expander("Import from a spreadsheet", expanded=False):
+            st.caption(
+                "Upload a CSV or Excel export from your broker, or paste a list of "
+                "tickers. Nothing is saved until you have seen what will be imported."
+            )
+
+            _si_target = st.radio(
+                "Import into", ["Holdings", "Watchlist"], horizontal=True,
+                key="si_target",
+                help="Holdings needs shares, cost and a date. A watchlist needs only tickers.",
+            )
+            _si_positions = (_si_target == "Holdings")
+
+            _si_file = st.file_uploader(
+                "Spreadsheet", type=["csv", "xlsx", "xlsm", "txt"],
+                key="si_file",
+                help="A broker export works as-is — the account preamble above the "
+                     "header is skipped, and cash and total rows are ignored.",
+            )
+            _si_pasted = st.text_area(
+                "…or paste tickers", key="si_pasted",
+                placeholder="AAPL, MSFT, NVDA",
+                help="One per line or comma-separated. A block copied straight out "
+                     "of a spreadsheet works too.",
+            )
+
+            _si_frame, _si_error = None, ""
+            if _si_file is not None:
+                _si_frame, _si_error = spreadsheet_import.read_table(
+                    _si_file.getvalue(), _si_file.name)
+            elif _si_pasted.strip():
+                _si_frame, _si_error = spreadsheet_import.read_pasted(_si_pasted)
+
+            if _si_error:
+                st.warning(_si_error)
+            elif _si_frame is not None:
+                _si_cols = [str(c) for c in _si_frame.columns]
+                _si_guess = spreadsheet_import.guess_mapping(_si_cols, _si_frame)
+
+                st.markdown("**Which column is which**")
+                _si_none = "— none —"
+                _si_options = [_si_none] + _si_cols
+
+                def _si_index(name):
+                    return _si_options.index(name) if name in _si_options else 0
+
+                _si_m1, _si_m2 = st.columns(2)
+                # No key= on these: their options change with the file,
+                # and a stored value outside the new list raises. Same
+                # reasoning as the screener's criteria widgets.
+                _si_ticker_col = _si_m1.selectbox(
+                    "Ticker", _si_options, index=_si_index(_si_guess.ticker))
+                _si_shares_col = _si_cost_col = _si_date_col = _si_none
+                _si_cost_total = False
+                _si_day_first = _si_guess.day_first
+                _si_fallback = None
+
+                if _si_positions:
+                    _si_shares_col = _si_m2.selectbox(
+                        "Shares", _si_options, index=_si_index(_si_guess.shares))
+                    _si_m3, _si_m4 = st.columns(2)
+                    _si_cost_col = _si_m3.selectbox(
+                        "Cost basis", _si_options, index=_si_index(_si_guess.cost_basis))
+                    _si_date_col = _si_m4.selectbox(
+                        "Purchase date", _si_options,
+                        index=_si_index(_si_guess.purchase_date))
+
+                    _si_cost_total = st.checkbox(
+                        "That cost column is the POSITION TOTAL, not the price per share",
+                        value=_si_guess.cost_is_total, key="si_cost_total",
+                        help="Brokers export both under similar headings. Reading a "
+                             "total as a per-share price overstates the position by "
+                             "the share count — 10 shares would show a $15,025 cost "
+                             "instead of $1,502.50.",
+                    )
+                    if _si_date_col != _si_none:
+                        _si_day_first = st.checkbox(
+                            "Dates are day/month/year",
+                            value=_si_guess.day_first, key="si_day_first",
+                            help="01/02/2024 is 2 January read one way and 1 February "
+                                 "the other. Quantix reads the file to settle this "
+                                 "where it can, and asks when nothing in it does.",
+                        )
+                    else:
+                        _si_fallback = st.date_input(
+                            "Purchase date to use for every row",
+                            value=datetime.date.today(), key="si_fallback_date",
+                            max_value=datetime.date.today(),
+                            help="This file has no date column — a broker's positions "
+                                 "export lists what you hold, not when you bought it. "
+                                 "Returns are measured from the date you set here.",
+                        )
+
+                _si_existing = ()
+                if _si_positions:
+                    _si_existing = tuple(h.ticker for h in _pf_store.holdings())
+                else:
+                    _si_existing = _wl_store.lists[_wl_store.active].tickers
+
+                _si_mapping = spreadsheet_import.ColumnMapping(
+                    ticker="" if _si_ticker_col == _si_none else _si_ticker_col,
+                    shares="" if _si_shares_col == _si_none else _si_shares_col,
+                    cost_basis="" if _si_cost_col == _si_none else _si_cost_col,
+                    purchase_date="" if _si_date_col == _si_none else _si_date_col,
+                    cost_is_total=bool(_si_cost_total),
+                    day_first=bool(_si_day_first),
+                    fallback_date=_si_fallback,
+                )
+                _si_preview = spreadsheet_import.build_preview(
+                    _si_frame, _si_mapping, need_position=_si_positions,
+                    existing=_si_existing)
+
+                for _si_warn in _si_preview.warnings:
+                    st.warning(_si_warn)
+
+                st.markdown("**What will be imported**")
+                st.caption(_si_preview.summary())
+
+                _si_rows = _si_preview.rows[:spreadsheet_import.SPREADSHEET_IMPORT.max_preview_rows]
+                if _si_rows:
+                    _si_table = pd.DataFrame([{
+                        "Row": r.row_number,
+                        "Ticker": r.ticker or r.raw_ticker,
+                        "Shares": r.shares,
+                        "Cost/share": r.cost_basis,
+                        "Date": r.purchase_date,
+                        "Status": r.status,
+                        "Why": r.reason,
+                    } for r in _si_rows])
+                    st.dataframe(_si_table, width="stretch", hide_index=True)
+
+                _si_ready = _si_preview.importable
+                if _si_target == "Watchlist":
+                    _si_room = WATCHLIST_PANEL.max_tickers - len(_si_existing)
+                    _si_ready, _si_note = spreadsheet_import.fit_to_capacity(
+                        _si_preview, _si_room)
+                    if _si_note:
+                        st.warning(_si_note)
+
+                if _si_ready and st.button(
+                        f"Import {len(_si_ready)} row(s)", type="primary",
+                        key="si_apply"):
+                    if _si_positions:
+                        _si_added, _si_failed = 0, []
+                        for _si_row in _si_ready:
+                            _pf_store, _si_err = pf_add_holding(
+                                _pf_store, _si_row.ticker, _si_row.shares,
+                                _si_row.cost_basis, _si_row.purchase_date)
+                            if _si_err:
+                                _si_failed.append(f"{_si_row.ticker}: {_si_err}")
+                            else:
+                                _si_added += 1
+                        st.session_state["portfolio_store"] = _pf_store
+                        pf_save_store(_pf_store)
+                        log_event(logger, logging.INFO, "user.holdings_imported",
+                                  count=_si_added)
+                        if _si_failed:
+                            # Reported by name rather than as a count: a
+                            # position that did not arrive is exactly what
+                            # the reader needs to know about.
+                            st.warning("Not imported — " + "; ".join(_si_failed[:8]))
+                        st.success(f"Imported {_si_added} holding(s).")
+                        st.rerun()
+                    else:
+                        _si_new = tuple(r.ticker for r in _si_ready)
+                        _wl_store = update_active_tickers(
+                            _wl_store, _si_existing + _si_new)
+                        st.session_state["watchlist_store"] = _wl_store
+                        save_watchlist_store(_wl_store)
+                        log_event(logger, logging.INFO, "user.watchlist_imported",
+                                  count=len(_si_new))
+                        st.success(f"Added {len(_si_new)} ticker(s) to the watchlist.")
+                        st.rerun()
 
     with tab_tearsheet:
         # ==========================================
