@@ -85,6 +85,7 @@ import earnings_materials
 import walkthroughs
 import webhooks
 import spreadsheet_import
+import peer_comparison
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -9973,6 +9974,86 @@ else:
                     "Positive means your selection beat simply buying the index."
                 ),
             )
+
+            # ==========================================
+            # PEER COMPARISON (opt-in)
+            # ==========================================
+            # The ticket asked for "you beat 72% of users". There is no
+            # such population: Quantix runs locally, there is no backend
+            # collecting returns, and this machine has one account. So
+            # "other users" means the other ACCOUNTS on this instance —
+            # real for a licensee running Quantix for a team, and
+            # honestly empty on a laptop, which is what it says rather
+            # than inventing a percentile.
+            #
+            # The month-scoped return is recomputed here rather than
+            # reusing _pf_perf.twr_pct: that figure runs from the
+            # portfolio's OWN earliest purchase, so ranking it against
+            # someone else's would compare different spans.
+            with st.expander("Compare with others on this instance", expanded=False):
+                _peer_key = _auth_user.key if _auth_user else ""
+                _peer_store = peer_comparison.load_store()
+                _peer_period = peer_comparison.period_for()
+
+                if _peer_store.corrupt:
+                    st.error(
+                        "The shared comparison file can't be read, so nothing is "
+                        "listed and Quantix will not overwrite it — it holds other "
+                        "accounts' entries, not just yours."
+                    )
+                elif not _peer_key:
+                    st.caption("Sign in to compare with other accounts on this instance.")
+                else:
+                    _peer_flows = peer_comparison.flows_from_holdings(
+                        _pf_holdings, _pf_perf.value_series.index)
+                    _peer_mine = peer_comparison.window_return(
+                        _pf_perf.value_series, _peer_flows, _peer_period)
+
+                    st.caption(peer_comparison.cohort_note(_peer_store, _peer_period))
+                    _peer_in = peer_comparison.is_participating(
+                        _peer_store, _peer_key, _peer_period)
+
+                    if _peer_mine is None:
+                        st.info(
+                            f"No return for {_peer_period} yet — a portfolio needs at "
+                            "least two days of value inside the month before there is "
+                            "anything to compare."
+                        )
+                    else:
+                        st.caption(
+                            f"Your time-weighted return for {_peer_period} is "
+                            f"**{_pf_pct(_peer_mine)}**. Only this percentage would be "
+                            "shared — never your holdings, their values, or what you paid."
+                        )
+
+                    if _peer_in:
+                        _peer_result = peer_comparison.compare(
+                            _peer_store, _peer_key, _peer_period)
+                        if _peer_result.has_result:
+                            st.success(_peer_result.sentence())
+                        else:
+                            st.info(_peer_result.sentence())
+                        if st.button("Stop sharing", key="peer_withdraw",
+                                     help="Removes your entry for every month, not "
+                                          "just this one."):
+                            _peer_store = peer_comparison.withdraw(_peer_store, _peer_key)
+                            peer_comparison.save_store(_peer_store)
+                            log_event(logger, logging.INFO, "user.peer_withdrew")
+                            st.rerun()
+                    elif _peer_mine is not None:
+                        if st.button("Share my return for this month",
+                                     key="peer_publish", type="primary",
+                                     help="Writes one number — this month's "
+                                          "time-weighted return — where other accounts "
+                                          "on this machine can see it. Reversible."):
+                            _peer_store, _peer_err = peer_comparison.publish(
+                                _peer_store, _peer_key, _peer_mine, _peer_period)
+                            if _peer_err:
+                                st.warning(_peer_err)
+                            else:
+                                peer_comparison.save_store(_peer_store)
+                                log_event(logger, logging.INFO, "user.peer_published")
+                                st.rerun()
 
             if _pf_perf.mwr_pct is not None:
                 st.caption(

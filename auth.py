@@ -133,6 +133,12 @@ SHARED_STORES: Tuple[str, ...] = (
     # read it. Note this file is a CREDENTIAL file — unlike api_keys,
     # which stores only hashes, signing requires the secret itself.
     "webhooks_store.json",
+    # Opt-in peer comparison: one time-weighted return per account per
+    # month. Shared because a comparison ACROSS accounts cannot live in
+    # one account's namespace — it is the only portfolio-derived figure
+    # that leaves a user's own directory, which is exactly why writing
+    # it requires opting in and why it carries no holdings.
+    "peer_returns_store.json",
 )
 
 

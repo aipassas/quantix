@@ -1217,6 +1217,40 @@ class SpreadsheetImportConfig:
 
 
 SPREADSHEET_IMPORT = SpreadsheetImportConfig()
+@dataclass(frozen=True)
+class PeerComparisonConfig:
+    """Comparing your portfolio return with other accounts on this instance.
+
+    THE TICKET'S "YOU BEAT 72% OF USERS" HAS NO POPULATION BEHIND IT.
+    Quantix runs locally; there is no backend collecting returns and, on
+    the machine this was built on, exactly one account. So "other users"
+    means the other ACCOUNTS on this instance — which is a real case,
+    because branding.py exists for a licensee running Quantix for a team.
+    On a single-account laptop the honest output is "there is no cohort",
+    not an invented percentile.
+
+    ONE NUMBER IS SHARED, AND ONLY ON OPT-IN. An entry carries the
+    period, a time-weighted return and the account key that is already a
+    hash. Never holdings, tickers, market value or cost: a rate of return
+    is a very different disclosure from what someone owns and how much.
+
+    THE WINDOW IS A CALENDAR MONTH because the comparison is meaningless
+    otherwise. The portfolio dashboard measures each portfolio from its
+    OWN earliest purchase, so ranking those figures would compare a
+    three-year return with a three-month one and call the difference
+    skill.
+    """
+
+    store_filename: str = "peer_returns_store.json"
+
+    # Below this many OTHER participants, no percentile is shown. With
+    # one, "you beat 100%" discloses that person's return exactly; with
+    # two it narrows it to a half. Five is the usual k-anonymity floor
+    # and is also the point where a percentage stops being noise.
+    min_cohort: int = 5
+
+
+PEER_COMPARISON = PeerComparisonConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
