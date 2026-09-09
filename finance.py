@@ -3837,9 +3837,15 @@ if _view_pick and asset_views.key_for_pill(_view_pick) != st.session_state["asse
     st.session_state["asset_view"] = asset_views.key_for_pill(_view_pick)
     _view_current = asset_views.view(st.session_state["asset_view"])
 
+# .strip() is load-bearing, not tidiness. A box holding only spaces is a
+# DIFFERENT and worse failure than an empty one: "" raises
+# ValueError("Empty ticker name") from yfinance, while "   " raises
+# TypeError("argument of type 'NoneType' is not iterable") after several
+# failed HTTP round-trips — both measured. Stripping collapses the two
+# into one case, which the guard before the data fetch then handles.
 ticker_symbol = st.sidebar.text_input(
     "Stock Ticker", key="ticker_input",
-    placeholder=_view_current.placeholder).upper()
+    placeholder=_view_current.placeholder).strip().upper()
 st.sidebar.caption(
     f"{_view_current.pill}: " + " · ".join(_view_current.examples))
 
@@ -4369,6 +4375,38 @@ log_input_changes(
 # All Yahoo Finance access for the selected ticker + macro context happens
 # once here via data_loader, and the results are reused by every section
 # below instead of each section re-fetching independently.
+# --- No ticker: an empty state, not a traceback -------------------------------
+# Clearing the Stock Ticker box used to take the entire page down with
+# "ValueError: Empty ticker name" — every tab, not just the analysis.
+#
+# THE GUARD SITS HERE, NOT AT THE INPUT, and the placement is the whole
+# point. The sidebar is fully rendered by this line (its last call is the
+# tab strip above), so the watchlist and "Find a ticker" — exactly what
+# someone needs to choose a new symbol — stay on screen. Stopping at the
+# input would remove them at the moment they became useful.
+#
+# The recovery button parks "_pending_ticker" and reruns rather than
+# assigning "ticker_input" directly: Streamlit forbids writing a widget's
+# own key after that widget has been instantiated this run, and the
+# widget is ~500 lines above. That deferred-switch mechanism already
+# exists for the sidebar watchlist, for the same reason.
+if not ticker_symbol:
+    if empty_states.render(
+        "No ticker selected",
+        "Type a symbol into **Stock Ticker** in the sidebar, pick one from "
+        "your watchlist, or search by company name under **Find a ticker**. "
+        "Nothing has been lost — your watchlists, portfolios and alerts are "
+        "all still saved.",
+        action_label=f"Analyse {CHART_DEFAULTS.default_ticker}",
+        key="empty_no_ticker",
+        help_text=(f"Puts {CHART_DEFAULTS.default_ticker} in the ticker box "
+                   "so there is something to look at."),
+    ):
+        st.session_state["_pending_ticker"] = CHART_DEFAULTS.default_ticker
+        empty_states.log_action("no_ticker_default_restored")
+        st.rerun()
+    st.stop()
+
 with st.spinner(f"Running deep audit on {ticker_symbol} & loading Macro Data..."):
     ticker_bundle = load_ticker_bundle(ticker_symbol, start_date, end_date, deep=True)
     # Every technical indicator below (SMA, RSI, and future MACD/Bollinger/
