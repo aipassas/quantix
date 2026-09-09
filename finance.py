@@ -1465,11 +1465,29 @@ if _screener_saved_name:
 
 
 def _screener_apply_template(_tpl) -> None:
-    """Load a saved screener into the builder."""
+    """Load a saved screener into the builder AND run it.
+
+    ONE CLICK, NOT TWO. Loading the filters and then asking the user to
+    press Run Screen defeats the point of a saved screen: the whole value
+    is not rebuilding it, and a second click to execute is most of the
+    friction the feature exists to remove. The run is triggered through
+    the same "_screener_rerun" flag the empty-state's "remove this
+    filter" action already uses, so there is one path that starts a
+    screen programmatically rather than two.
+
+    THE PREVIOUS RESULTS ARE CLEARED HERE, not left for the run to
+    replace. Applying a template rewrites the filters immediately, so
+    without this there is a window where the builder shows THIS screen's
+    criteria while the table below still shows the LAST one's results,
+    with nothing saying they disagree. That window is short when the
+    re-run succeeds and indefinite when it does not.
+    """
     st.session_state["screener_criteria"] = [dict(c) for c in _tpl.criteria]
     if _tpl.universe:
         st.session_state["screener_universe_text"] = ", ".join(_tpl.universe)
     st.session_state["screener_applied_template"] = _tpl.name
+    st.session_state.pop("screener_results_state", None)
+    st.session_state["_screener_rerun"] = True
 
 
 # --- Saved screeners ---------------------------------------------------
@@ -1485,9 +1503,10 @@ if screener_templates.store_is_corrupt():
 if _screener_templates:
     st.markdown("**Saved screeners**")
     st.caption(
-        "One click loads a screen's filters and its ticker list. The list travels with "
-        "the screen because this screener filters the universe you give it rather than "
-        "searching the whole market."
+        "One click loads a screen's filters and its ticker list and runs it. The list "
+        "travels with the screen because this screener filters the universe you give it "
+        "rather than searching the whole market — so a saved screen reproduces a result, "
+        "not just a filter."
     )
     _tpl_cols = st.columns(4)
     for _tpl_i, _tpl in enumerate(_screener_templates):
@@ -1499,7 +1518,10 @@ if _screener_templates:
 
 _screener_applied = st.session_state.pop("screener_applied_template", None)
 if _screener_applied:
-    st.success(f"Loaded “{_screener_applied}”. Press Run Screen to execute it.")
+    # Says "ran", because it did. Telling someone to press a button that
+    # has already been pressed for them is worse than saying nothing.
+    st.success(f"Ran “{_screener_applied}” — its filters and ticker list are "
+               "loaded below, and you can edit them and run again.")
 
 with st.expander("Manage saved screeners", expanded=False):
     st.caption(
@@ -1666,8 +1688,11 @@ with st.expander("Save this screen", expanded=False):
         else:
             st.warning(_saved_err)
 
-# The empty-state "remove this filter" action re-runs the screen without
-# making the user find the button again.
+# Programmatic runs. Two callers set this flag: the empty-state's "remove
+# this filter" action, and clicking a saved screener — both re-run without
+# making the user find the button again. It is popped HERE, below the
+# builder, so the criteria and universe those callers wrote are already
+# loaded by the time the run starts.
 if st.session_state.pop("_screener_rerun", False):
     screener_run_clicked = True
 
