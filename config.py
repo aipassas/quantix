@@ -1251,6 +1251,41 @@ class PeerComparisonConfig:
 
 
 PEER_COMPARISON = PeerComparisonConfig()
+@dataclass(frozen=True)
+class FollowingConfig:
+    """Profiles, following, and a feed of what colleagues are doing.
+
+    BUILT FOR TWO TICKETS AT ONCE — "Follow Expert Analysts" depends on
+    "User Profiles & Follow System" by its own admission. THERE ARE NO
+    EXPERTS: the only population is the other accounts on this instance,
+    and no role system exists to grant a badge. A profile carries a
+    self-described title instead.
+
+    THE PRIVACY MODEL: a follower's session never opens another account's
+    files. The SHARING account publishes an event into the shared feed
+    from its own session, only for streams it has switched on; the reader
+    filters what was published. Every stream starts OFF. Switching one
+    off removes its history, and deleting a profile removes everything —
+    opting out is retroactive or it is cosmetic.
+    """
+
+    profiles_filename: str = "profiles_store.json"   # shared: the followable directory
+    feed_filename: str = "feed_store.json"           # shared: what was published
+    follows_filename: str = "follows_store.json"     # per-user: whom you follow
+
+    max_title_chars: int = 60
+    max_summary_chars: int = 240
+
+    # The feed keeps this many events in total, oldest dropped first.
+    max_events: int = 500
+    feed_limit: int = 50
+
+    # A repeat view of the same ticker by the same account inside this
+    # window is one fact, not several events.
+    viewed_dedupe_hours: int = 24
+
+
+FOLLOWING = FollowingConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

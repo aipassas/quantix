@@ -90,6 +90,8 @@ PER_USER_STORES: Tuple[str, ...] = (
     "alert_rules_store.json",
     "scenario_store.json",
     "portfolio_store.json",
+    # Whom this account follows. Nobody else's business.
+    "follows_store.json",
 )
 
 # Deliberately NOT per-user, and worth stating so nobody "fixes" it later:
@@ -139,6 +141,12 @@ SHARED_STORES: Tuple[str, ...] = (
     # that leaves a user's own directory, which is exactly why writing
     # it requires opting in and why it carries no holdings.
     "peer_returns_store.json",
+    # Followable profiles and the events they chose to publish. Shared
+    # because a profile IS the thing other accounts can see, and the
+    # feed holds only what each account's own session published for a
+    # stream it switched on. Whom you follow is per-user (below).
+    "profiles_store.json",
+    "feed_store.json",
 )
 
 

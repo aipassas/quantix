@@ -93,6 +93,7 @@ import walkthroughs
 import webhooks
 import spreadsheet_import
 import peer_comparison
+import following
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -342,6 +343,33 @@ _AUTH_SCOPED_STATE = (
     "portfolio_store",
 )
 _auth_user = auth.current_user()
+
+
+def _fl_publish(stream: str, ticker: str, summary: str) -> None:
+    """Publish one event to the colleagues feed, if this account shares
+    that stream. Never raises and never blocks the caller: the feed is a
+    side effect of a watchlist add, an alert, a journal entry or a page
+    view, and none of those may fail because a shared file was busy.
+    following.publish() itself checks the account's stream switch, so
+    a hook that fires when nothing is shared writes nothing."""
+    if _auth_user is None:
+        return
+    try:
+        _fl_profiles = following.load_profiles()
+        if _fl_profiles.corrupt:
+            return
+        _fl_profile = _fl_profiles.get(_auth_user.key)
+        if _fl_profile is None or not _fl_profile.shares(stream):
+            return
+        _fl_feed = following.load_feed()
+        if _fl_feed.corrupt:
+            return
+        _fl_after = following.publish(_fl_feed, _fl_profiles, _auth_user.key,
+                                      stream, ticker, summary)
+        if _fl_after is not _fl_feed:
+            following.save_feed(_fl_after)
+    except Exception:
+        log_exception(logger, "following.publish_failed", section="following")
 _auth_namespace = _auth_user.key if _auth_user else ""
 if st.session_state.get("_auth_namespace", _auth_namespace) != _auth_namespace:
     for _k in _AUTH_SCOPED_STATE:
@@ -3082,6 +3110,8 @@ def _render_realtime_alerts_fragment():
             ))
             log_event(logger, logging.INFO, "user.realtime_alert_triggered", ticker=_rt_rule.ticker, trigger_type=_rt_rule.trigger_type)
             _rt_webhook_batch.append((_rt_rule, _rt_result))
+            _fl_publish(following.STREAM_ALERT, _rt_rule.ticker,
+                        f"{_rt_rule.label} — {_rt_result.detail}")
         rt_save_store(st.session_state["rt_alert_rules"], st.session_state["rt_alert_history"])
 
         # Push the same edge-triggered events to any registered webhook.
@@ -3809,6 +3839,110 @@ with st.sidebar.expander("Webhooks", expanded=False):
             )
             st.code(webhooks.receiver_example(), language="python")
 
+
+# --- Sidebar: Profile & following ---
+# Two backlog items at once: "User Profiles & Follow System" and "Follow
+# Expert Analysts", which depends on it. There are no experts — the only
+# population is the other accounts on this instance — so a profile has
+# a self-described title instead of a badge nobody could grant.
+#
+# THE PRIVACY MODEL: nothing here reads another account's files. An
+# account becomes followable by creating a profile, chooses which
+# streams to share (every one starts OFF), and its OWN session publishes
+# events into the shared feed via _fl_publish(). Switching a stream off
+# removes that stream's history; deleting the profile removes all of it.
+with st.sidebar.expander("Profile & following", expanded=False):
+    if _auth_user is None:
+        st.caption("Sign in to create a profile, follow colleagues, or see their feed.")
+    else:
+        _fl_profiles = following.load_profiles()
+        _fl_follows = following.load_follows()
+        _fl_mine = _fl_profiles.get(_auth_user.key)
+
+        if _fl_profiles.corrupt or _fl_follows.corrupt:
+            st.error("The profiles or follows file can't be read; nothing will be "
+                     "overwritten until it is fixed.")
+        else:
+            st.markdown("**Your profile**")
+            st.caption(following.sharing_summary(_fl_mine))
+            # Seed the widgets from the saved profile ONCE, then render
+            # with key= only. Passing value= alongside key= would revert
+            # the user's edit on the next rerun (CLAUDE.md).
+            if "fl_seeded_for" not in st.session_state or st.session_state["fl_seeded_for"] != _auth_user.key:
+                st.session_state["fl_title"] = _fl_mine.title if _fl_mine else ""
+                for _fl_stream in following.STREAMS:
+                    st.session_state[f"fl_stream_{_fl_stream}"] = bool(
+                        _fl_mine and _fl_mine.shares(_fl_stream))
+                st.session_state["fl_seeded_for"] = _auth_user.key
+            _fl_title = st.text_input(
+                "Title (optional, self-described)", key="fl_title",
+                placeholder="e.g. Energy analyst",
+                help="Shown beside your name as your own description of yourself. "
+                     "Nobody confers it — there is no 'expert' badge here.",
+            )
+            st.caption("Share with followers — each starts off, and switching one off "
+                       "removes what it already shared:")
+            _fl_chosen = []
+            for _fl_stream, _fl_desc in following.STREAMS.items():
+                if st.checkbox(_fl_desc, key=f"fl_stream_{_fl_stream}"):
+                    _fl_chosen.append(_fl_stream)
+
+            _fl_c1, _fl_c2 = st.columns(2)
+            with _fl_c1:
+                if st.button("Save profile" if _fl_mine else "Create profile",
+                             type="primary", key="fl_save",
+                             help="Creating a profile is what makes you followable."):
+                    _fl_new, _fl_err = following.upsert_profile(
+                        _fl_profiles, _auth_user.key, _auth_user.display_name,
+                        title=_fl_title, streams=_fl_chosen)
+                    if _fl_err:
+                        st.warning(_fl_err)
+                    else:
+                        following.save_profiles(_fl_new)
+                        _fl_feed = following.load_feed()
+                        if not _fl_feed.corrupt:
+                            _fl_feed2 = following.apply_stream_change(
+                                _fl_feed, _fl_mine, _fl_new.get(_auth_user.key))
+                            if _fl_feed2 is not _fl_feed:
+                                following.save_feed(_fl_feed2)
+                        log_event(logger, logging.INFO, "user.profile_saved",
+                                  streams=len(_fl_chosen))
+                        st.rerun()
+            with _fl_c2:
+                if _fl_mine and st.button("Delete profile", key="fl_delete",
+                                          help="Removes your profile and everything it "
+                                               "ever shared. Nobody can follow you afterwards."):
+                    following.save_profiles(following.delete_profile(_fl_profiles, _auth_user.key))
+                    _fl_feed = following.load_feed()
+                    if not _fl_feed.corrupt:
+                        following.save_feed(following.purge(_fl_feed, _auth_user.key))
+                    for _fl_k in list(st.session_state):
+                        if _fl_k.startswith("fl_stream_") or _fl_k in ("fl_title", "fl_seeded_for"):
+                            st.session_state.pop(_fl_k, None)
+                    log_event(logger, logging.INFO, "user.profile_deleted")
+                    st.rerun()
+
+            st.markdown("---")
+            st.markdown("**Colleagues you can follow**")
+            _fl_others = following.followable(_fl_profiles, _auth_user.key)
+            if not _fl_others:
+                st.caption("Nobody else on this instance has created a profile yet. "
+                          "An account becomes followable by creating one.")
+            for _fl_p in _fl_others:
+                _fl_r1, _fl_r2 = st.columns([5, 2])
+                with _fl_r1:
+                    st.markdown(f"**{_fl_p.name}**" + (f" · {_fl_p.title}" if _fl_p.title else ""))
+                    st.caption(following.sharing_summary(_fl_p).replace("Your profile is", "Their profile is").replace("your name", "their name").replace("Sharing:", "Shares:"))
+                with _fl_r2:
+                    if _fl_p.user_key in _fl_follows.following:
+                        if st.button("Unfollow", key=f"fl_unfollow_{_fl_p.user_key}"):
+                            following.save_follows(following.unfollow(_fl_follows, _fl_p.user_key))
+                            st.rerun()
+                    else:
+                        if st.button("Follow", key=f"fl_follow_{_fl_p.user_key}"):
+                            following.save_follows(following.follow(_fl_follows, _fl_p.user_key))
+                            st.rerun()
+
 # --- Sidebar Controls ---
 # TradingView-style control rail: only Ticker/Date (used on every
 # interaction) stays always-visible; everything else groups into tabs so
@@ -4229,13 +4363,19 @@ with _wl_btn_col:
     _wl_add_clicked = st.button("Add", width="stretch")
 
 if _wl_add_clicked:
+    _wl_store_before_tickers = _wl_store.lists[_wl_store.active].tickers
     _wl_updated, _wl_error = add_ticker(
-        _wl_store.lists[_wl_store.active].tickers, _wl_new, WATCHLIST_PANEL.max_tickers,
+        _wl_store_before_tickers, _wl_new, WATCHLIST_PANEL.max_tickers,
     )
     if _wl_error:
         st.sidebar.warning(_wl_error)
     else:
         _wl_store = update_active_tickers(_wl_store, _wl_updated)
+        # Only the NEW tickers are published, not the whole list again.
+        for _fl_added in _wl_updated:
+            if _fl_added not in _wl_store_before_tickers:
+                _fl_publish(following.STREAM_WATCHLIST, _fl_added,
+                            f"added {_fl_added} to a watchlist")
         st.session_state["watchlist_store"] = _wl_store
         save_watchlist_store(_wl_store)
         log_event(logger, logging.INFO, "user.watchlist_add", tickers=_wl_new, watchlist=_wl_store.active)
@@ -4891,6 +5031,7 @@ with symbol_header_container.container():
     )
     if _qa_new_recents != _qa_store.recents:
         _qa_store = dataclasses.replace(_qa_store, recents=_qa_new_recents)
+        _fl_publish(following.STREAM_VIEWED, ticker_symbol, f"looked at {ticker_symbol}")
         st.session_state["quick_access_store"] = _qa_store
         save_quick_access(_qa_store)
 
@@ -5170,6 +5311,9 @@ else:
                         st.warning(_ij_err)
                     else:
                         _ij_save_err = investment_journal.save_store(_ij_store)
+                        _fl_publish(following.STREAM_JOURNAL, ticker_symbol,
+                                    f"{_ij_action} · {_ij_conviction} conviction — "
+                                    f"{_ij_reasoning}")
                         if _ij_save_err:
                             st.error(_ij_save_err)
                         else:
@@ -5321,6 +5465,46 @@ else:
         # analysed — the note is about THIS stock, so it belongs beside the
         # analysis rather than in a separate area you'd have to navigate to.
         st.markdown("---")
+        # ==========================================
+        # COLLEAGUES FEED (following)
+        # ==========================================
+        # What the accounts you follow chose to publish. Read-only here:
+        # everything about WHAT gets shared is decided by each publisher
+        # in the sidebar's Profile panel, and following.feed_for()
+        # re-checks their current switches on every read.
+        with st.expander("What colleagues are doing", expanded=False):
+            if _auth_user is None:
+                st.caption("Sign in to follow colleagues and see their feed.")
+            else:
+                _fd_profiles = following.load_profiles()
+                _fd_follows = following.load_follows()
+                _fd_feed = following.load_feed()
+                if _fd_profiles.corrupt or _fd_feed.corrupt or _fd_follows.corrupt:
+                    st.warning("A following file can't be read, so the feed is empty "
+                               "rather than partial.")
+                elif not _fd_follows.following:
+                    st.caption(
+                        "You aren't following anyone yet. Open **Profile & following** "
+                        "in the sidebar to see colleagues with a profile."
+                    )
+                else:
+                    _fd_items = following.feed_for(_fd_follows, _fd_feed, _fd_profiles)
+                    _fd_names = [p.name for p in _fd_profiles.profiles
+                                 if p.user_key in _fd_follows.following]
+                    st.caption(
+                        f"Following {len(_fd_follows.following)}: "
+                        + ", ".join(_fd_names or ["(profiles removed)"])
+                        + ". Only what each of them chose to share appears here."
+                    )
+                    if not _fd_items:
+                        st.info("Nothing shared yet by the people you follow — either "
+                                "they have every stream off, or nothing has happened.")
+                    for _fd_item in _fd_items:
+                        st.markdown(_fd_item.line)
+                        if _fd_item.event.stream in (following.STREAM_JOURNAL,
+                                                     following.STREAM_ALERT):
+                            st.caption(_rt_md_escape_dollar(_fd_item.event.summary))
+
         with st.expander(f"Team Notes — {ticker_symbol}", expanded=False):
             if "collab_store" not in st.session_state:
                 st.session_state["collab_store"] = collab_load_store()
