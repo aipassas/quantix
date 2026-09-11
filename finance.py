@@ -36,6 +36,13 @@ from collaboration import (
     add_member as collab_add_member,
     add_note as collab_add_note,
     delete_note as collab_delete_note,
+    hide_note as collab_hide_note,
+    restore_note as collab_restore_note,
+    can_moderate as collab_can_moderate,
+    top_level as collab_top_level,
+    replies_for as collab_replies_for,
+    hidden_by_author as collab_hidden_by_author,
+    SIGN_IN_TO_POST as COLLAB_SIGN_IN_TO_POST,
     load_store as collab_load_store,
     mark_notified as collab_mark_notified,
     notes_for as collab_notes_for,
@@ -5319,130 +5326,204 @@ else:
                 st.session_state["collab_store"] = collab_load_store()
             _cl_store = st.session_state["collab_store"]
 
+            # THE MODERATION MODEL IS OWNERSHIP. Only a note's verified
+            # author can remove it, removal is a soft hide that records
+            # who and when and can be undone, and posting needs a
+            # sign-in so every new note HAS an owner. There is no
+            # moderator role in this build — that belongs to the RBAC
+            # ticket — so notes written under the old typed-name rule
+            # have no owner and can be removed by nobody; the panel says
+            # so rather than leaving a ✕ that does nothing.
             _cl_caption = (
-                "Notes attached to this ticker, shared by everyone using this Quantix instance — "
-                "deliberately, since a thread only works if teammates can read each other. Anyone "
-                "using this instance can read or delete any note. Mention a teammate with @ to "
-                "email them; only people on the Team roster below can be mentioned, so a typo can "
+                "Discussion attached to this ticker, shared by everyone using this Quantix "
+                "instance — deliberately, since a thread only works if teammates can read each "
+                "other. Anyone can read; posting and replying need a sign-in, and only the "
+                "person who wrote a note can remove it. Mention a teammate with @ to email "
+                "them; only people on the Team roster below can be mentioned, so a typo can "
                 "never mail a stranger."
             )
             if _auth_user is not None:
                 _cl_caption += (
-                    f" You're signed in, so notes you post are attributed to **{_auth_user.display_name}** "
-                    "as a verified identity."
+                    f" You're signed in, so what you post is attributed to "
+                    f"**{_auth_user.display_name}** as a verified identity."
                 )
             else:
-                _cl_caption += (
-                    " **You're not signed in**, so the name you type is a self-declared label that "
-                    "nothing verifies. Sign in from the Account panel to post under a verified name."
-                )
+                _cl_caption += " **You're not signed in**, so you can read this thread but not post to it."
             st.caption(_cl_caption)
+            _cl_me = _auth_user.key if _auth_user else ""
 
-            _cl_existing = collab_notes_for(_cl_store, ticker_symbol)
-            if _cl_existing:
-                for _cl_note in _cl_existing:
-                    _cl_body_col, _cl_del_col = st.columns([12, 1])
-                    with _cl_body_col:
-                        _cl_when = _cl_note.created_at.replace("T", " ") if _cl_note.created_at else "unknown time"
-                        _cl_badge = " (verified)" if _cl_note.authenticated else ""
-                        _cl_meta = f"**{_cl_note.author}**{_cl_badge} · {_cl_when}"
-                        if _cl_note.mentions:
-                            _cl_sent = [m for m in _cl_note.mentions if m in _cl_note.notified]
-                            _cl_unsent = [m for m in _cl_note.mentions if m not in _cl_note.notified]
-                            _cl_bits = []
-                            if _cl_sent:
-                                _cl_bits.append("emailed " + ", ".join(_cl_sent))
-                            if _cl_unsent:
-                                _cl_bits.append("not emailed: " + ", ".join(_cl_unsent))
-                            _cl_meta += " · " + "; ".join(_cl_bits)
-                        st.markdown(_cl_meta)
-                        st.markdown(_rt_md_escape_dollar(_cl_note.body))
-                    with _cl_del_col:
-                        if st.button("✕", key=f"collab_del_{_cl_note.id}", help="Delete this note"):
-                            _cl_store = collab_delete_note(_cl_store, ticker_symbol, _cl_note.id)
-                            st.session_state["collab_store"] = _cl_store
-                            collab_save_store(_cl_store)
+            def _cl_render_note(_n, _indent=False):
+                """One note (or reply) with its own controls. A nested
+                function rather than a loop body so a top-level note and
+                its replies draw identically — the only difference is
+                the indent and that a reply offers no reply box."""
+                _cl_body_col, _cl_ctl_col = st.columns([12, 2])
+                with _cl_body_col:
+                    _cl_when = _n.created_at.replace("T", " ") if _n.created_at else "unknown time"
+                    _cl_badge = " (verified)" if _n.authenticated else " (unverified — no owner)"
+                    _cl_meta = f"{'↳ ' if _indent else ''}**{_n.author}**{_cl_badge} · {_cl_when}"
+                    if _n.mentions:
+                        _cl_sent = [m for m in _n.mentions if m in _n.notified]
+                        _cl_unsent = [m for m in _n.mentions if m not in _n.notified]
+                        _cl_bits = []
+                        if _cl_sent:
+                            _cl_bits.append("emailed " + ", ".join(_cl_sent))
+                        if _cl_unsent:
+                            _cl_bits.append("not emailed: " + ", ".join(_cl_unsent))
+                        _cl_meta += " · " + "; ".join(_cl_bits)
+                    st.markdown(_cl_meta)
+                    st.markdown(_rt_md_escape_dollar(_n.body))
+                with _cl_ctl_col:
+                    # The ✕ is drawn ONLY for the author. Drawing it for
+                    # everyone and refusing on click would advertise a
+                    # power the reader does not have.
+                    if collab_can_moderate(_n, _cl_me):
+                        if st.button("✕", key=f"collab_del_{_n.id}",
+                                     help="Remove this note. It is hidden, not destroyed — "
+                                          "you can restore it from the list below."):
+                            _cl_store2, _cl_err2 = collab_hide_note(
+                                st.session_state["collab_store"], ticker_symbol, _n.id, _cl_me)
+                            if _cl_err2:
+                                st.warning(_cl_err2)
+                            else:
+                                st.session_state["collab_store"] = _cl_store2
+                                collab_save_store(_cl_store2)
+                                log_event(logger, logging.INFO, "user.note_hidden", ticker=ticker_symbol)
+                                st.rerun()
+                    if not _indent and _auth_user is not None:
+                        if st.button("Reply", key=f"collab_reply_open_{_n.id}"):
+                            st.session_state["_collab_replying_to"] = (
+                                None if st.session_state.get("_collab_replying_to") == _n.id else _n.id)
                             st.rerun()
+
+            _cl_tops = collab_top_level(_cl_store, ticker_symbol)
+            if _cl_tops:
+                for _cl_note in _cl_tops:
+                    _cl_render_note(_cl_note)
+                    for _cl_reply in collab_replies_for(_cl_store, ticker_symbol, _cl_note.id):
+                        _cl_render_note(_cl_reply, _indent=True)
+
+                    if st.session_state.get("_collab_replying_to") == _cl_note.id and _auth_user is not None:
+                        if st.session_state.pop("_collab_clear_reply", False):
+                            st.session_state[f"collab_reply_body_{_cl_note.id}"] = ""
+                        _cl_reply_body = st.text_area(
+                            f"Reply to {_cl_note.author}", key=f"collab_reply_body_{_cl_note.id}",
+                            placeholder="Your reply… mention a teammate with @",
+                        )
+                        if st.button("Post reply", type="primary", key=f"collab_reply_post_{_cl_note.id}"):
+                            _cl_store3, _cl_reply_note, _cl_err3 = collab_add_note(
+                                st.session_state["collab_store"], ticker_symbol,
+                                _auth_user.display_name, _cl_reply_body,
+                                authenticated=True, issuer=_auth_user.issuer,
+                                author_key=_cl_me, parent_id=_cl_note.id,
+                            )
+                            if _cl_err3:
+                                st.warning(_cl_err3)
+                            else:
+                                st.session_state["collab_store"] = _cl_store3
+                                collab_save_store(_cl_store3)
+                                st.session_state["_collab_replying_to"] = None
+                                st.session_state["_collab_clear_reply"] = True
+                                log_event(logger, logging.INFO, "user.note_replied", ticker=ticker_symbol)
+                                st.rerun()
             else:
                 st.caption("No notes on this ticker yet.")
 
+            # Notes this account hid, with a way back. Shown only to the
+            # author: to everyone else a hidden note is gone, or hiding it
+            # would have done nothing.
+            _cl_mine_hidden = collab_hidden_by_author(_cl_store, ticker_symbol, _cl_me)
+            if _cl_mine_hidden:
+                with st.expander(f"Notes you removed ({len(_cl_mine_hidden)})", expanded=False):
+                    for _cl_h in _cl_mine_hidden:
+                        _cl_hc1, _cl_hc2 = st.columns([12, 2])
+                        _cl_hc1.caption(
+                            f"Removed {_cl_h.hidden_at.replace('T', ' ')} — "
+                            f"“{_cl_h.body[:80]}{'…' if len(_cl_h.body) > 80 else ''}”")
+                        if _cl_hc2.button("Restore", key=f"collab_restore_{_cl_h.id}"):
+                            _cl_store4, _cl_err4 = collab_restore_note(
+                                st.session_state["collab_store"], ticker_symbol, _cl_h.id, _cl_me)
+                            if _cl_err4:
+                                st.warning(_cl_err4)
+                            else:
+                                st.session_state["collab_store"] = _cl_store4
+                                collab_save_store(_cl_store4)
+                                st.rerun()
+
             st.markdown("---")
-            if _auth_user is not None:
+            if _auth_user is None:
+                # Reading is open; writing is not. A typed name could be
+                # anyone, and a note nobody provably wrote can be owned —
+                # and therefore moderated — by nobody.
+                st.info(COLLAB_SIGN_IN_TO_POST)
+            else:
                 # No text box: letting a signed-in user type a different name
                 # would make the verified badge a lie.
                 _cl_author = _auth_user.display_name
                 st.caption(f"Posting as **{_cl_author}** (verified)")
-            else:
-                _cl_author_col, _cl_spacer = st.columns([2, 3])
-                with _cl_author_col:
-                    _cl_author = st.text_input(
-                        "Your name", key="collab_author",
-                        placeholder="e.g. Angelos",
-                        help="Stored with the note as its author. Self-declared — nothing verifies it.",
-                    )
-            _cl_handles = ", ".join(f"@{m.handle}" for m in _cl_store.members) or "no teammates added yet"
-            # Clear the compose box after a successful post — deferred to
-            # the top of the NEXT run, before the widget is instantiated.
-            #
-            # The obvious version (pop the key in the button handler, then
-            # rerun) does not work, and was shipped broken: popping a
-            # text_area's key AFTER the widget has rendered raises nothing
-            # and clears nothing, because Streamlit restores the widget's
-            # value from its own widget-state layer on the next run rather
-            # than from the session_state mirror that was popped. Verified
-            # side by side in an isolated app — the popped box still read
-            # "Test1" after posting; this one comes back empty.
-            #
-            # It mattered: a box that still holds the text you just posted
-            # reads as "nothing happened", and the second click posts a
-            # duplicate. That is exactly how it was found.
-            if st.session_state.pop("_collab_clear_body", False):
-                st.session_state["collab_body"] = ""
-            _cl_body = st.text_area(
-                "Add a note", key="collab_body",
-                placeholder="Your thesis, a concern, a reminder… mention a teammate with @",
-                help=f"Mentionable handles: {_cl_handles}",
-            )
-            if st.button("Post note", type="primary", key="collab_post"):
-                _cl_store, _cl_note, _cl_err = collab_add_note(
-                    _cl_store, ticker_symbol, _cl_author, _cl_body,
-                    authenticated=_auth_user is not None,
-                    issuer=_auth_user.issuer if _auth_user else "",
+                _cl_handles = ", ".join(f"@{m.handle}" for m in _cl_store.members) or "no teammates added yet"
+                # Clear the compose box after a successful post — deferred to
+                # the top of the NEXT run, before the widget is instantiated.
+                #
+                # The obvious version (pop the key in the button handler, then
+                # rerun) does not work, and was shipped broken: popping a
+                # text_area's key AFTER the widget has rendered raises nothing
+                # and clears nothing, because Streamlit restores the widget's
+                # value from its own widget-state layer on the next run rather
+                # than from the session_state mirror that was popped. Verified
+                # side by side in an isolated app — the popped box still read
+                # "Test1" after posting; this one comes back empty.
+                #
+                # It mattered: a box that still holds the text you just posted
+                # reads as "nothing happened", and the second click posts a
+                # duplicate. That is exactly how it was found.
+                if st.session_state.pop("_collab_clear_body", False):
+                    st.session_state["collab_body"] = ""
+                _cl_body = st.text_area(
+                    "Add a note", key="collab_body",
+                    placeholder="Your thesis, a concern, a reminder… mention a teammate with @",
+                    help=f"Mentionable handles: {_cl_handles}",
                 )
-                if _cl_err:
-                    st.warning(_cl_err)
-                else:
-                    # Save FIRST, then attempt notification. A mail failure
-                    # must never cost someone their written note.
-                    st.session_state["collab_store"] = _cl_store
-                    collab_save_store(_cl_store)
-                    if _cl_note.mentions:
-                        if is_email_configured():
-                            _cl_sent, _cl_errs = collab_notify_mentions(
-                                _cl_store, _cl_note, send_notification_email,
-                            )
-                            if _cl_sent:
-                                _cl_store = collab_mark_notified(
-                                    _cl_store, ticker_symbol, _cl_note.id, _cl_sent,
+                if st.button("Post note", type="primary", key="collab_post"):
+                    _cl_store, _cl_note, _cl_err = collab_add_note(
+                        _cl_store, ticker_symbol, _cl_author, _cl_body,
+                        authenticated=True, issuer=_auth_user.issuer,
+                        author_key=_cl_me,
+                    )
+                    if _cl_err:
+                        st.warning(_cl_err)
+                    else:
+                        # Save FIRST, then attempt notification. A mail failure
+                        # must never cost someone their written note.
+                        st.session_state["collab_store"] = _cl_store
+                        collab_save_store(_cl_store)
+                        if _cl_note.mentions:
+                            if is_email_configured():
+                                _cl_sent, _cl_errs = collab_notify_mentions(
+                                    _cl_store, _cl_note, send_notification_email,
                                 )
-                                st.session_state["collab_store"] = _cl_store
-                                collab_save_store(_cl_store)
-                                st.success(f"Note posted — emailed {', '.join(_cl_sent)}.")
-                            for _cl_e in _cl_errs:
-                                st.warning(f"Couldn't notify {_cl_e}")
-                            if not _cl_sent and not _cl_errs:
+                                if _cl_sent:
+                                    _cl_store = collab_mark_notified(
+                                        _cl_store, ticker_symbol, _cl_note.id, _cl_sent,
+                                    )
+                                    st.session_state["collab_store"] = _cl_store
+                                    collab_save_store(_cl_store)
+                                    st.success(f"Note posted — emailed {', '.join(_cl_sent)}.")
+                                for _cl_e in _cl_errs:
+                                    st.warning(f"Couldn't notify {_cl_e}")
+                                if not _cl_sent and not _cl_errs:
+                                    st.success("Note posted.")
+                            else:
                                 st.success("Note posted.")
+                                st.info(
+                                    "Mentioned " + ", ".join(_cl_note.mentions) +
+                                    ", but email isn't configured on this instance so no notification "
+                                    "was sent. See .streamlit/secrets.toml.example to enable it."
+                                )
                         else:
                             st.success("Note posted.")
-                            st.info(
-                                "Mentioned " + ", ".join(_cl_note.mentions) +
-                                ", but email isn't configured on this instance so no notification "
-                                "was sent. See .streamlit/secrets.toml.example to enable it."
-                            )
-                    else:
-                        st.success("Note posted.")
-                    log_event(logger, logging.INFO, "user.note_posted",
-                              ticker=ticker_symbol, mentions=len(_cl_note.mentions))
+                        log_event(logger, logging.INFO, "user.note_posted",
+                                  ticker=ticker_symbol, mentions=len(_cl_note.mentions))
                     st.session_state["_collab_clear_body"] = True
                     st.rerun()
 

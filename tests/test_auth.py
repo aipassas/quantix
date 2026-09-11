@@ -313,7 +313,8 @@ def test_redirecting_app_dir_sandboxes_shared_stores_too(tmp_path, monkeypatch):
     import collaboration
 
     store, _, _ = collaboration.add_note(
-        collaboration.CollaborationStore(), "AAPL", "Tester", "sandboxed note")
+        collaboration.CollaborationStore(), "AAPL", "Tester", "sandboxed note",
+        authenticated=True, author_key="k-tester")
     collaboration.save_store(store)
 
     assert (tmp_path / "collaboration_store.json").exists()

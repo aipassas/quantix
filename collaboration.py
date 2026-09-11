@@ -89,6 +89,26 @@ class Note:
     # author later signs in.
     authenticated: bool = False
     issuer: str = ""                    # who verified it, when authenticated
+    # OWNERSHIP NEEDS AN IDENTITY, AND A DISPLAY NAME IS NOT ONE. Two
+    # accounts can both be "Ana"; the account KEY (the same hash that
+    # names the user's directory) is what says whether the person now
+    # signed in is the person who wrote this. Empty on notes written
+    # signed-out, which is exactly why those can be owned by nobody.
+    author_key: str = ""
+    # A reply points at the note it answers. One level deep on purpose:
+    # a reply-to-a-reply makes a thread a tree, and a tree on a ticker
+    # page is a forum, which this is not trying to be.
+    parent_id: str = ""
+    # SOFT DELETE, RECORDED. A hidden note leaves everyone's view but
+    # stays in the store with who hid it and when, so a removal is an
+    # auditable act rather than a vanishing. The author can restore it.
+    hidden: bool = False
+    hidden_by: str = ""
+    hidden_at: str = ""
+
+    @property
+    def is_reply(self) -> bool:
+        return bool(self.parent_id)
 
 
 @dataclass(frozen=True)
@@ -140,6 +160,11 @@ def load_store(path: Optional[Path] = None) -> CollaborationStore:
                 notified=tuple(str(x) for x in (n.get("notified") or [])),
                 authenticated=bool(n.get("authenticated", False)),
                 issuer=str(n.get("issuer") or ""),
+                author_key=str(n.get("author_key") or ""),
+                parent_id=str(n.get("parent_id") or ""),
+                hidden=bool(n.get("hidden", False)),
+                hidden_by=str(n.get("hidden_by") or ""),
+                hidden_at=str(n.get("hidden_at") or ""),
             ))
         if good:
             notes[ticker] = tuple(good)
@@ -153,7 +178,10 @@ def save_store(store: CollaborationStore, path: Optional[Path] = None) -> None:
         "notes": {
             t: [{"id": n.id, "author": n.author, "body": n.body, "created_at": n.created_at,
                  "mentions": list(n.mentions), "notified": list(n.notified),
-                 "authenticated": n.authenticated, "issuer": n.issuer} for n in items]
+                 "authenticated": n.authenticated, "issuer": n.issuer,
+                 "author_key": n.author_key, "parent_id": n.parent_id,
+                 "hidden": n.hidden, "hidden_by": n.hidden_by,
+                 "hidden_at": n.hidden_at} for n in items]
             for t, items in store.notes.items()
         },
     }
@@ -208,9 +236,26 @@ def parse_mentions(body: str, members: Tuple[TeamMember, ...]) -> Tuple[str, ...
 
 # --- notes --------------------------------------------------------------------
 
+SIGN_IN_TO_POST = (
+    "Sign in to post. Reading stays open to everyone on this instance, but "
+    "a note needs a verified author so that it can be replied to and so "
+    "that only its author can remove it — a typed name could be anyone."
+)
+
+
 def add_note(store: CollaborationStore, ticker: str, author: str, body: str,
-             authenticated: bool = False, issuer: str = "") -> Tuple[CollaborationStore, Optional[Note], Optional[str]]:
-    """Append a note to a ticker's thread. Returns (store, note, error).
+             authenticated: bool = False, issuer: str = "",
+             author_key: str = "", parent_id: str = ""
+             ) -> Tuple[CollaborationStore, Optional[Note], Optional[str]]:
+    """Append a note, or a reply, to a ticker's thread. Returns
+    (store, note, error).
+
+    POSTING REQUIRES A VERIFIED AUTHOR. This is the moderation model in
+    one rule: a note that nobody provably wrote can be owned by nobody,
+    and a thread where anyone can claim any name has no accountability
+    to moderate with. Notes written under the earlier rule, with a typed
+    name, are still loaded and shown — they are simply not removable by
+    anyone, which the panel says.
 
     Newest-last, so the thread reads chronologically like a conversation.
     """
@@ -219,12 +264,25 @@ def add_note(store: CollaborationStore, ticker: str, author: str, body: str,
     body = (body or "").strip()
     if not ticker:
         return store, None, "No ticker to attach this note to."
+    if not authenticated or not (author_key or "").strip():
+        return store, None, SIGN_IN_TO_POST
     if not author:
         return store, None, "Enter your name so the note has an author."
     if not body:
         return store, None, "Write something first."
     if len(body) > COLLABORATION.max_note_chars:
         return store, None, f"Notes are capped at {COLLABORATION.max_note_chars} characters."
+
+    parent_id = (parent_id or "").strip()
+    if parent_id:
+        parent = next((n for n in store.notes.get(ticker, ()) if n.id == parent_id), None)
+        if parent is None:
+            return store, None, "The note you are replying to is no longer here."
+        if parent.is_reply:
+            # One level only — see Note.parent_id.
+            return store, None, "Reply to the original note rather than to a reply."
+        if parent.hidden:
+            return store, None, "That note has been removed, so it cannot be replied to."
 
     note = Note(
         id=uuid.uuid4().hex,
@@ -235,9 +293,95 @@ def add_note(store: CollaborationStore, ticker: str, author: str, body: str,
         mentions=parse_mentions(body, store.members),
         authenticated=authenticated,
         issuer=issuer,
+        author_key=author_key.strip(),
+        parent_id=parent_id,
     )
     thread = store.notes.get(ticker, ()) + (note,)
     return replace(store, notes={**store.notes, ticker: thread}), note, None
+
+
+# --- ownership and removal ----------------------------------------------------
+
+def can_moderate(note: Note, user_key: str) -> bool:
+    """Whether the signed-in account may hide or restore this note.
+
+    ONLY THE VERIFIED AUTHOR. There is no moderator role in this build —
+    that is the RBAC ticket's territory — so the rule is ownership, and
+    ownership is the account key, not the display name. A note written
+    signed-out has no key and therefore no owner: it can be removed by
+    nobody, which is stated on screen rather than left as a surprise.
+    """
+    user_key = (user_key or "").strip()
+    return bool(user_key and note.authenticated and note.author_key == user_key)
+
+
+def _update_note(store: CollaborationStore, ticker: str, note_id: str, **changes) -> CollaborationStore:
+    thread = tuple(replace(n, **changes) if n.id == note_id else n
+                   for n in store.notes.get(ticker, ()))
+    return replace(store, notes={**store.notes, ticker: thread})
+
+
+def hide_note(store: CollaborationStore, ticker: str, note_id: str,
+              user_key: str) -> Tuple[CollaborationStore, Optional[str]]:
+    """Soft-delete. Returns (store, error).
+
+    The note stays in the store with who hid it and when. Its replies
+    stay too, attached to a hidden parent, so restoring the note brings
+    the conversation back whole rather than leaving orphans.
+    """
+    note = next((n for n in store.notes.get(ticker, ()) if n.id == note_id), None)
+    if note is None:
+        return store, "That note is no longer here."
+    if not can_moderate(note, user_key):
+        if not note.authenticated:
+            return store, ("This note was posted without signing in, so it has "
+                           "no owner and cannot be removed.")
+        return store, "Only the person who wrote a note can remove it."
+    return _update_note(
+        store, ticker, note_id, hidden=True, hidden_by=(user_key or "").strip(),
+        hidden_at=datetime.datetime.now().isoformat(timespec="seconds"),
+    ), None
+
+
+def restore_note(store: CollaborationStore, ticker: str, note_id: str,
+                 user_key: str) -> Tuple[CollaborationStore, Optional[str]]:
+    """Undo a hide. Same rule as hiding: the author, and nobody else."""
+    note = next((n for n in store.notes.get(ticker, ()) if n.id == note_id), None)
+    if note is None:
+        return store, "That note is no longer here."
+    if not can_moderate(note, user_key):
+        return store, "Only the person who wrote a note can restore it."
+    return _update_note(store, ticker, note_id, hidden=False, hidden_by="",
+                        hidden_at=""), None
+
+
+def visible_notes_for(store: CollaborationStore, ticker: str) -> Tuple[Note, ...]:
+    """The thread as readers see it: hidden notes gone, and a reply to a
+    hidden note gone with it — a reply with no visible parent reads as a
+    non sequitur."""
+    thread = notes_for(store, ticker)
+    hidden_ids = {n.id for n in thread if n.hidden}
+    return tuple(n for n in thread
+                 if not n.hidden and n.parent_id not in hidden_ids)
+
+
+def top_level(store: CollaborationStore, ticker: str) -> Tuple[Note, ...]:
+    return tuple(n for n in visible_notes_for(store, ticker) if not n.is_reply)
+
+
+def replies_for(store: CollaborationStore, ticker: str, parent_id: str) -> Tuple[Note, ...]:
+    return tuple(n for n in visible_notes_for(store, ticker) if n.parent_id == parent_id)
+
+
+def hidden_by_author(store: CollaborationStore, ticker: str, user_key: str) -> Tuple[Note, ...]:
+    """The notes this account has hidden on this ticker, so it can restore
+    them. Nobody else's — a hidden note is not readable by other accounts,
+    or hiding it would have done nothing."""
+    user_key = (user_key or "").strip()
+    if not user_key:
+        return ()
+    return tuple(n for n in notes_for(store, ticker)
+                 if n.hidden and n.author_key == user_key)
 
 
 def delete_note(store: CollaborationStore, ticker: str, note_id: str) -> CollaborationStore:

@@ -127,7 +127,7 @@ def test_no_roster_means_no_mentions_can_resolve():
 # --- notes --------------------------------------------------------------------
 
 def test_add_note_normalises_ticker_and_records_author():
-    store, note, err = add_note(_team(), "aapl", "Angelos", "Looks cheap")
+    store, note, err = add_note(_team(), "aapl", "Angelos", "Looks cheap", authenticated=True, author_key="k-test")
     assert err is None
     assert note.ticker == "AAPL" and note.author == "Angelos"
     assert notes_for(store, "AAPL") == (note,)
@@ -135,40 +135,40 @@ def test_add_note_normalises_ticker_and_records_author():
 
 
 def test_notes_are_appended_so_the_thread_reads_chronologically():
-    store, _, _ = add_note(_team(), "AAPL", "A", "first")
-    store, _, _ = add_note(store, "AAPL", "B", "second")
+    store, _, _ = add_note(_team(), "AAPL", "A", "first", authenticated=True, author_key="k-test")
+    store, _, _ = add_note(store, "AAPL", "B", "second", authenticated=True, author_key="k-test")
     assert [n.body for n in notes_for(store, "AAPL")] == ["first", "second"]
 
 
 def test_note_requires_ticker_author_and_body():
     store = _team()
     for ticker, author, body in (("", "A", "x"), ("AAPL", "", "x"), ("AAPL", "A", "   ")):
-        _, note, err = add_note(store, ticker, author, body)
+        _, note, err = add_note(store, ticker, author, body, authenticated=True, author_key="k-test")
         assert note is None and err is not None
 
 
 def test_note_length_is_capped():
     store = _team()
-    _, note, err = add_note(store, "AAPL", "A", "x" * (COLLABORATION.max_note_chars + 1))
+    _, note, err = add_note(store, "AAPL", "A", "x" * (COLLABORATION.max_note_chars + 1), authenticated=True, author_key="k-test")
     assert note is None and err is not None
 
 
 def test_delete_note_removes_only_that_note():
-    store, first, _ = add_note(_team(), "AAPL", "A", "first")
-    store, second, _ = add_note(store, "AAPL", "B", "second")
+    store, first, _ = add_note(_team(), "AAPL", "A", "first", authenticated=True, author_key="k-test")
+    store, second, _ = add_note(store, "AAPL", "B", "second", authenticated=True, author_key="k-test")
     store = delete_note(store, "AAPL", first.id)
     assert [n.body for n in notes_for(store, "AAPL")] == ["second"]
 
 
 def test_deleting_the_last_note_drops_the_empty_thread():
-    store, note, _ = add_note(_team(), "AAPL", "A", "only")
+    store, note, _ = add_note(_team(), "AAPL", "A", "only", authenticated=True, author_key="k-test")
     store = delete_note(store, "AAPL", note.id)
     assert "AAPL" not in store.notes
 
 
 def test_threads_are_per_ticker():
-    store, _, _ = add_note(_team(), "AAPL", "A", "apple note")
-    store, _, _ = add_note(store, "MSFT", "A", "msft note")
+    store, _, _ = add_note(_team(), "AAPL", "A", "apple note", authenticated=True, author_key="k-test")
+    store, _, _ = add_note(store, "MSFT", "A", "msft note", authenticated=True, author_key="k-test")
     assert [n.body for n in notes_for(store, "AAPL")] == ["apple note"]
     assert [n.body for n in notes_for(store, "MSFT")] == ["msft note"]
 
@@ -177,7 +177,7 @@ def test_threads_are_per_ticker():
 
 def test_notify_emails_every_mentioned_member():
     store = _team()
-    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva @BobChen thoughts?")
+    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva @BobChen thoughts?", authenticated=True, author_key="k-test")
     sender = _FakeSender()
     notified, errors = notify_mentions(store, note, sender)
     assert notified == ("Ana Silva", "Bob Chen")
@@ -186,8 +186,14 @@ def test_notify_emails_every_mentioned_member():
 
 
 def test_notification_body_carries_the_note_and_discloses_the_lack_of_auth():
+    """A legacy typed-name note can still be re-notified, and the mail
+    must still say the name was never verified. Built directly because
+    add_note no longer produces unverified notes."""
+    from collaboration import Note, parse_mentions
     store = _team()
-    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva please review")
+    note = Note(id="legacy", ticker="AAPL", author="Angelos",
+                body="@AnaSilva please review", created_at="2026-01-01T00:00:00",
+                mentions=parse_mentions("@AnaSilva please review", store.members))
     sender = _FakeSender()
     notify_mentions(store, note, sender)
     _, subject, body = sender.sent[0]
@@ -198,7 +204,7 @@ def test_notification_body_carries_the_note_and_discloses_the_lack_of_auth():
 
 def test_one_failed_recipient_does_not_stop_the_others():
     store = _team()
-    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva @BobChen")
+    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva @BobChen", authenticated=True, author_key="k-test")
     sender = _FakeSender(fail_for={"ana@example.com"})
     notified, errors = notify_mentions(store, note, sender)
     assert notified == ("Bob Chen",)
@@ -207,7 +213,7 @@ def test_one_failed_recipient_does_not_stop_the_others():
 
 def test_a_note_with_no_mentions_sends_nothing():
     store = _team()
-    store, note, _ = add_note(store, "AAPL", "Angelos", "just a private thought")
+    store, note, _ = add_note(store, "AAPL", "Angelos", "just a private thought", authenticated=True, author_key="k-test")
     sender = _FakeSender()
     assert notify_mentions(store, note, sender) == ((), [])
     assert sender.sent == []
@@ -217,7 +223,7 @@ def test_mark_notified_records_partial_delivery():
     """The UI has to be able to say who was actually reached rather than
     implying everyone mentioned got an email."""
     store = _team()
-    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva @BobChen")
+    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva @BobChen", authenticated=True, author_key="k-test")
     store = mark_notified(store, "AAPL", note.id, ("Bob Chen",))
     stored = notes_for(store, "AAPL")[0]
     assert stored.mentions == ("Ana Silva", "Bob Chen")
@@ -229,7 +235,7 @@ def test_mark_notified_records_partial_delivery():
 def test_save_and_load_round_trip(tmp_path):
     path = tmp_path / "c.json"
     store = _team()
-    store, _, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva look at this")
+    store, _, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva look at this", authenticated=True, author_key="k-test")
     save_store(store, path)
     loaded = load_store(path)
     assert [m.name for m in loaded.members] == ["Ana Silva", "Bob Chen"]
@@ -278,18 +284,40 @@ def test_save_leaves_no_leftover_temp_file(tmp_path):
 # verified badge meaningless, so the distinction is carried per-note all
 # the way into the notification email.
 
-def test_notes_are_self_declared_by_default():
-    """The default has to be the weaker claim. Defaulting to authenticated
-    would mark every note written signed-out as verified."""
-    _, note, _ = add_note(_team(), "AAPL", "Angelos", "a thought")
+def test_a_signed_out_post_is_refused():
+    """The moderation model in one rule: a note nobody provably wrote can
+    be owned — and therefore removed — by nobody. Reading stays open;
+    posting needs a verified author."""
+    store, note, err = add_note(_team(), "AAPL", "Angelos", "a thought")
+    assert note is None
+    assert "Sign in" in err
+    assert store.notes == {}
+
+
+def test_a_verified_flag_without_an_account_key_is_not_enough():
+    """authenticated=True says the name was vouched for; author_key is
+    what ownership checks against. Both are required."""
+    _, note, err = add_note(_team(), "AAPL", "Angelos", "a thought", authenticated=True)
+    assert note is None and err
+
+
+def test_a_legacy_typed_name_note_still_loads_as_unverified(tmp_path):
+    """Notes written under the old rule keep their honest label."""
+    import json
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"members": [], "notes": {"AAPL": [
+        {"id": "old", "author": "Typed", "body": "old note",
+         "created_at": "2026-01-01T00:00:00"}]}}))
+    (note,) = notes_for(load_store(path), "AAPL")
     assert note.authenticated is False
-    assert note.issuer == ""
+    assert note.author_key == ""
 
 
 def test_a_signed_in_note_records_who_vouched_for_the_author():
     _, note, _ = add_note(
         _team(), "AAPL", "Angelos Passas", "a thought",
         authenticated=True, issuer="https://accounts.google.com",
+    author_key="k-test",
     )
     assert note.authenticated is True
     assert note.issuer == "https://accounts.google.com"
@@ -298,8 +326,12 @@ def test_a_signed_in_note_records_who_vouched_for_the_author():
 def test_authentication_status_survives_a_round_trip(tmp_path):
     path = tmp_path / "c.json"
     store, _, _ = add_note(_team(), "AAPL", "A", "verified note",
-                           authenticated=True, issuer="https://accounts.google.com")
-    store, _, _ = add_note(store, "AAPL", "B", "typed note")
+                           authenticated=True, issuer="https://accounts.google.com", author_key="k-test")
+    from collaboration import Note
+    from dataclasses import replace as _replace
+    legacy = Note(id="legacy", ticker="AAPL", author="B", body="typed note",
+                  created_at="2026-01-01T00:00:00")
+    store = _replace(store, notes={"AAPL": store.notes["AAPL"] + (legacy,)})
     save_store(store, path)
     loaded = notes_for(load_store(path), "AAPL")
     assert [(n.body, n.authenticated) for n in loaded] == [
@@ -326,7 +358,7 @@ def test_notification_for_a_verified_note_says_so_and_names_the_issuer():
     verifying."""
     store = _team()
     store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva please review",
-                              authenticated=True, issuer="https://accounts.google.com")
+                              authenticated=True, issuer="https://accounts.google.com", author_key="k-test")
     sender = _FakeSender()
     notify_mentions(store, note, sender)
     _, _, body = sender.sent[0]
@@ -337,7 +369,7 @@ def test_notification_for_a_verified_note_says_so_and_names_the_issuer():
 
 def test_a_verified_note_with_no_issuer_still_reads_sensibly():
     store = _team()
-    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva hi", authenticated=True)
+    store, note, _ = add_note(store, "AAPL", "Angelos", "@AnaSilva hi", authenticated=True, author_key="k-test")
     sender = _FakeSender()
     notify_mentions(store, note, sender)
     _, _, body = sender.sent[0]
