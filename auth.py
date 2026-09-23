@@ -152,6 +152,11 @@ SHARED_STORES: Tuple[str, ...] = (
     # people on the same team see different ones, which is not what the
     # phrase means — and because the history is what drives the rotation.
     "stock_of_the_week_store.json",
+    # Who consented to be listed BY NAME on the monthly leaderboard.
+    # Shared because a ranking across accounts cannot live inside one
+    # account's namespace. Holds consent records only — the returns stay
+    # in peer_returns_store.json under their own, separate opt-in.
+    "leaderboard_store.json",
 )
 
 

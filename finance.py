@@ -94,6 +94,7 @@ import webhooks
 import spreadsheet_import
 import peer_comparison
 import following
+import leaderboard
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -215,6 +216,14 @@ from portfolio_holdings import (
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
+)
+from leaderboard import (
+    NEEDS_PROFILE as LEADERBOARD_NEEDS_PROFILE,
+    NEEDS_RETURN as LEADERBOARD_NEEDS_RETURN,
+    NOT_PARTICIPATING as LEADERBOARD_NOT_PARTICIPATING,
+    SHARPE_UNAVAILABLE as LEADERBOARD_SHARPE_UNAVAILABLE,
+    participation_note as lb_participation_note,
+    standings as lb_standings,
 )
 from stock_of_the_week import (
     Candidate as SotwCandidate,
@@ -10439,6 +10448,99 @@ else:
                                 peer_comparison.save_store(_peer_store)
                                 log_event(logger, logging.INFO, "user.peer_published")
                                 st.rerun()
+
+            # --- Leaderboard ---------------------------------------
+            # A SECOND consent, not a reuse of the one above. The
+            # comparison expander buys an ANONYMOUS percentile and its
+            # floor exists so no individual return is revealed; this
+            # ladder reveals every participant's return beside a name.
+            # Sharing there does not put anyone here.
+            #
+            # No Sharpe ladder: measured, a one-month Sharpe has a
+            # standard deviation of 3.68 against a true value of 1.00 and
+            # orders two portfolios a full 1.0 apart correctly 57.7% of
+            # the time. LEADERBOARD_SHARPE_UNAVAILABLE says so on screen.
+            with st.expander("Leaderboard — this month", expanded=False):
+                _lb_store = leaderboard.load_store()
+                _lb_profiles = following.load_profiles()
+
+                if _lb_store.corrupt or _lb_profiles.corrupt:
+                    st.error(
+                        "The shared leaderboard file can't be read, so nothing is "
+                        "listed and Quantix will not overwrite it — it holds other "
+                        "accounts' consent records, not just yours."
+                    )
+                elif not _peer_key:
+                    st.caption("Sign in to see the leaderboard for this instance.")
+                else:
+                    # Re-asked through peer_comparison rather than reusing
+                    # _peer_in: that name is assigned inside the expander's
+                    # else-branch, so a corrupt peer store leaves it unbound
+                    # and this panel would raise NameError for exactly the
+                    # readers whose store is already broken.
+                    _lb_sharing = peer_comparison.is_participating(
+                        _peer_store, _peer_key, _peer_period)
+                    _lb_entries = _peer_store.for_period(_peer_period)
+                    _lb_result = lb_standings(_lb_entries, _lb_store, _lb_profiles,
+                                              _peer_period, _peer_key)
+                    st.caption(lb_participation_note(
+                        _lb_store, _lb_entries, _lb_profiles, _peer_period))
+
+                    if _lb_result.has_result:
+                        st.dataframe(
+                            pd.DataFrame([{
+                                "#": _r.rank,
+                                "Name": _r.name + ("  ← you" if _r.is_you else ""),
+                                "Return": _pf_pct(_r.twr_pct),
+                            } for _r in _lb_result.rows]),
+                            hide_index=True, width="stretch",
+                        )
+                        st.caption(
+                            f"Time-weighted return for {_peer_period}, still running — "
+                            "positions are provisional until the month closes. Ties "
+                            "share a rank."
+                        )
+                    else:
+                        st.info(_lb_result.reason)
+
+                    _lb_profile = _lb_profiles.get(_peer_key)
+                    _lb_named = bool((getattr(_lb_profile, "name", "") or "").strip())
+
+                    if leaderboard.is_participating(_lb_store, _peer_key):
+                        if not _lb_named:
+                            st.warning(LEADERBOARD_NEEDS_PROFILE)
+                        if not _lb_sharing:
+                            st.warning(LEADERBOARD_NEEDS_RETURN)
+                        if st.button("Leave the leaderboard", key="lb_leave",
+                                     help="Removes your name from the ladder. Your "
+                                          "shared return stays as it is — that is the "
+                                          "separate choice above."):
+                            _lb_store = leaderboard.leave(_lb_store, _peer_key)
+                            leaderboard.save_store(_lb_store)
+                            log_event(logger, logging.INFO, "user.leaderboard_left")
+                            st.rerun()
+                    else:
+                        st.info(LEADERBOARD_NOT_PARTICIPATING)
+                        if not _lb_named:
+                            st.warning(LEADERBOARD_NEEDS_PROFILE)
+                        elif not _lb_sharing:
+                            st.warning(LEADERBOARD_NEEDS_RETURN)
+                        else:
+                            if st.button("Join the leaderboard", key="lb_join",
+                                         type="primary",
+                                         help="Lists you by your profile display name, "
+                                              "with this month's return, for every "
+                                              "account on this instance. Reversible."):
+                                _lb_store, _lb_err = leaderboard.join(_lb_store, _peer_key)
+                                if _lb_err:
+                                    st.warning(_lb_err)
+                                else:
+                                    leaderboard.save_store(_lb_store)
+                                    log_event(logger, logging.INFO,
+                                              "user.leaderboard_joined")
+                                    st.rerun()
+
+                    st.caption(LEADERBOARD_SHARPE_UNAVAILABLE)
 
             if _pf_perf.mwr_pct is not None:
                 st.caption(

@@ -83,3 +83,7 @@ follows_store.json
 # instance — local rotation state, not repository content.
 stock_of_the_week_store.json
 stock_of_the_week.tmp
+
+# Who opted in to the named monthly leaderboard. Consent records, local.
+leaderboard_store.json
+leaderboard_store.tmp

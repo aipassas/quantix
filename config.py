@@ -1316,8 +1316,53 @@ class StockOfTheWeekConfig:
 
 
 
+
+@dataclass(frozen=True)
+class LeaderboardConfig:
+    """The opt-in monthly ranking of accounts on this instance.
+
+    IT RANKS ON RETURN AND REFUSES SHARPE, AND THAT IS A MEASUREMENT,
+    NOT A PREFERENCE. The ticket offers "portfolio return, Sharpe ratio,
+    or another performance metric". Simulated 2026-09-23, 20,000 runs per
+    window, portfolios whose TRUE Sharpe is exactly 1.00:
+
+        window     measured mean   sd     90% range
+        1 month      1.06         3.68   [-4.91, +7.17]
+        1 quarter    1.01         2.04   [-2.34, +4.37]
+        1 year       1.00         1.00   [-0.65, +2.65]
+
+    Over a calendar month the estimate's standard deviation is nearly
+    four times the quantity being estimated. Asked to rank two portfolios
+    whose true Sharpes differ by a FULL 1.0, the monthly figure gets the
+    order right 57.7% of the time — a coin flip with a decimal point. A
+    realised monthly return carries no such error, because it is not
+    estimating a parameter: it is what happened. So the ladder is return
+    only, and `leaderboard.SHARPE_UNAVAILABLE` says why on screen.
+
+    PARTICIPATION IS A SECOND, STRONGER CONSENT than peer_comparison's.
+    That module's opt-in buys an ANONYMOUS percentile and its whole
+    k-anonymity floor exists so no individual return is revealed. A
+    leaderboard reveals every participant's return next to a name, so it
+    has its own switch and its own store, and being in one does not put
+    anyone in the other. A participant must also have chosen a display
+    name in their profile — nobody is ever named who did not pick a name.
+
+    THE FLOOR IS peer_comparison's, deliberately the same number rather
+    than a second one that can drift. Note the SENSE differs: min_cohort
+    counts the OTHER participants, this counts everyone on the ladder
+    including the reader.
+    """
+    store_filename: str = "leaderboard_store.json"
+    min_participants: int = PeerComparisonConfig.min_cohort
+    # A ladder is skimmed, not studied. Outside the top rows the reader's
+    # own position is appended so they always see where they stand.
+    max_rows: int = 10
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
+LEADERBOARD = LeaderboardConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
