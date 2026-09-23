@@ -20,7 +20,7 @@ import export_workbook
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
 import data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS, CONTEST, STREAKS
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -95,6 +95,8 @@ import spreadsheet_import
 import peer_comparison
 import following
 import leaderboard
+import monthly_contest
+import streaks
 import etf_analysis
 import etf_comparison
 import etf_pipeline
@@ -216,6 +218,18 @@ from portfolio_holdings import (
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
+)
+from monthly_contest import (
+    NEEDS_PROFILE as CONTEST_NEEDS_PROFILE,
+    WHY_NOT_RANKED_BY_RETURN as CONTEST_WHY_NOT_RANKED,
+    entries_close as mc_entries_close,
+    enter as mc_enter,
+    measure as mc_measure,
+    open_period as mc_open_period,
+    records as mc_records,
+    scored_period as mc_scored_period,
+    short_record_note as mc_short_record_note,
+    withdraw as mc_withdraw,
 )
 from leaderboard import (
     NEEDS_PROFILE as LEADERBOARD_NEEDS_PROFILE,
@@ -1202,6 +1216,30 @@ if st.session_state.get("kbd_shortcuts_open"):
             st.rerun()
 
 # ==========================================
+# ACTIVITY STREAK RECORDER
+# ==========================================
+# One helper, called from every qualifying action. Deliberately NOT
+# called on render: this app writes per-user files merely by drawing,
+# so a streak incremented here would rise on a refresh and could never
+# honestly be lost. streaks.ACTIONS is a closed list and record()
+# refuses anything outside it, so a careless caller cannot reintroduce
+# a login streak by passing "render".
+def _streak_record(_action: str) -> None:
+    """Mark today active for this account. Never raises: a streak is a
+    decoration, and it must not take down the action it decorates."""
+    try:
+        _store = streaks.load_store()
+        _store, _changed = streaks.record(_store, _action)
+        # Saving unconditionally would rewrite the file on every
+        # qualifying click for a day that is already recorded.
+        if _changed:
+            streaks.save_store(_store)
+            log_event(logger, logging.INFO, "user.streak_day", kind=_action)
+    except Exception:                                  # noqa: BLE001
+        log_exception(logger, "streaks.record_failed", section="streaks")
+
+
+# ==========================================
 # STOCK OF THE WEEK
 # ==========================================
 # Reserved here so the highlight is the first thing under the masthead —
@@ -1862,6 +1900,7 @@ if st.session_state.pop("_screener_rerun", False):
     screener_run_clicked = True
 
 if screener_run_clicked:
+    _streak_record("screen")
     _screener_universe = [t.strip().upper() for t in screener_universe_input.split(",") if t.strip()]
     _screener_universe = list(dict.fromkeys(_screener_universe))  # dedupe, preserve order
     if len(_screener_universe) > SCREENER_MAX_UNIVERSE_SIZE:
@@ -4507,6 +4546,7 @@ if _wl_add_clicked:
                             f"added {_fl_added} to a watchlist")
         st.session_state["watchlist_store"] = _wl_store
         save_watchlist_store(_wl_store)
+        _streak_record("watchlist")
         log_event(logger, logging.INFO, "user.watchlist_add", tickers=_wl_new, watchlist=_wl_store.active)
         st.rerun()
 
@@ -5443,6 +5483,7 @@ else:
                         _fl_publish(following.STREAM_JOURNAL, ticker_symbol,
                                     f"{_ij_action} · {_ij_conviction} conviction — "
                                     f"{_ij_reasoning}")
+                        _streak_record("journal")
                         if _ij_save_err:
                             st.error(_ij_save_err)
                         else:
@@ -10448,6 +10489,236 @@ else:
                                 peer_comparison.save_store(_peer_store)
                                 log_event(logger, logging.INFO, "user.peer_published")
                                 st.rerun()
+
+            # --- Streak --------------------------------------------
+            # An ACTIVITY streak, never a login one: this app writes
+            # per-user files merely by rendering, so "opened the page"
+            # is satisfied by a refresh and a streak nobody could lose
+            # would mean nothing. See streaks.py's docstring.
+            with st.expander("Your activity streak", expanded=False):
+                _streak_store = streaks.load_store()
+                if _streak_store.corrupt:
+                    st.error(
+                        "Your activity file can't be read, so no streak is shown "
+                        "and Quantix will not overwrite it."
+                    )
+                else:
+                    _streak = streaks.summarise(_streak_store)
+                    _streak_cols = st.columns(3)
+                    _streak_cols[0].metric(
+                        "Current streak", f"{_streak.current} d",
+                        help="Consecutive days on which you did something "
+                             "deliberate. There is no grace day: a missed day "
+                             "ends the run, because a count that survives a gap "
+                             "is not a count of consecutive days. A run whose "
+                             "last day was yesterday is still alive — the day "
+                             "is not over.")
+                    _streak_cols[1].metric(
+                        "Longest", f"{_streak.longest} d",
+                        help="The longest run recorded so far, kept beside the "
+                             "current one so a broken streak is still visible "
+                             "as something you did.")
+                    _streak_cols[2].metric(
+                        "Active days", f"{_streak.total_days}",
+                        help="Every day on which a qualifying action was "
+                             "recorded, consecutive or not. Opening the page is "
+                             "not one of them.")
+                    st.caption(streaks.sentence(_streak))
+
+                    # The strip is built from the same stored days as the
+                    # counts above, so it cannot disagree with them.
+                    _streak_strip = "".join(
+                        ("\u25a0" if _active else "\u25a1")
+                        for _day, _active in streaks.recent_days(_streak_store))
+                    st.markdown(
+                        f"<div style='letter-spacing:2px;opacity:.75;"
+                        f"font-family:monospace'>{_streak_strip}</div>",
+                        unsafe_allow_html=True)
+                    st.caption(
+                        f"The last {STREAKS.calendar_days} days, oldest first. "
+                        "A day counts for: "
+                        + ", ".join(_label for _, _label in streaks.ACTIONS)
+                        + ". Opening the page does not count."
+                    )
+
+            # --- Monthly contest -----------------------------------
+            # The MONTH is reported; the RECORD is ranked. Measured over
+            # 30 large caps and 60 months, the month's best performer
+            # sits at a median volatility rank of 6 of 30 and winning
+            # does not repeat, so a highest-return ladder would rank
+            # volatility. CONTEST_WHY_NOT_RANKED says so on screen.
+            with st.expander("Monthly stock-picking contest", expanded=False):
+                _mc_store = monthly_contest.load_store()
+                _mc_profiles = following.load_profiles()
+                _mc_open = mc_open_period()
+                _mc_scored = mc_scored_period()
+
+                if _mc_store.corrupt or _mc_profiles.corrupt:
+                    st.error(
+                        "The shared contest file can't be read, so nothing is shown "
+                        "and Quantix will not overwrite it — it holds other "
+                        "accounts' entries, not just yours."
+                    )
+                elif not _peer_key:
+                    st.caption("Sign in to see the monthly contest.")
+                else:
+                    st.caption(CONTEST_WHY_NOT_RANKED)
+
+                    # --- this month's entries and how they are doing ---
+                    _mc_live = _mc_store.for_period(_mc_scored)
+                    if _mc_live:
+                        _mc_bench_prices, _ = load_price_history_only(
+                            CONTEST.benchmark,
+                            datetime.date.today() - datetime.timedelta(days=70),
+                            datetime.date.today())
+                        _mc_rows = []
+                        for _mc_entry in _mc_live:
+                            try:
+                                _mc_px, _ = load_price_history_only(
+                                    _mc_entry.ticker,
+                                    datetime.date.today() - datetime.timedelta(days=70),
+                                    datetime.date.today())
+                                _mc_res = mc_measure(
+                                    _mc_entry,
+                                    _mc_px["Close"] if _mc_px is not None
+                                    and not _mc_px.empty and "Close" in _mc_px else None,
+                                    _mc_bench_prices["Close"] if _mc_bench_prices is not None
+                                    and not _mc_bench_prices.empty
+                                    and "Close" in _mc_bench_prices else None)
+                            except Exception:                    # noqa: BLE001
+                                log_exception(logger, "contest.score_failed",
+                                              section="monthly_contest")
+                                _mc_res = mc_measure(_mc_entry, None, None)
+                            _mc_who = _mc_profiles.get(_mc_entry.user_key)
+                            _mc_rows.append({
+                                "Entrant": (getattr(_mc_who, "name", "") or "").strip()
+                                           or "(no display name)",
+                                "Pick": _mc_entry.ticker,
+                                "Return": _pf_pct(_mc_res.pick_pct)
+                                          if _mc_res.pick_pct is not None else "—",
+                                CONTEST.benchmark: _pf_pct(_mc_res.benchmark_pct)
+                                          if _mc_res.benchmark_pct is not None else "—",
+                                "Beat it": ("yes" if _mc_res.beat else "no")
+                                           if _mc_res.measured else "not yet",
+                                "Why": _mc_entry.thesis,
+                            })
+                        st.markdown(f"**{_mc_scored} — entries in progress**")
+                        st.dataframe(pd.DataFrame(_mc_rows), hide_index=True,
+                                     width="stretch")
+                        st.caption(
+                            "Listed in entry order, not ranked. The month is a "
+                            "result, not a score."
+                        )
+                    else:
+                        st.info(
+                            f"No entries for {_mc_scored}. Entries for a month close "
+                            "before it begins, so this month's field was set in "
+                            "advance."
+                        )
+
+                    # --- the record ladder ---
+                    # COMPLETED months only. The open month has not begun
+                    # and the current one is shown above as in progress;
+                    # scoring a half-finished month into a hit rate would
+                    # let a record change under the reader mid-month.
+                    _mc_past = [_e for _e in _mc_store.entries
+                                if _e.period < _mc_scored]
+                    _mc_results = []
+                    if _mc_past:
+                        _mc_from = min(_e.period for _e in _mc_past)
+                        _mc_since = (peer_comparison.period_bounds(_mc_from)[0]
+                                     or datetime.date.today())
+                        _mc_prices = {}
+
+                        def _mc_close_series(_sym):
+                            """Closes for one symbol, once per run. The
+                            underlying loader is cached, but the dict also
+                            stops two entrants picking the same stock from
+                            paying for it twice."""
+                            if _sym not in _mc_prices:
+                                try:
+                                    _frame, _ = load_price_history_only(
+                                        _sym, _mc_since, datetime.date.today())
+                                    _mc_prices[_sym] = (
+                                        _frame["Close"] if _frame is not None
+                                        and not _frame.empty and "Close" in _frame
+                                        else None)
+                                except Exception:            # noqa: BLE001
+                                    log_exception(logger, "contest.history_failed",
+                                                  section="monthly_contest")
+                                    _mc_prices[_sym] = None
+                            return _mc_prices[_sym]
+
+                        _mc_bench_series = _mc_close_series(CONTEST.benchmark)
+                        for _e in _mc_past:
+                            _mc_results.append(mc_measure(
+                                _e, _mc_close_series(_e.ticker), _mc_bench_series))
+                    _mc_ladder = mc_records(_mc_results, _mc_profiles, _peer_key)
+                    if _mc_ladder:
+                        st.markdown("**Record across completed months**")
+                        st.dataframe(pd.DataFrame([{
+                            "Entrant": _r.name + ("  \u2190 you" if _r.user_key == _peer_key else ""),
+                            "Beat " + CONTEST.benchmark: f"{_r.hits}/{_r.months}"
+                                if _r.months else "—",
+                            "Hit rate": f"{_r.hit_rate:.0f}%" if _r.hit_rate is not None else "—",
+                            "Above chance": "yes" if _r.significant else "not yet",
+                        } for _r in _mc_ladder[:CONTEST.max_rows]]),
+                            hide_index=True, width="stretch")
+                    st.caption(mc_short_record_note())
+
+                    # --- entering ---
+                    _mc_close = mc_entries_close(_mc_open)
+                    _mc_mine = _mc_store.entry_for(_peer_key, _mc_open)
+                    _mc_who = _mc_profiles.get(_peer_key)
+                    _mc_named = bool((getattr(_mc_who, "name", "") or "").strip())
+
+                    st.markdown(f"**Enter for {_mc_open}**"
+                                + (f" — entries close {_mc_close.isoformat()}"
+                                   if _mc_close else ""))
+                    if not _mc_named:
+                        st.warning(CONTEST_NEEDS_PROFILE)
+                    else:
+                        if _mc_mine:
+                            st.success(
+                                f"Your pick for {_mc_open}: **{_mc_mine.ticker}** — "
+                                f"{_mc_mine.thesis}")
+                        _mc_ticker = st.text_input(
+                            "Your pick", key="contest_ticker",
+                            placeholder="e.g. MSFT")
+                        _mc_thesis = st.text_area(
+                            "Why, in a sentence", key="contest_thesis",
+                            max_chars=CONTEST.max_thesis_chars,
+                            placeholder="What do you think the market is missing?")
+                        _mc_a, _mc_b = st.columns([1, 1])
+                        with _mc_a:
+                            if st.button(f"Enter for {_mc_open}", key="contest_enter",
+                                         type="primary", width="stretch"):
+                                _mc_store, _mc_err = mc_enter(
+                                    _mc_store, _peer_key, _mc_open,
+                                    _mc_ticker, _mc_thesis)
+                                if _mc_err:
+                                    st.warning(_mc_err)
+                                else:
+                                    monthly_contest.save_store(_mc_store)
+                                    _streak_record("contest")
+                                    log_event(logger, logging.INFO,
+                                              "user.contest_entered",
+                                              period=_mc_open)
+                                    st.rerun()
+                        with _mc_b:
+                            if _mc_mine and st.button(
+                                    "Withdraw my entry", key="contest_withdraw",
+                                    width="stretch",
+                                    help="Only possible while entries are open. Once "
+                                         "the month begins an entry stays on the "
+                                         "record."):
+                                _mc_store, _mc_err = mc_withdraw(
+                                    _mc_store, _peer_key, _mc_open)
+                                if _mc_err:
+                                    st.warning(_mc_err)
+                                else:
+                                    monthly_contest.save_store(_mc_store)
+                                    st.rerun()
 
             # --- Leaderboard ---------------------------------------
             # A SECOND consent, not a reuse of the one above. The

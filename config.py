@@ -1360,9 +1360,79 @@ class LeaderboardConfig:
 
 
 
+
+@dataclass(frozen=True)
+class ContestConfig:
+    """The monthly stock-picking contest.
+
+    IT DOES NOT RANK THE MONTHLY RETURN, AND THAT IS A MEASUREMENT.
+    Measured over 30 large caps and 60 real months: the month's best
+    performer sits at a MEDIAN volatility rank of 6 out of 30, 58% of
+    months are won by a top-quartile-volatility name (chance: 25%), the
+    same name wins back-to-back 5% of the time against ~3% by chance,
+    and last month's winner beats the median the next month 56% of the
+    time. Winners were MSTR (91% vol), SMCI (89%), RIVN, AMD, GME (94%).
+    A highest-return contest ranks VOLATILITY and its winner carries no
+    predictive information, so rewarding it would teach people to pick
+    the wildest ticker they can find.
+
+    SO THE LADDER RANKS A MULTI-MONTH HIT RATE — did your pick beat the
+    benchmark, a binary — and the month itself is reported as a fact
+    with no prize attached.
+
+    THE NULL IS NOT 50%. Measured over 3,435 stock-months across ten
+    years, 50.7% of stock-months beat SPY. (That universe is large-cap
+    survivors, so the figure flatters a random pick; a broad universe
+    would sit below 50% because index returns are driven by a right
+    tail. It is used as the null anyway, because it is the number
+    actually measured here and it is the CONSERVATIVE direction — a
+    higher bar to clear.)
+
+    A SHORT RECORD MEANS NOTHING AND THE PANEL SAYS SO. Exact binomial,
+    one-sided, p<0.05 against that null: three months cannot reach
+    significance at all, six months needs 6/6, twelve needs 10/12,
+    twenty-four needs 17/24, thirty-six needs 24/36.
+    """
+    store_filename: str = "contest_store.json"
+    benchmark: str = "SPY"
+    # Measured, not assumed — see the class docstring.
+    null_hit_rate: float = 0.507
+    significance_alpha: float = 0.05
+    max_thesis_chars: int = 400
+    max_rows: int = 10
+
+
+@dataclass(frozen=True)
+class StreaksConfig:
+    """Daily activity streaks.
+
+    A LOGIN STREAK WOULD MEASURE NOTHING HERE. Merely rendering this app
+    writes per-user files — a visited ticker becomes a recent, the tour
+    writes its flag, the risk panel seeds default rules — so "opened the
+    page" is satisfied by a refresh, a reconnect or an automated hit, and
+    a streak nobody can honestly lose is not a streak. CLAUDE.md already
+    records the same trap for the first-sign-in adoption prompt. A day
+    therefore counts only when the account did something with intent.
+
+    THE GRACE IS ZERO, DELIBERATELY. A streak that survives a missed day
+    is not a count of consecutive days, and quietly redefining the word
+    to keep a number alive is the kind of flattery this app avoids
+    everywhere else. The longest streak is kept beside the current one so
+    a broken run is still visible as something achieved.
+    """
+    store_filename: str = "streak_store.json"
+    # How many recent active days the panel draws as a strip.
+    calendar_days: int = 28
+    # Kept bounded: this is a display record, not an audit log.
+    max_days_retained: int = 400
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 LEADERBOARD = LeaderboardConfig()
+CONTEST = ContestConfig()
+STREAKS = StreaksConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

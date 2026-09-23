@@ -239,6 +239,7 @@ STORE_OWNERS = {
     "scenario_store.json": "scenario_modeling.py",
     "portfolio_store.json": "portfolio_holdings.py",
     "follows_store.json": "following.py",
+    "streak_store.json": "streaks.py",
 }
 
 

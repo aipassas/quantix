@@ -92,6 +92,10 @@ PER_USER_STORES: Tuple[str, ...] = (
     "portfolio_store.json",
     # Whom this account follows. Nobody else's business.
     "follows_store.json",
+    # Which days this account did something deliberate. Per-user for the
+    # same reason: how often somebody opens a research tool is nobody
+    # else's business unless they choose to say so.
+    "streak_store.json",
 )
 
 # Deliberately NOT per-user, and worth stating so nobody "fixes" it later:
@@ -157,6 +161,10 @@ SHARED_STORES: Tuple[str, ...] = (
     # account's namespace. Holds consent records only — the returns stay
     # in peer_returns_store.json under their own, separate opt-in.
     "leaderboard_store.json",
+    # Monthly contest picks. Shared because the contest IS across
+    # accounts — entering is itself the choice to be seen — and because
+    # the record has to outlive any one session to mean anything.
+    "contest_store.json",
 )
 
 

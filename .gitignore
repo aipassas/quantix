@@ -87,3 +87,9 @@ stock_of_the_week.tmp
 # Who opted in to the named monthly leaderboard. Consent records, local.
 leaderboard_store.json
 leaderboard_store.tmp
+
+# Monthly contest picks (shared) and per-account activity days.
+contest_store.json
+contest_store.tmp
+streak_store.json
+streak_store.tmp
