@@ -1428,11 +1428,55 @@ class StreaksConfig:
 
 
 
+
+@dataclass(frozen=True)
+class PeerTrendingConfig:
+    """What other accounts on this instance have been looking at.
+
+    NOT THE SAME THING AS ticker_discovery's TRENDING, and the two must
+    not be confused. That one reports the MARKET — Yahoo's most-active,
+    gainers and losers screens, real and instance-independent. This one
+    reports the PEOPLE here, which is what the ticket asks for and is
+    honestly empty on a single-account laptop. The empty state points at
+    the market panel rather than reimplementing it.
+
+    NO NEW STORE AND NO NEW OPT-IN. following.STREAM_VIEWED already
+    collects exactly these events, opt-in per account and deduplicated
+    within `FollowingConfig.viewed_dedupe_hours`. This aggregates them.
+    Switching the stream off purges its history AND the reader re-checks
+    every publisher's current switch, so opting out removes someone from
+    the counts immediately — machinery that already exists and should not
+    be duplicated.
+
+    COUNTS, NEVER NAMES. The feed names a publisher to the people who
+    follow them; this widget is visible to every account including ones
+    that follow nobody, so it is a strictly wider audience and may carry
+    strictly less. A row is a ticker and a number.
+
+    min_viewers IS 2, DELIBERATELY NOT peer_comparison's 5. That floor
+    protects a RETURN, where the percentile arithmetic states other
+    people's figures almost exactly. Here the disclosure is "at least two
+    accounts opened NVDA", which names nobody and is weaker than what the
+    stream already authorises. Two is also what the word means: one
+    person looking at something is not a trend, it is a person — and a
+    count of one on a small team is often attributable. A floor of five
+    would mean a six-person team needs five of them on one ticker before
+    anything ever appears.
+    """
+    # "Right now" is not available — events carry a timestamp, not a
+    # session. A trailing day is the honest reading and the panel says so.
+    window_hours: int = 24
+    min_viewers: int = 2
+    max_rows: int = 8
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 LEADERBOARD = LeaderboardConfig()
 CONTEST = ContestConfig()
 STREAKS = StreaksConfig()
+PEER_TRENDING = PeerTrendingConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

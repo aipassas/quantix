@@ -96,6 +96,7 @@ import peer_comparison
 import following
 import leaderboard
 import monthly_contest
+import peer_trending
 import streaks
 import etf_analysis
 import etf_comparison
@@ -218,6 +219,11 @@ from portfolio_holdings import (
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
+)
+from peer_trending import (
+    MARKET_TRENDING_INSTEAD as PT_MARKET_TRENDING_INSTEAD,
+    caption as pt_caption,
+    trending as pt_trending,
 )
 from monthly_contest import (
     NEEDS_PROFILE as CONTEST_NEEDS_PROFILE,
@@ -10489,6 +10495,44 @@ else:
                                 peer_comparison.save_store(_peer_store)
                                 log_event(logger, logging.INFO, "user.peer_published")
                                 st.rerun()
+
+            # --- What others are looking at ------------------------
+            # AN AGGREGATION, NOT A NEW COLLECTION. following's "viewed"
+            # stream already publishes these events, opt-in and deduped;
+            # this counts distinct accounts per ticker. No new store, no
+            # new switch, and switching the stream off drops you from the
+            # counts on the next read.
+            #
+            # NOT the market trending panel: ticker_discovery already
+            # reports most-active/gainers/losers in the sidebar, and the
+            # empty state points there rather than relabelling it.
+            with st.expander("What others are looking at", expanded=False):
+                _pt_feed = following.load_feed()
+                _pt_profiles = following.load_profiles()
+                if _pt_feed.corrupt or _pt_profiles.corrupt:
+                    st.error(
+                        "The shared activity file can't be read, so nothing is "
+                        "counted and Quantix will not overwrite it."
+                    )
+                else:
+                    _pt_result = pt_trending(_pt_feed, _pt_profiles, _peer_key)
+                    if _pt_result.has_result:
+                        for _pt_row in _pt_result.rows:
+                            _pt_a, _pt_b = st.columns([3, 1])
+                            _pt_a.markdown(
+                                f"**{_pt_row.ticker}** · {_pt_row.viewers} "
+                                f"account{'s' if _pt_row.viewers != 1 else ''}")
+                            if _pt_b.button("Open", key=f"pt_open_{_pt_row.ticker}",
+                                            width="stretch"):
+                                st.session_state["_pending_ticker"] = _pt_row.ticker
+                                log_event(logger, logging.INFO,
+                                          "user.peer_trending_opened",
+                                          symbol=_pt_row.ticker)
+                                st.rerun()
+                        st.caption(pt_caption(_pt_result))
+                    else:
+                        st.info(_pt_result.reason)
+                        st.caption(PT_MARKET_TRENDING_INSTEAD)
 
             # --- Streak --------------------------------------------
             # An ACTIVITY streak, never a login one: this app writes
