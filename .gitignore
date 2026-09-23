@@ -68,3 +68,18 @@ notifications.tmp
 # Coverage artifacts (PHASE 1.7)
 .coverage
 htmlcov/
+
+# Shared stores added by the PHASE 3/4 features. Same never-committed
+# class as every store above; missed when those features landed, exactly
+# the way screener_templates.json was.
+webhooks_store.json
+webhooks_store.tmp
+peer_returns_store.json
+profiles_store.json
+feed_store.json
+follows_store.json
+
+# The weekly highlight's pick history. One pick per ISO week for this
+# instance — local rotation state, not repository content.
+stock_of_the_week_store.json
+stock_of_the_week.tmp

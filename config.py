@@ -1285,7 +1285,39 @@ class FollowingConfig:
     viewed_dedupe_hours: int = 24
 
 
+
+@dataclass(frozen=True)
+class StockOfTheWeekConfig:
+    """The weekly highlight card at the top of the page.
+
+    THE CANDIDATE POOL IS THE INSTITUTIONAL BASKET, NOT A NEW UNIVERSE.
+    WatchlistConfig's tech_basket + diversified_basket are already scanned
+    and cached hourly for the alignment cards, so the pick costs no
+    additional fetch beyond one price history for the chosen name.
+
+    min_score IS A QUALITY GATE, NOT A RANKING. screen_watchlist scores in
+    quarters (0/25/50/75/100), so over sixteen names it cannot order them:
+    measured 2026-09-23, four tied at 100 and seven more at 75. 75 is the
+    same boundary screen_watchlist itself calls "High", and everything at
+    or above it is equally eligible — the WEEK is what chooses between
+    them, by rotation. Nothing is promoted below this line: a week in
+    which no name qualifies says so rather than featuring the least bad.
+
+    week_price_sessions is the trailing bar count the card's "this week"
+    move is measured over — five sessions, the trading week.
+    """
+    store_filename: str = "stock_of_the_week_store.json"
+    min_score: float = 75.0
+    week_price_sessions: int = 5
+    # Enough history to drive the rotation and to show the reader what has
+    # been featured before. Trimmed rather than unbounded: this is a
+    # display list, not an audit log.
+    max_history: int = 52
+
+
+
 FOLLOWING = FollowingConfig()
+STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

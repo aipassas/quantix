@@ -147,6 +147,11 @@ SHARED_STORES: Tuple[str, ...] = (
     # stream it switched on. Whom you follow is per-user (below).
     "profiles_store.json",
     "feed_store.json",
+    # The weekly highlight's pick history. Shared because there is ONE
+    # Stock of the Week for the instance — a per-user copy would let two
+    # people on the same team see different ones, which is not what the
+    # phrase means — and because the history is what drives the rotation.
+    "stock_of_the_week_store.json",
 )
 
 

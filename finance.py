@@ -216,6 +216,20 @@ from portfolio_holdings import (
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
 )
+from stock_of_the_week import (
+    Candidate as SotwCandidate,
+    DISCLOSURE as SOTW_DISCLOSURE,
+    basket as sotw_basket,
+    choose as sotw_choose,
+    eligible as sotw_eligible,
+    load_store as sotw_load_store,
+    record as sotw_record,
+    save_store as sotw_save_store,
+    week_bounds as sotw_week_bounds,
+    week_for as sotw_week_for,
+    weekly_move as sotw_weekly_move,
+    writeup as sotw_writeup,
+)
 from digest import (
     DigestSettings,
     build_digest as digest_build,
@@ -1179,6 +1193,18 @@ if st.session_state.get("kbd_shortcuts_open"):
             st.rerun()
 
 # ==========================================
+# STOCK OF THE WEEK
+# ==========================================
+# Reserved here so the highlight is the first thing under the masthead —
+# "surfaced on login" means the reader meets it without scrolling. It can
+# only be FILLED after the basket scan below, since the pick is chosen
+# from that scan's own results, so it uses the container-as-placeholder
+# pattern symbol_header_container already documents. st.empty(), not
+# st.container(): a container appends, so the card would end up stacked
+# under whatever was written here first.
+_sotw_container = st.empty()
+
+# ==========================================
 # INSTITUTIONAL WATCHLIST SUGGESTIONS (CHRONOLOGICAL PORTFOLIOS)
 # ==========================================
 st.markdown("---")
@@ -1216,6 +1242,12 @@ def process_ticker_data(ticker):
             "return_on_equity": std.return_on_equity,
             "dividend_yield_pct": std.dividend_yield_pct,
             "market_cap": std.market_cap,
+            # For the Stock of the Week card: WHICH of the four pre-screen
+            # checks this name passed, straight off the scorer rather than
+            # recomputed against a second copy of the WATCHLIST thresholds.
+            # Free — screen_watchlist already built them.
+            "checks": screened.checks,
+            "sector": bundle.info.get("sector") or "",
         }
     except Exception as e:
         # load_ticker_bundle/standardize_financials already handle routine
@@ -1275,6 +1307,94 @@ with st.spinner("Analyzing macro sectors and grouping asset classes..."):
                 st.markdown(alignment_card.card_html(data), unsafe_allow_html=True)
     else:
         st.write("No diversified sector leaders currently pass basic filters.")
+
+# --- Stock of the Week (fill) ---------------------------------------------
+# Every figure here comes from the basket scan that just ran, so the pick
+# costs no fetch of its own beyond one price history for the chosen name.
+_sotw_week = sotw_week_for()
+_sotw_store = sotw_load_store()
+_sotw_candidates = tuple(
+    SotwCandidate(
+        ticker=_d["ticker"], score=_d["score"], status=_d["status"],
+        checks=tuple(_d.get("checks") or ()),
+        figures={_k: _d.get(_k) for _k in ("return_on_equity", "revenue_growth",
+                                           "earnings_growth", "market_cap")},
+        sector=_d.get("sector") or "",
+    )
+    for _d in (tech_picks + other_picks)
+)
+_sotw_pick, _sotw_reason = sotw_choose(_sotw_candidates, _sotw_store, _sotw_week)
+
+# Persist only a NEWLY decided week. A week already in the store comes
+# back unchanged from choose(), so writing unconditionally would touch a
+# SHARED file on every rerun of every reader for no change at all.
+if _sotw_pick is not None and _sotw_store.for_week(_sotw_week) is None:
+    _sotw_store = sotw_record(_sotw_store, _sotw_pick)
+    sotw_save_store(_sotw_store)
+    log_event(logger, logging.INFO, "user.stock_of_the_week_chosen",
+              week=_sotw_week, symbol=_sotw_pick.ticker)
+
+with _sotw_container.container():
+    st.markdown("---")
+    _sotw_from, _sotw_to = sotw_week_bounds(_sotw_week)
+    _sotw_when = (f" · {_sotw_from:%d %b} – {_sotw_to:%d %b %Y}"
+                  if _sotw_from and _sotw_to else "")
+    st.header(f"Stock of the Week{_sotw_when}")
+
+    if _sotw_pick is None:
+        st.info(_sotw_reason)
+    else:
+        _sotw_cand = next((_c for _c in _sotw_candidates
+                           if _c.ticker == _sotw_pick.ticker), None)
+
+        # The week's move. One extra price fetch, for one ticker, cached
+        # like every other. Never raises out of the card: a highlight that
+        # takes the page down over a missing price series is worse than one
+        # that says the move is unavailable.
+        _sotw_move = None
+        try:
+            _sotw_hist, _ = load_price_history_only(
+                _sotw_pick.ticker,
+                datetime.date.today() - datetime.timedelta(days=35),
+                datetime.date.today())
+            if _sotw_hist is not None and not _sotw_hist.empty and "Close" in _sotw_hist:
+                _sotw_move = sotw_weekly_move(
+                    list(_sotw_hist["Close"]),
+                    [_i.strftime("%d %b") for _i in _sotw_hist.index])
+        except Exception:
+            log_exception(logger, "stock_of_the_week.price_failed",
+                          section="stock_of_the_week")
+
+        _sotw_left, _sotw_right = st.columns([4, 1])
+        with _sotw_left:
+            st.subheader(
+                f"{_sotw_pick.ticker} — {_sotw_pick.status} alignment "
+                f"({_sotw_pick.score:.0f}% on the pre-screen)")
+            if _sotw_cand is None:
+                # The frozen pick did not come back from this run's scan.
+                # Report that rather than silently dropping the week's
+                # card or re-picking, which would break the freeze.
+                st.warning(
+                    f"{_sotw_pick.ticker} was chosen for this week at "
+                    f"{_sotw_pick.score:.0f}%, but its figures could not be "
+                    f"loaded on this run, so the writeup is unavailable.")
+            else:
+                for _sotw_line in sotw_writeup(
+                        _sotw_cand, _sotw_store,
+                        len(sotw_eligible(_sotw_candidates)), _sotw_move):
+                    st.markdown(_sotw_line)
+            st.caption(SOTW_DISCLOSURE)
+        with _sotw_right:
+            # Parks the symbol and reruns rather than assigning
+            # "ticker_input" directly: that widget is instantiated ~3000
+            # lines below, and Streamlit forbids writing a widget's own
+            # session_state key after it has rendered this run.
+            if st.button(f"Analyse {_sotw_pick.ticker}", key="sotw_open",
+                         width="stretch"):
+                st.session_state["_pending_ticker"] = _sotw_pick.ticker
+                log_event(logger, logging.INFO, "user.stock_of_the_week_opened",
+                          week=_sotw_week, symbol=_sotw_pick.ticker)
+                st.rerun()
 
 # ==========================================
 # CUSTOM THRESHOLDS

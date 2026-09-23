@@ -397,6 +397,25 @@ class CompanyQuality:
         }[self.category]
 
 
+@dataclass(frozen=True)
+class WatchlistCheck:
+    """One of the four basket pre-screen checks, with the figure that
+    decided it and the threshold it was decided against.
+
+    `evaluable` is NOT the same as `passed`. The score deliberately counts
+    an unreported figure as a miss — that is the pre-existing behaviour of
+    screen_watchlist and changing it would move every basket score — but a
+    caller EXPLAINING the result must not tell the reader a company failed
+    a test that was never run on it. Anything narrating these says "not
+    reported" for `evaluable=False`, never "misses".
+    """
+    label: str
+    passed: bool
+    evaluable: bool
+    display: str        # the company's figure, or "Not reported"
+    benchmark: str      # the threshold it was compared against
+
+
 @dataclass
 class WatchlistScore:
     """Result of the fast 4-point basket pre-screen (see screen_watchlist)."""
@@ -405,6 +424,10 @@ class WatchlistScore:
     status: str
     pe_ratio: float
     net_margin_pct: float
+    # The four checks the score is the mean of. Carried so a caller can
+    # say WHICH ones a company passed without re-deriving the arithmetic
+    # against a second copy of the WATCHLIST thresholds.
+    checks: Tuple["WatchlistCheck", ...] = ()
 
 
 @dataclass
@@ -891,21 +914,43 @@ class FundamentalAnalysisEngine:
         if not s.pe_ratio or not s.net_margin:
             return None
 
-        flags = 0
-        if s.net_margin >= WATCHLIST.min_net_margin:
-            flags += 1
-        if s.debt_to_equity is not None and 0 < s.debt_to_equity < WATCHLIST.max_debt_to_equity:
-            flags += 1
-        if s.current_ratio is not None and s.current_ratio > WATCHLIST.min_current_ratio:
-            flags += 1
-        if WATCHLIST.pe_range[0] <= s.pe_ratio <= WATCHLIST.pe_range[1]:
-            flags += 1
+        checks = (
+            WatchlistCheck(
+                "Net margin",
+                s.net_margin >= WATCHLIST.min_net_margin,
+                True,
+                f"{s.net_margin * 100:.2f}%",
+                f"at least {WATCHLIST.min_net_margin * 100:.0f}%",
+            ),
+            WatchlistCheck(
+                "Debt-to-equity",
+                s.debt_to_equity is not None and 0 < s.debt_to_equity < WATCHLIST.max_debt_to_equity,
+                s.debt_to_equity is not None,
+                f"{s.debt_to_equity:.2f}" if s.debt_to_equity is not None else "Not reported",
+                f"under {WATCHLIST.max_debt_to_equity:.2f}",
+            ),
+            WatchlistCheck(
+                "Current ratio",
+                s.current_ratio is not None and s.current_ratio > WATCHLIST.min_current_ratio,
+                s.current_ratio is not None,
+                f"{s.current_ratio:.2f}" if s.current_ratio is not None else "Not reported",
+                f"above {WATCHLIST.min_current_ratio:.2f}",
+            ),
+            WatchlistCheck(
+                "P/E ratio",
+                WATCHLIST.pe_range[0] <= s.pe_ratio <= WATCHLIST.pe_range[1],
+                True,
+                f"{s.pe_ratio:.2f}",
+                f"{WATCHLIST.pe_range[0]:.0f}\u2013{WATCHLIST.pe_range[1]:.0f}",
+            ),
+        )
 
-        score = (flags / 4) * 100
+        score = (sum(1 for c in checks if c.passed) / len(checks)) * 100
         status = "High" if score >= 75 else ("Moderate" if score >= 50 else "Low")
         return WatchlistScore(
             ticker=s.ticker, score=score, status=status,
             pe_ratio=s.pe_ratio, net_margin_pct=s.net_margin * 100,
+            checks=checks,
         )
 
     # ----- profitability -------------------------------------------------------
