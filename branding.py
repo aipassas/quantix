@@ -84,6 +84,10 @@ class Brand:
     support_email: str = ""
     footer_note: str = ""
     logo_path: str = ""
+    # Blank on every ordinary instance — see BrandingConfig.public_url.
+    # A shared post carries a link only when this is set, because there
+    # is otherwise no address anyone else could open.
+    public_url: str = ""
 
     @property
     def is_customised(self) -> bool:
@@ -132,6 +136,7 @@ def brand() -> Brand:
         support_email=_clean(section.get("support_email")),
         footer_note=_clean(section.get("footer_note")),
         logo_path=_clean(section.get("logo_path")),
+        public_url=_clean(section.get("public_url")),
     )
 
 

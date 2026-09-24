@@ -20,7 +20,7 @@ import export_workbook
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
 import data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS, CONTEST, STREAKS
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS, CONTEST, STREAKS, SOCIAL_SHARE
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -97,6 +97,7 @@ import following
 import leaderboard
 import monthly_contest
 import peer_trending
+import social_share
 import streaks
 import etf_analysis
 import etf_comparison
@@ -219,6 +220,17 @@ from portfolio_holdings import (
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
+)
+from social_share import (
+    Fact as ShareFact,
+    LINKEDIN_CANNOT_PREFILL as SS_LINKEDIN_NOTE,
+    NOTHING_TO_SHARE as SS_NOTHING_TO_SHARE,
+    NO_PUBLIC_URL as SS_NO_PUBLIC_URL,
+    card_png as ss_card_png,
+    compose as ss_compose,
+    filename as ss_filename,
+    plans as ss_plans,
+    public_url as ss_public_url,
 )
 from peer_trending import (
     MARKET_TRENDING_INSTEAD as PT_MARKET_TRENDING_INSTEAD,
@@ -6911,6 +6923,85 @@ else:
             if fundamentals.alignment_verdict == "high": st.success("HIGH ALIGNMENT: Passes major filters.")
             elif fundamentals.alignment_verdict == "moderate": st.warning("MODERATE RISK: Proceed with caution.")
             else: st.error("ABORT RESEARCH: Fails safety benchmarks.")
+
+            # --- Share this analysis -------------------------------
+            # NOTHING IS POSTED FROM HERE. The text is composed, the card
+            # is rendered, and the platform's own compose window opens
+            # with the text pre-filled where the platform allows it. The
+            # reader presses Post. No token is held and no API is called.
+            #
+            # Every figure below is a DISPLAY STRING taken from what is
+            # already on screen, never re-derived: a second place
+            # formatting the same number is how every unit error in this
+            # app happened, and a post cannot be footnoted afterwards.
+            with st.expander(f"Share this analysis — {ticker_symbol}", expanded=False):
+                _share_headline = {
+                    "high": "passes the Blueprint scorecard's major filters",
+                    "moderate": "mixed on the Blueprint scorecard",
+                }.get(fundamentals.alignment_verdict,
+                      "fails Blueprint scorecard safety benchmarks")
+                _share_facts = [
+                    ShareFact("Blueprint alignment", f"{score_pct:.0f}%"),
+                    ShareFact("Checks passed", f"{green_flags} of {total_checks}"),
+                    ShareFact("Quality", getattr(cq, "category", "") or "Not reported"),
+                ]
+                _share_url = ss_public_url()
+                _share_post = ss_compose(
+                    ticker_symbol, _share_headline, _share_facts,
+                    brand_name=brand().name, as_of=datetime.date.today(),
+                    url=_share_url)
+
+                if _share_post is None:
+                    st.info(SS_NOTHING_TO_SHARE)
+                else:
+                    st.text_area(
+                        "Post", value=_share_post.text, height=160,
+                        key="share_text",
+                        help="Edit it freely — it opens in your own composer and "
+                             "you press Post. Nothing is published from here.")
+                    st.caption(f"{_share_post.length} of "
+                               f"{SOCIAL_SHARE.max_post_chars} characters.")
+
+                    if _share_post.dropped:
+                        st.caption(
+                            "Left out because the app could not compute "
+                            f"{'them' if len(_share_post.dropped) > 1 else 'it'}: "
+                            + ", ".join(_share_post.dropped)
+                            + ". A figure this app reports as unavailable is never "
+                              "published as a number.")
+
+                    if not _share_url:
+                        st.caption(SS_NO_PUBLIC_URL)
+
+                    _share_card = ss_card_png(
+                        ticker_symbol, _share_headline, _share_facts,
+                        brand_name=brand().name, accent=_theme.card_accent,
+                        as_of=datetime.date.today())
+                    _share_a, _share_b = st.columns([1, 1])
+                    if _share_card:
+                        with _share_a:
+                            st.image(_share_card, width="stretch")
+                        with _share_b:
+                            st.download_button(
+                                "Download the card", data=_share_card,
+                                file_name=ss_filename(ticker_symbol),
+                                mime="image/png", key="share_card_download",
+                                width="stretch",
+                                help="Attach it to the post. Neither platform can "
+                                     "pull an image from this machine.")
+                    else:
+                        st.caption(
+                            "The share card could not be drawn on this machine, so "
+                            "the text above is the whole share.")
+
+                    for _share_plan in ss_plans(_share_post):
+                        st.markdown(
+                            f"[Open {_share_plan.platform}]({_share_plan.url})"
+                            + ("  — the text is carried across."
+                               if _share_plan.prefilled else ""))
+                        if _share_plan.note:
+                            st.caption(_share_plan.note)
+            # --- end share -----------------------------------------
 
             # ==========================================
             # COMPANY QUALITY CLASSIFICATION

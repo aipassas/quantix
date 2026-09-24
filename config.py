@@ -701,6 +701,17 @@ class BrandingConfig:
     logo_path: str = ""
     max_name_chars: int = 40
 
+    # Where this deployment is reachable from the public internet, if it
+    # is at all. BLANK IS THE HONEST DEFAULT and the normal state: this
+    # app runs on localhost and api_server binds loopback, so there is no
+    # address a reader — or a link-preview crawler — could fetch. Social
+    # sharing therefore composes text and an image you attach yourself
+    # rather than a link to nowhere. A licensee who really has deployed
+    # Quantix on their own domain sets this, and only then does a link
+    # appear in a shared post and LinkedIn's share endpoint (which takes
+    # a URL and nothing else) become usable at all.
+    public_url: str = ""
+
 
 @dataclass(frozen=True)
 class SlackConfig:
@@ -1471,12 +1482,54 @@ class PeerTrendingConfig:
 
 
 
+
+@dataclass(frozen=True)
+class SocialShareConfig:
+    """Composing a post about an analysis, for X or LinkedIn.
+
+    NOTHING IS EVER POSTED BY THIS APP. It composes text, renders an
+    image, and opens the platform's own compose window with the text
+    pre-filled where the platform allows it. The reader presses Post. No
+    OAuth token is stored, no API is called, and there is no code path
+    here that publishes anything — publishing on somebody's behalf is a
+    different feature with a different consent, and this ticket does not
+    ask for it.
+
+    THE TWO PLATFORMS ARE NOT SYMMETRIC, measured 2026-09-23 against
+    their own documentation. X's web intent takes `text`, `url`,
+    `hashtags` and `via`, so a post can be pre-filled. LinkedIn's
+    share-offsite endpoint takes a URL AND NOTHING ELSE — headline,
+    summary and thumbnail are scraped from that page's Open Graph tags,
+    and the older shareArticle title/summary parameters are ignored. So
+    LinkedIn cannot be pre-filled at all, and with no public_url set it
+    cannot be used at all: the panel hands over the text to paste and
+    says why, rather than opening a share box that would come up empty.
+
+    NEITHER PLATFORM ACCEPTS AN IMAGE THROUGH A URL. The card is rendered
+    to a PNG the reader downloads and attaches, which works on both and
+    needs no public address — strictly better than an Open Graph preview
+    that nothing here could serve.
+    """
+    # X's documented intent endpoint. The x.com/intent/post form is the
+    # current spelling and this one still redirects to it; this is the
+    # form in X's own example, so it is the one used here.
+    x_intent_url: str = "https://twitter.com/intent/tweet"
+    linkedin_share_url: str = "https://www.linkedin.com/sharing/share-offsite/"
+    linkedin_composer_url: str = "https://www.linkedin.com/feed/"
+    # X's limit. The composed text is trimmed to fit rather than silently
+    # truncated by the platform mid-figure.
+    max_post_chars: int = 280
+    card_size: Tuple[int, int] = (1200, 675)   # 16:9, the shape both platforms crop to
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 LEADERBOARD = LeaderboardConfig()
 CONTEST = ContestConfig()
 STREAKS = StreaksConfig()
 PEER_TRENDING = PeerTrendingConfig()
+SOCIAL_SHARE = SocialShareConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

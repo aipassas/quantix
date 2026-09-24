@@ -39,3 +39,10 @@ openpyxl>=3.1
 # on a locked-down machine, so export_deck degrades to a deck without chart
 # slides rather than failing the whole export.
 kaleido>=1.0
+
+# Draws the social share card. Present transitively today (streamlit and
+# kaleido both pull it in), which is exactly why it is declared here: a
+# feature that renders an image must not depend on another package
+# happening to keep it. social_share.card_png returns None rather than
+# raising if it is missing, so the panel degrades to text-only.
+Pillow>=10.0
