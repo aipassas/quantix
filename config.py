@@ -1523,6 +1523,52 @@ class SocialShareConfig:
 
 
 
+
+@dataclass(frozen=True)
+class BadgesConfig:
+    """Achievement badges, awarded for what you DID and never for what
+    the market did.
+
+    THE TICKET'S TWO NAMED BADGES ARE DECLINED, WITH NUMBERS.
+    "N consecutive profitable trades" was measured over 73,457 real
+    stock-months across ten years and thirty large caps: a random
+    three-month position is profitable 65.2% of the time, not 50. So five
+    in a row happens to 11.8% of people BY CHANCE — roughly one in eight,
+    with no skill whatever. Worse, it measures the calendar rather than
+    the person: five-in-a-row-by-chance ran at 25.9% in 2017 and 2.3% in
+    2022, so the same badge is ELEVEN TIMES easier to earn in one year
+    than another.
+
+    "First 5-Bagger" is the same failure with a bigger number. The
+    contest measurement already showed the largest gains land on a
+    top-quartile-volatility name 58% of the time against 25% by chance,
+    and that winning does not repeat. A badge for a 5x congratulates
+    somebody for having held the most volatile thing available, and
+    teaches every reader that this is the target.
+
+    SO EVERY BADGE HERE IS PROCESS. Recording a thesis before the outcome
+    was known, going back to review it afterwards, keeping the habit
+    running, entering the contest before the month began, building a
+    research setup. None of these can be handed to someone by a rising
+    market, and none is easier in one year than another.
+
+    NOTHING IS PERSISTED. Badges are derived from the journal, the
+    streak, the contest and the saved-research records on every render,
+    so there is no second copy to fall out of step and no new opt-in.
+    Cumulative counts do not go backwards, so nothing flickers. Deleting
+    the entries that earned a badge does remove it, which is correct:
+    the evidence is what was being recognised.
+
+    PRIVATE. Nothing here reaches the feed, the profile or the
+    leaderboard. There is already a leaderboard for the parts that are
+    genuinely comparable between people.
+    """
+    # How many to draw before collapsing the rest behind a count. A wall
+    # of locked badges reads as a list of things you have failed to do.
+    max_shown: int = 8
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 LEADERBOARD = LeaderboardConfig()
@@ -1530,6 +1576,7 @@ CONTEST = ContestConfig()
 STREAKS = StreaksConfig()
 PEER_TRENDING = PeerTrendingConfig()
 SOCIAL_SHARE = SocialShareConfig()
+BADGES = BadgesConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
