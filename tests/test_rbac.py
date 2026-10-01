@@ -470,8 +470,19 @@ def test_the_panel_grants_through_the_module():
 
 
 def test_the_role_panel_is_itself_gated():
-    panel = _panel()
-    assert "admin.roles" in panel
+    """The gate moved OUT of this span when the admin dashboard absorbed
+    the panel — so assert the ENCLOSING gate rather than looking for it
+    inside, which would pass only by coincidence of where a line sits.
+    """
+    src = FINANCE.read_text()
+    gate = src.index('_admin_gate = rbac_require(_my_role, "admin.roles")')
+    roles_start = src.index("# --- Roles ---")
+    roles_end = src.index("# --- end roles ---")
+    enclosing_end = src.index("# --- end admin dashboard ---")
+    assert gate < roles_start, "the roles control is not behind the admin gate"
+    assert roles_end < enclosing_end, "the roles block escaped the dashboard"
+    # And there is exactly ONE write path into the role store.
+    assert src.count("rbac_grant(") == 1
 
 
 def test_the_app_bootstraps_the_first_admin():

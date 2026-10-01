@@ -22,7 +22,7 @@ import export_workbook
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
 import data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS, CONTEST, STREAKS, SOCIAL_SHARE, AUDIT
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS, CONTEST, STREAKS, SOCIAL_SHARE, AUDIT, ADMIN_DASHBOARD
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -101,8 +101,10 @@ import monthly_contest
 import peer_trending
 import social_share
 import badges as badges_mod
+import accounts
 import audit
 import rbac
+import admin_dashboard as admin_dash
 import streaks
 import etf_analysis
 import etf_comparison
@@ -225,6 +227,16 @@ from portfolio_holdings import (
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
+)
+from admin_dashboard import (
+    NO_DELETION_NOTE as AD_NO_DELETION_NOTE,
+    NO_LICENCE_MODEL as AD_NO_LICENCE_MODEL,
+    UNKNOWN_IDENTITY_NOTE as AD_UNKNOWN_IDENTITY_NOTE,
+    coverage_note as ad_coverage_note,
+    format_bytes as ad_format_bytes,
+    members as ad_members,
+    overview as ad_overview,
+    scan as ad_scan,
 )
 from rbac import (
     ROLE_LABELS,
@@ -3857,71 +3869,121 @@ with st.sidebar.expander("Help & Support", expanded=profile_menu.help_requested(
 # does is make an edit visible, which is what an auditor actually tests.
 st.markdown("---")
 # ==========================================
-# ROLES & PERMISSIONS
+# ADMIN DASHBOARD
 # ==========================================
-# --- Roles ---
-# Admin only, and hidden rather than shown-and-refused for everyone
-# else. The grant itself re-checks inside rbac.grant(), so this panel
-# being visible is not what authorises anything.
-_roles_gate = rbac_require(_my_role, "admin.roles")
-if _roles_gate:
-    # Everyone still sees their OWN role — knowing what you may do is
-    # not a privilege, and a refusal with no explanation reads as a bug.
+# --- Admin dashboard ---
+# One admin surface. The standalone roles panel was ABSORBED rather than
+# left beside this: two controls writing the same store is how they
+# drift apart.
+#
+# The user list comes from the users/ namespace directories, not from
+# accounts.py — measured, accounts.py sees local email/password accounts
+# only, which on this instance is 1 of the 2 identities that have data
+# and would be NONE on a firm signing in through Okta.
+_admin_gate = rbac_require(_my_role, "admin.roles")
+if _admin_gate:
+    # Everyone still sees their OWN role — knowing what you may do is not
+    # a privilege, and a refusal with no explanation reads as a bug.
     if _my_role:
         st.caption(f"Your role on this instance: **{ROLE_LABELS.get(_my_role, _my_role)}** "
                    f"— {rbac_describe(_my_role)}")
 else:
     st.markdown("---")
-    with st.expander("Roles & permissions", expanded=False):
-        if _role_store.corrupt:
-            st.error(
-                "The role file can't be read, so roles cannot be changed and "
-                "Quantix will not overwrite it."
-            )
+    with st.expander("Admin dashboard", expanded=False):
+        _ad_people = ad_members(ad_scan(), accounts.all_accounts(), _role_store)
+        _ad_overview = ad_overview(_ad_people)
+
+        st.caption(_ad_overview.sentence())
+        st.caption(AD_NO_LICENCE_MODEL)
+
+        if _ad_people:
+            _ad_cols = st.columns(4)
+            _ad_cols[0].metric("Identities", _ad_overview.total,
+                               help="Everyone who has ever signed in here.")
+            _ad_cols[1].metric("Administrators", _ad_overview.admins,
+                               help="Accounts that can configure this instance.")
+            _ad_cols[2].metric("Local accounts", _ad_overview.local_accounts,
+                               help="Signed in with an email and password here, "
+                                    "so an address is known.")
+            _ad_cols[3].metric("Stored", ad_format_bytes(_ad_overview.total_bytes),
+                               help="Total size of every account's saved work.")
+
+            st.dataframe(
+                pd.DataFrame([{
+                    "Who": _m.display,
+                    "Role": _m.role_label,
+                    "Known as": _m.source,
+                    "Last sign-in": (_m.last_login_at.replace("T", " ")[:19]
+                                     if _m.last_login_at else "not recorded"),
+                    "Stored": ad_format_bytes(_m.bytes_used),
+                    "Account key": _m.user_key,
+                } for _m in _ad_people[:ADMIN_DASHBOARD.max_shown]]),
+                hide_index=True, width="stretch")
+            _ad_note = ad_coverage_note(_ad_people)
+            if _ad_note:
+                st.caption(_ad_note)
+            if _ad_overview.sign_in_only:
+                st.caption(AD_UNKNOWN_IDENTITY_NOTE)
         else:
-            st.caption(RBAC_WHAT_THIS_IS)
-            st.caption(rbac_bootstrap_note())
+            st.info("Nobody has signed in on this instance yet.")
 
-            for _rs in rbac.ROLE_SPECS:
-                st.markdown(f"**{_rs.label}** — {_rs.blurb}")
+        st.caption(AD_NO_DELETION_NOTE)
 
-            st.markdown("**Who holds what**")
-            _role_rows = rbac.assignments_for_display(_role_store)
-            if not _role_rows:
-                st.caption("Nobody has been assigned a role yet.")
+    # --- Roles ---
+    # Absorbed from the standalone panel: one place an
+    # administrator goes, and one write path into the role store.
+        with st.expander("Roles & permissions", expanded=False):
+            if _role_store.corrupt:
+                st.error(
+                    "The role file can't be read, so roles cannot be changed and "
+                    "Quantix will not overwrite it."
+                )
             else:
-                st.dataframe(
-                    pd.DataFrame([{
-                        "Account": _a.user_key,
-                        "Role": ROLE_LABELS.get(_a.role, _a.role),
-                        "Granted by": ("automatically, as the first account"
-                                       if _a.granted_by == rbac.BOOTSTRAP
-                                       else _a.granted_by),
-                        "When": _a.granted_at.replace("T", " "),
-                    } for _a in _role_rows]),
-                    hide_index=True, width="stretch")
+                st.caption(RBAC_WHAT_THIS_IS)
+                st.caption(rbac_bootstrap_note())
 
-            st.markdown("**Change a role**")
-            _role_target = st.text_input(
-                "Account key", key="rbac_target",
-                help="The account key as it appears in the table above.")
-            _role_choice = st.selectbox(
-                "Role", list(rbac.ROLES), key="rbac_role",
-                format_func=lambda _r: ROLE_LABELS.get(_r, _r))
-            if st.button("Set role", key="rbac_grant", type="primary"):
-                _role_store, _role_err = rbac_grant(
-                    _role_store, _my_key, _role_target.strip(), _role_choice)
-                if _role_err:
-                    st.warning(_role_err)
+                for _rs in rbac.ROLE_SPECS:
+                    st.markdown(f"**{_rs.label}** — {_rs.blurb}")
+
+                st.markdown("**Who holds what**")
+                _role_rows = rbac.assignments_for_display(_role_store)
+                if not _role_rows:
+                    st.caption("Nobody has been assigned a role yet.")
                 else:
-                    rbac.save_store(_role_store)
-                    _audit("sharing_opted_in",
-                           target=f"role:{_role_choice}",
-                           detail=f"Set {_role_target.strip()} to {_role_choice}")
-                    log_event(logger, logging.INFO, "rbac.granted",
-                              kind=_role_choice)
-                    st.rerun()
-# --- end roles ---
+                    st.dataframe(
+                        pd.DataFrame([{
+                            "Account": _a.user_key,
+                            "Role": ROLE_LABELS.get(_a.role, _a.role),
+                            "Granted by": ("automatically, as the first account"
+                                           if _a.granted_by == rbac.BOOTSTRAP
+                                           else _a.granted_by),
+                            "When": _a.granted_at.replace("T", " "),
+                        } for _a in _role_rows]),
+                        hide_index=True, width="stretch")
+
+                st.markdown("**Change a role**")
+                _role_target = st.text_input(
+                    "Account key", key="rbac_target",
+                    help="The account key as it appears in the table above.")
+                _role_choice = st.selectbox(
+                    "Role", list(rbac.ROLES), key="rbac_role",
+                    format_func=lambda _r: ROLE_LABELS.get(_r, _r))
+                if st.button("Set role", key="rbac_grant", type="primary"):
+                    _role_store, _role_err = rbac_grant(
+                        _role_store, _my_key, _role_target.strip(), _role_choice)
+                    if _role_err:
+                        st.warning(_role_err)
+                    else:
+                        rbac.save_store(_role_store)
+                        _audit("sharing_opted_in",
+                               target=f"role:{_role_choice}",
+                               detail=f"Set {_role_target.strip()} to {_role_choice}")
+                        log_event(logger, logging.INFO, "rbac.granted",
+                                  kind=_role_choice)
+                        st.rerun()
+    # --- end roles ---
+# --- end admin dashboard ---
+
 
 _audit_gate = rbac_require(_my_role, "admin.audit_read")
 if _audit_gate:

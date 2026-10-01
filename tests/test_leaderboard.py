@@ -430,7 +430,7 @@ def test_a_duplicated_key_on_disk_is_collapsed(tmp_path):
     assert store.corrupt is False
 
 
-def test_the_store_is_shared_not_per_user(monkeypatch):
+def test_the_store_is_shared_not_per_user(monkeypatch, tmp_path):
     """Resolved with a namespace ACTIVE, not read off the source.
 
     A textual check passes a build that merely imports store_path
@@ -439,6 +439,10 @@ def test_the_store_is_shared_not_per_user(monkeypatch):
     ranking across accounts cannot live inside one account's folder.
     """
     import local_store
+    # Sandboxed: the store_path() call below CREATES the per-user
+    # directory, so without this the test leaves a real users/<key>/
+    # behind in the app directory.
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
     monkeypatch.setattr(local_store, "_namespace_provider", lambda: "someones-key",
                         raising=False)
     assert local_store.current_namespace() == "someones-key"

@@ -235,9 +235,17 @@ def test_junk_days_are_dropped_on_load(tmp_path):
     assert store.corrupt is False
 
 
-def test_the_store_is_per_user(monkeypatch):
-    """Resolved with a namespace active, not read off the source."""
+def test_the_store_is_per_user(monkeypatch, tmp_path):
+    """Resolved with a namespace active, not read off the source.
+
+    app_dir IS SANDBOXED, because store_path() creates the per-user
+    directory on demand — without this the test leaves a real empty
+    users/<key>/ behind in the app directory. CLAUDE.md records the
+    same trap for a script that sandboxes app_dir and still writes real
+    user data; this is the inverse and just as real.
+    """
     import local_store
+    monkeypatch.setattr(local_store, "app_dir", lambda: tmp_path)
     monkeypatch.setattr(local_store, "_namespace_provider", lambda: "somekey",
                         raising=False)
     assert local_store.current_namespace() == "somekey"

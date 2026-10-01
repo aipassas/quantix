@@ -1659,6 +1659,40 @@ class RbacConfig:
 
 
 
+
+@dataclass(frozen=True)
+class AdminDashboardConfig:
+    """The org-level view of who is on this instance.
+
+    THE USER LIST COMES FROM users/, NOT FROM accounts.py, and that is a
+    measurement rather than a preference. accounts.py only knows local
+    email/password accounts; an OIDC identity never gets an Account
+    record at all. Measured 2026-10-01 on this instance: two identities
+    have data (one Google, one local) and accounts.py can see ONE of
+    them. A dashboard built the obvious way would show half the users
+    here and NONE of them on a firm using Okta or Google Workspace —
+    which is exactly the deployment it exists for. Every identity that
+    has ever signed in has a namespace directory, so that listing is the
+    only complete one, enriched with email and last-login wherever a
+    local Account happens to exist.
+
+    THERE ARE NO SEATS, BECAUSE THERE IS NO LICENCE MODEL. Nothing in
+    this codebase has a plan, a quota, a subscription or a bill, so a
+    seat count would be an entitlement invented against nothing. The
+    panel reports the real head count and says there is no licensing in
+    this build. Billing belongs to the Freemium ticket, which is open.
+
+    IT DOES NOT DELETE ANYBODY. An administrator can demote to Viewer,
+    which removes the ability to write anything shared and covers the
+    real need. Destroying somebody's journal, portfolio and watchlists
+    from a dashboard is irreversible, and the audit trail already has a
+    separate, deliberate erasure path for the lawful case.
+    """
+    # Rows before the table scrolls. A head count, not a data set.
+    max_shown: int = 100
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 LEADERBOARD = LeaderboardConfig()
@@ -1669,6 +1703,7 @@ SOCIAL_SHARE = SocialShareConfig()
 BADGES = BadgesConfig()
 AUDIT = AuditConfig()
 RBAC = RbacConfig()
+ADMIN_DASHBOARD = AdminDashboardConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()
