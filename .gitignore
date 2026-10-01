@@ -93,3 +93,7 @@ contest_store.json
 contest_store.tmp
 streak_store.json
 streak_store.tmp
+
+# The audit trail. Local evidence of who did what on this instance;
+# never repository content.
+audit_log.jsonl

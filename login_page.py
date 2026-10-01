@@ -48,6 +48,21 @@ from logging_setup import get_logger, log_event
 
 logger = get_logger("login_page")
 
+
+def _audit_sign_in(action: str, detail: str) -> None:
+    """Record an authentication event. Never raises — a failure to write
+    the audit trail must not stop somebody signing in, and the write is
+    best-effort by design on this one path only."""
+    try:
+        import audit
+        user = auth.current_user()
+        key = getattr(user, "key", "") if user else ""
+        if key:
+            audit.record(key, action, target="local", detail=detail)
+    except Exception:                                      # noqa: BLE001
+        pass
+
+
 _MODE_KEY = "_login_mode"
 _ERROR_KEY = "_login_error"
 _NOTICE_KEY = "_login_notice"
@@ -519,6 +534,10 @@ def _signin_form() -> None:
             _fail(error or "That email or password isn't right.")
             st.rerun()
         auth.sign_in_local(account)
+        # The audit trail's first record for this session. Written here
+        # rather than through finance.py's helper because the gate has
+        # not run yet — this IS the sign-in.
+        _audit_sign_in("sign_in", "Signed in with an email and password")
         log_event(logger, logging.INFO, "login.local_success")
         st.rerun()
 
@@ -566,6 +585,7 @@ def _signup_form() -> None:
             _fail(error or "Couldn't create that account.")
             st.rerun()
         auth.sign_in_local(account)
+        _audit_sign_in("account_created", "Created a local account")
         log_event(logger, logging.INFO, "login.account_created")
         st.rerun()
 

@@ -165,6 +165,11 @@ SHARED_STORES: Tuple[str, ...] = (
     # accounts — entering is itself the choice to be seen — and because
     # the record has to outlive any one session to mean anything.
     "contest_store.json",
+    # The tamper-evident audit trail. Shared and never per-user: a trail
+    # scoped to the account that caused the events is one each person
+    # could curate. Append-only and deliberately NOT rotated — see
+    # audit.py on why the rotating quantix.log is not an audit trail.
+    "audit_log.jsonl",
 )
 
 

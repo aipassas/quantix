@@ -1569,6 +1569,58 @@ class BadgesConfig:
 
 
 
+
+@dataclass(frozen=True)
+class AuditConfig:
+    """The tamper-evident audit trail.
+
+    THE EXISTING LOG IS NOT AN AUDIT TRAIL, measured before this was
+    designed. `logging_setup` already carries 174 log_event call sites —
+    so "log every significant action" is largely done — but:
+
+      * only 7 of those 174 name the ACCOUNT that caused the event, so
+        96% of the stream cannot answer "who";
+      * the file ROTATES on a 4 MB byte budget (1 MB x 3 backups), not on
+        a retention policy. Measured on this machine 2026-10-01: the
+        oldest surviving record was 2026-08-23, about 32 days, and
+        everything before it is permanently gone. A trail that deletes
+        itself by size is the opposite of immutable;
+      * it is formatted prose, so reporting on it means parsing English.
+
+    So the audit trail is its own append-only file that is NEVER rotated,
+    written through a call that cannot be satisfied without an actor.
+
+    "IMMUTABLE" IS NOT ACHIEVABLE AND IS NOT CLAIMED. There is no WORM
+    storage here and no external service; the operator owns the disk and
+    can edit or delete anything on it. What IS achievable is tamper
+    EVIDENCE: each record carries the hash of the one before it, so any
+    edit, deletion or reordering breaks the chain and `audit.verify()`
+    reports the exact record where it broke. The UI says detects, never
+    prevents.
+
+    ERASURE AND THE CHAIN ARE RECONCILED BY HASHING THE DIGEST. The chain
+    covers `actor_digest` (sha256 of the account key), not the readable
+    actor field. A GDPR erasure replaces the actor with a tombstone and
+    leaves the digest — so the chain still verifies, the person is no
+    longer identifiable, and the erasure itself is appended as a record.
+    Deleting the lines instead would break the chain, which would make
+    honouring a lawful request look exactly like forgery.
+
+    NO COMPLIANCE CLAIM IS MADE. The export is evidence an auditor can
+    review, with the verification result attached. It is not an
+    attestation and names no control as met — branding.py already locks
+    "No certification is claimed" against rebranding, and SOC 2 is a
+    separate, still-open ticket.
+    """
+    store_filename: str = "audit_log.jsonl"
+    max_detail_chars: int = 300
+    # The panel lists this many; the export carries everything.
+    max_shown: int = 50
+    # Written when an account's records are pseudonymised.
+    tombstone: str = "[erased]"
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 LEADERBOARD = LeaderboardConfig()
@@ -1577,6 +1629,7 @@ STREAKS = StreaksConfig()
 PEER_TRENDING = PeerTrendingConfig()
 SOCIAL_SHARE = SocialShareConfig()
 BADGES = BadgesConfig()
+AUDIT = AuditConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

@@ -1,4 +1,6 @@
+import csv
 import dataclasses
+import io
 import logging
 import streamlit as st
 import plotly.graph_objects as go
@@ -20,7 +22,7 @@ import export_workbook
 from email_report import is_email_configured, send_notification_email, send_report_email
 from data_quality import assess_data_quality
 import data_quality
-from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS, CONTEST, STREAKS, SOCIAL_SHARE
+from config import WATCHLIST, SCORECARD, DCF, RISK, MONTE_CARLO, CHART_DEFAULTS, PEER_DEFAULTS, TEAR_SHEET, TECHNICAL, WALK_FORWARD, BACKTEST_COST, WATCHLIST_PANEL, REALTIME_ALERTS, PORTFOLIO_BACKTEST, ML_PIPELINE, SCENARIO_MODELING, COMPETITIVE_BENCHMARKING, EMAIL_REPORT, FAVORITES, API_KEYS, SUPPORT, DIGEST, PORTFOLIO, NEWS_SENTIMENT, RECOMMENDATIONS, CONTEST, STREAKS, SOCIAL_SHARE, AUDIT
 from metric_help import chart_help, help_for
 from ticker_search import (
     build_universe as ts_build_universe,
@@ -99,6 +101,7 @@ import monthly_contest
 import peer_trending
 import social_share
 import badges as badges_mod
+import audit
 import streaks
 import etf_analysis
 import etf_comparison
@@ -221,6 +224,19 @@ from portfolio_holdings import (
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
+)
+from audit import (
+    ERASURE_NOTE as AUDIT_ERASURE_NOTE,
+    NOT_IMMUTABLE as AUDIT_NOT_IMMUTABLE,
+    NO_COMPLIANCE_CLAIM as AUDIT_NO_COMPLIANCE_CLAIM,
+    counts_by_category as audit_counts,
+    coverage_note as audit_coverage_note,
+    export_payload as audit_export_payload,
+    export_rows as audit_export_rows,
+    filtered as audit_filtered,
+    read_all as audit_read_all,
+    record as audit_record,
+    verify_file as audit_verify_file,
 )
 from badges import (
     WHY_NO_OUTCOME_BADGES as BADGES_WHY_NO_OUTCOME,
@@ -1242,6 +1258,37 @@ if st.session_state.get("kbd_shortcuts_open"):
             st.rerun()
 
 # ==========================================
+# AUDIT RECORDER
+# ==========================================
+# Every call goes through here so the ACTOR is resolved in one place.
+# audit.record() refuses a record with no actor by signature, which is
+# the gap this feature exists to close — measured, only 7 of 174
+# existing log_event calls named the account that caused them.
+#
+# Never raises: an audit write must not take down the action it is
+# recording. A failure is logged and the error is returned to the caller
+# that cares (only the panel does).
+def _audit(_action: str, _target: str = "", _detail: str = "") -> str:
+    """Append one audit record for the signed-in account. Returns an
+    error string, or "" — callers that cannot act on it ignore it."""
+    try:
+        _who = auth.current_user()
+        _key = getattr(_who, "key", "") if _who else ""
+        if not _key:
+            # Not signed in: there is no actor, so there is nothing
+            # honest to record. Silent by design — the auth gate means
+            # this only happens on the sign-in path itself.
+            return ""
+        _entry, _err = audit_record(_key, _action, target=_target, detail=_detail)
+        if _err:
+            log_event(logger, logging.WARNING, "audit.refused", kind=_action)
+        return _err
+    except Exception:                                      # noqa: BLE001
+        log_exception(logger, "audit.record_failed", section="audit")
+        return ""
+
+
+# ==========================================
 # ACTIVITY STREAK RECORDER
 # ==========================================
 # One helper, called from every qualifying action. Deliberately NOT
@@ -1571,6 +1618,7 @@ with st.expander("Custom Thresholds", expanded=False):
             else:
                 save_threshold_overrides(_thr_new)
                 save_threshold_sector_pe(_thr_table)
+                _audit("thresholds_changed", detail="Custom analysis thresholds saved")
                 log_event(logger, logging.INFO, "user.thresholds_saved",
                           changed=len(load_threshold_overrides()), sectors=len(_thr_table))
                 st.success("Thresholds saved — Scorecard, alerts and screener now use them.")
@@ -3758,6 +3806,96 @@ with st.sidebar.expander("Help & Support", expanded=profile_menu.help_requested(
                     language=None,
                 )
 
+# ==========================================
+# AUDIT TRAIL & COMPLIANCE EVIDENCE
+# ==========================================
+# --- Audit trail ---
+# Top level rather than the sidebar: this draws a table and an auditor
+# reads it, so it needs the width.
+#
+# The trail is tamper-EVIDENT, not immutable, and the panel says so.
+# Nothing here can stop the file being edited — Quantix runs on the
+# operator's own machine and there is no write-once storage. What it
+# does is make an edit visible, which is what an auditor actually tests.
+st.markdown("---")
+with st.expander("Audit trail & compliance evidence", expanded=False):
+    st.caption(audit_coverage_note())
+
+    _audit_result = audit_verify_file()
+    if _audit_result.ok:
+        st.success(_audit_result.sentence())
+    else:
+        st.error(_audit_result.sentence())
+
+    _audit_records = audit_read_all()
+    if not _audit_records:
+        st.info(
+            "No audit records yet. They are written when something significant "
+            "happens — a sign-in, an export, a configuration change, a sharing "
+            "opt-in or a deletion."
+        )
+    else:
+        _audit_counts = audit_counts(_audit_records)
+        _audit_cols = st.columns(len(_audit_counts))
+        for _ac, (_name, _n) in zip(_audit_cols, _audit_counts.items()):
+            _ac.metric(_name.title(), _n,
+                       help=f"Recorded events in the {_name} category.")
+
+        _audit_a, _audit_b = st.columns([1, 1])
+        with _audit_a:
+            _audit_cat = st.selectbox(
+                "Category", ["All"] + list(audit.CATEGORIES),
+                key="audit_category")
+        with _audit_b:
+            _audit_actor = st.text_input(
+                "Account key", key="audit_actor",
+                placeholder="leave blank for every account")
+
+        _audit_view = audit_filtered(
+            _audit_records,
+            category="" if _audit_cat == "All" else _audit_cat,
+            actor=_audit_actor.strip())
+
+        if not _audit_view:
+            st.caption("No records match that filter.")
+        else:
+            st.dataframe(
+                pd.DataFrame([{
+                    "#": _r.seq, "When": _r.at.replace("T", " "),
+                    "Account": _r.actor, "Event": _r.label,
+                    "Target": _r.target, "Detail": _r.detail,
+                } for _r in _audit_view[-AUDIT.max_shown:]]),
+                hide_index=True, width="stretch")
+            st.caption(
+                f"Showing the most recent {min(len(_audit_view), AUDIT.max_shown)} "
+                f"of {len(_audit_view)} matching records, oldest first. The export "
+                "below carries all of them.")
+
+        # Taking a copy of the evidence is itself an auditable act.
+        if st.download_button(
+                "Export evidence (JSON)",
+                data=audit_export_payload(_audit_view, _audit_result),
+                file_name=f"audit-evidence-{datetime.date.today().isoformat()}.json",
+                mime="application/json", key="audit_export_json"):
+            _audit("audit_exported", target=_audit_cat,
+                   detail=f"Exported {len(_audit_view)} audit records as JSON")
+
+        _audit_csv = io.StringIO()
+        _audit_writer = csv.DictWriter(_audit_csv, fieldnames=list(audit.EXPORT_COLUMNS))
+        _audit_writer.writeheader()
+        _audit_writer.writerows(audit_export_rows(_audit_view))
+        if st.download_button(
+                "Export evidence (CSV)", data=_audit_csv.getvalue(),
+                file_name=f"audit-evidence-{datetime.date.today().isoformat()}.csv",
+                mime="text/csv", key="audit_export_csv"):
+            _audit("audit_exported", target=_audit_cat,
+                   detail=f"Exported {len(_audit_view)} audit records as CSV")
+
+    st.caption(AUDIT_NOT_IMMUTABLE)
+    st.caption(AUDIT_NO_COMPLIANCE_CLAIM)
+    st.caption(AUDIT_ERASURE_NOTE)
+# --- end audit ---
+
 # --- Sidebar: API Keys ---
 # Sits under Account because a key belongs to whoever created it. See
 # api_keys.py for why the store is shared rather than namespaced, and
@@ -4113,6 +4251,9 @@ with st.sidebar.expander("Profile & following", expanded=False):
                     for _fl_k in list(st.session_state):
                         if _fl_k.startswith("fl_stream_") or _fl_k in ("fl_title", "fl_seeded_for"):
                             st.session_state.pop(_fl_k, None)
+                    _audit("profile_deleted", target="profile",
+                           detail="Deleted their profile and purged everything "
+                                  "it had ever shared")
                     log_event(logger, logging.INFO, "user.profile_deleted")
                     st.rerun()
 
@@ -10578,6 +10719,9 @@ else:
                                           "just this one."):
                             _peer_store = peer_comparison.withdraw(_peer_store, _peer_key)
                             peer_comparison.save_store(_peer_store)
+                            _audit("sharing_opted_out",
+                                   target="peer comparison",
+                                   detail="Withdrew every shared monthly return")
                             log_event(logger, logging.INFO, "user.peer_withdrew")
                             st.rerun()
                     elif _peer_mine is not None:
@@ -10592,6 +10736,9 @@ else:
                                 st.warning(_peer_err)
                             else:
                                 peer_comparison.save_store(_peer_store)
+                                _audit("sharing_opted_in",
+                                       target="peer comparison",
+                                       detail="Shared this month's return with other accounts")
                                 log_event(logger, logging.INFO, "user.peer_published")
                                 st.rerun()
 
@@ -10986,6 +11133,8 @@ else:
                                           "separate choice above."):
                             _lb_store = leaderboard.leave(_lb_store, _peer_key)
                             leaderboard.save_store(_lb_store)
+                            _audit("sharing_opted_out", target="leaderboard",
+                                   detail="Removed their name from the leaderboard")
                             log_event(logger, logging.INFO, "user.leaderboard_left")
                             st.rerun()
                     else:
@@ -11005,6 +11154,8 @@ else:
                                     st.warning(_lb_err)
                                 else:
                                     leaderboard.save_store(_lb_store)
+                                    _audit("sharing_opted_in", target="leaderboard",
+                                           detail="Listed their name and monthly return")
                                     log_event(logger, logging.INFO,
                                               "user.leaderboard_joined")
                                     st.rerun()
@@ -12070,13 +12221,15 @@ else:
 
         _cached_deck = st.session_state.get("_tear_sheet_deck")
         if _cached_deck and _cached_deck["ticker"] == ticker_symbol:
-            st.download_button(
+            if st.download_button(
                 "Download PowerPoint",
                 data=_cached_deck["bytes"],
                 file_name=export_deck.filename_for(ticker_symbol),
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 key="_export_pptx_dl",
-            )
+            ):
+                _audit("export_deck", target=ticker_symbol,
+                       detail="Downloaded a PowerPoint tear sheet")
             if not _cached_deck["charts"]:
                 st.caption(
                     "Chart slides were skipped — rendering Plotly figures to images needs the "
@@ -12084,23 +12237,27 @@ else:
 
         _cached_wb = st.session_state.get("_tear_sheet_workbook")
         if _cached_wb and _cached_wb["ticker"] == ticker_symbol:
-            st.download_button(
+            if st.download_button(
                 "Download Excel",
                 data=_cached_wb["bytes"],
                 file_name=export_workbook.filename_for(ticker_symbol),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="_export_xlsx_dl",
-            )
+            ):
+                _audit("export_workbook", target=ticker_symbol,
+                       detail="Downloaded an Excel workbook")
 
         cached_pdf = st.session_state.get("_tear_sheet_pdf")
         if cached_pdf and cached_pdf["ticker"] == ticker_symbol:
             _report_filename = f"{ticker_symbol}_tear_sheet_{datetime.date.today().isoformat()}.pdf"
-            st.download_button(
+            if st.download_button(
                 "Download PDF",
                 data=cached_pdf["bytes"],
                 file_name=_report_filename,
                 mime="application/pdf",
-            )
+            ):
+                _audit("export_pdf", target=ticker_symbol,
+                       detail="Downloaded a PDF tear sheet")
 
             st.markdown("---")
             st.caption("Email this report")
@@ -12118,6 +12275,8 @@ else:
                         )
                     if _sent:
                         st.success(f"Report emailed to {_report_recipient}.")
+                        _audit("report_emailed", target=ticker_symbol,
+                               detail="Emailed the tear sheet to a recipient")
                         log_event(logger, logging.INFO, "user.report_emailed", ticker=ticker_symbol)
                     else:
                         st.warning(_send_error)
