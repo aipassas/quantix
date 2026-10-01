@@ -170,6 +170,9 @@ SHARED_STORES: Tuple[str, ...] = (
     # could curate. Append-only and deliberately NOT rotated — see
     # audit.py on why the rotating quantix.log is not an audit trail.
     "audit_log.jsonl",
+    # Who holds which role on this instance. Shared by definition: a
+    # per-user role file would let everyone grant themselves Admin.
+    "roles_store.json",
 )
 
 

@@ -97,3 +97,7 @@ streak_store.tmp
 # The audit trail. Local evidence of who did what on this instance;
 # never repository content.
 audit_log.jsonl
+
+# Role assignments for this instance. Local authorisation state.
+roles_store.json
+roles_store.tmp

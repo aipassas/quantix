@@ -1621,6 +1621,44 @@ class AuditConfig:
 
 
 
+
+@dataclass(frozen=True)
+class RbacConfig:
+    """Admin / Analyst / Viewer roles for a shared workspace.
+
+    THE FIRST ACCOUNT BECOMES ADMIN, because on a fresh instance the
+    person setting it up is the operator and there is nobody else to ask.
+    Bootstrapping from the ROLE STORE rather than from accounts.py is
+    deliberate: OIDC identities never get an Account record, so a
+    bootstrap keyed on that table would leave a Google-only instance with
+    no administrator at all. Whoever first signs in on an instance with
+    no Admin becomes one, and it is recorded.
+
+    NEW ACCOUNTS ARE VIEWERS. A workspace where anyone who reaches the
+    sign-up form can immediately post notes, enter the contest and share
+    returns has roles in name only. Least privilege is the point.
+
+    THE LAST ADMIN CANNOT BE DEMOTED. Otherwise an instance can be locked
+    out of its own administration with no way back that does not involve
+    editing JSON by hand.
+
+    WHAT THIS IS, PRECISELY. An authorisation boundary INSIDE the app:
+    every gated action asks before it acts, and the UI also hides what
+    the reader cannot do. It is not protection against somebody with
+    shell or filesystem access to the instance — on a laptop the operator
+    owns every file, and no in-process check changes that. It is a real
+    boundary on the one-deployment-per-firm model BrandingConfig already
+    describes, where people reach the app and not the disk.
+
+    PERMISSIONS ARE A CLOSED VOCABULARY mapped to a MINIMUM role, so
+    adding a gated action means naming it rather than inventing a new
+    comparison at the call site.
+    """
+    store_filename: str = "roles_store.json"
+    default_role: str = "viewer"
+
+
+
 FOLLOWING = FollowingConfig()
 STOCK_OF_THE_WEEK = StockOfTheWeekConfig()
 LEADERBOARD = LeaderboardConfig()
@@ -1630,6 +1668,7 @@ PEER_TRENDING = PeerTrendingConfig()
 SOCIAL_SHARE = SocialShareConfig()
 BADGES = BadgesConfig()
 AUDIT = AuditConfig()
+RBAC = RbacConfig()
 REALTIME_ALERTS = RealtimeAlertsConfig()
 PORTFOLIO_BACKTEST = PortfolioBacktestConfig()
 ML_PIPELINE = MLPipelineConfig()

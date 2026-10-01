@@ -302,17 +302,27 @@ def add_note(store: CollaborationStore, ticker: str, author: str, body: str,
 
 # --- ownership and removal ----------------------------------------------------
 
-def can_moderate(note: Note, user_key: str) -> bool:
+def can_moderate(note: Note, user_key: str, is_admin: bool = False) -> bool:
     """Whether the signed-in account may hide or restore this note.
 
-    ONLY THE VERIFIED AUTHOR. There is no moderator role in this build —
-    that is the RBAC ticket's territory — so the rule is ownership, and
-    ownership is the account key, not the display name. A note written
-    signed-out has no key and therefore no owner: it can be removed by
-    nobody, which is stated on screen rather than left as a surprise.
+    THE AUTHOR, OR AN ADMIN. Ownership is the account key, never the
+    display name — two accounts can both be "Ana". A note written
+    signed-out has no key and therefore no owner, and NOT EVEN AN ADMIN
+    can moderate it: `authenticated` is still required, because a note
+    with no owner has no accountability attached either way and the UI
+    already says so rather than drawing a control that would surprise.
+
+    `is_admin` is the RBAC widening this function's previous docstring
+    predicted — rbac.can(role, "admin.moderate_any"). It defaults False
+    so every existing caller keeps ownership-only behaviour, and the
+    caller resolves the role rather than this module importing rbac:
+    collaboration is loaded by the digest and alert cron scripts, which
+    have no session and no role to resolve.
     """
     user_key = (user_key or "").strip()
-    return bool(user_key and note.authenticated and note.author_key == user_key)
+    if not user_key or not note.authenticated:
+        return False
+    return bool(is_admin or note.author_key == user_key)
 
 
 def _update_note(store: CollaborationStore, ticker: str, note_id: str, **changes) -> CollaborationStore:

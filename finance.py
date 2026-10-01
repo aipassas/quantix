@@ -102,6 +102,7 @@ import peer_trending
 import social_share
 import badges as badges_mod
 import audit
+import rbac
 import streaks
 import etf_analysis
 import etf_comparison
@@ -224,6 +225,16 @@ from portfolio_holdings import (
     load_store as pf_load_store,
     remove_holding as pf_remove_holding,
     save_store as pf_save_store,
+)
+from rbac import (
+    ROLE_LABELS,
+    WHAT_THIS_IS as RBAC_WHAT_THIS_IS,
+    bootstrap as rbac_bootstrap,
+    bootstrap_note as rbac_bootstrap_note,
+    describe as rbac_describe,
+    grant as rbac_grant,
+    require as rbac_require,
+    role_for as rbac_role_for,
 )
 from audit import (
     ERASURE_NOTE as AUDIT_ERASURE_NOTE,
@@ -1286,6 +1297,33 @@ def _audit(_action: str, _target: str = "", _detail: str = "") -> str:
     except Exception:                                      # noqa: BLE001
         log_exception(logger, "audit.record_failed", section="audit")
         return ""
+
+
+# ==========================================
+# ROLES
+# ==========================================
+# Resolved ONCE per run, immediately after the auth gate, so every gate
+# below reads the same answer. The first account to sign in on an
+# instance with no administrator becomes one — there is nobody else to
+# ask — and that grant is recorded as automatic rather than as made by
+# a person.
+_role_store = rbac.load_store()
+_my_key = (_auth_user.key if _auth_user else "")
+if _my_key and not _role_store.corrupt:
+    _role_store, _role_granted = rbac_bootstrap(_role_store, _my_key)
+    if _role_granted:
+        rbac.save_store(_role_store)
+        _audit("sharing_opted_in", target="role:admin",
+               detail="Became the first administrator on this instance")
+        log_event(logger, logging.INFO, "rbac.bootstrapped")
+_my_role = rbac_role_for(_role_store, _my_key) if _my_key else ""
+
+
+def _may(_permission: str) -> bool:
+    """Whether this reader may do `_permission`. Used to HIDE a control —
+    the action itself must still call rbac_require() before acting, or a
+    stale rerun slips through."""
+    return rbac_require(_my_role, _permission) == ""
 
 
 # ==========================================
@@ -3818,186 +3856,265 @@ with st.sidebar.expander("Help & Support", expanded=profile_menu.help_requested(
 # operator's own machine and there is no write-once storage. What it
 # does is make an edit visible, which is what an auditor actually tests.
 st.markdown("---")
-with st.expander("Audit trail & compliance evidence", expanded=False):
-    st.caption(audit_coverage_note())
-
-    _audit_result = audit_verify_file()
-    if _audit_result.ok:
-        st.success(_audit_result.sentence())
-    else:
-        st.error(_audit_result.sentence())
-
-    _audit_records = audit_read_all()
-    if not _audit_records:
-        st.info(
-            "No audit records yet. They are written when something significant "
-            "happens — a sign-in, an export, a configuration change, a sharing "
-            "opt-in or a deletion."
-        )
-    else:
-        _audit_counts = audit_counts(_audit_records)
-        _audit_cols = st.columns(len(_audit_counts))
-        for _ac, (_name, _n) in zip(_audit_cols, _audit_counts.items()):
-            _ac.metric(_name.title(), _n,
-                       help=f"Recorded events in the {_name} category.")
-
-        _audit_a, _audit_b = st.columns([1, 1])
-        with _audit_a:
-            _audit_cat = st.selectbox(
-                "Category", ["All"] + list(audit.CATEGORIES),
-                key="audit_category")
-        with _audit_b:
-            _audit_actor = st.text_input(
-                "Account key", key="audit_actor",
-                placeholder="leave blank for every account")
-
-        _audit_view = audit_filtered(
-            _audit_records,
-            category="" if _audit_cat == "All" else _audit_cat,
-            actor=_audit_actor.strip())
-
-        if not _audit_view:
-            st.caption("No records match that filter.")
+# ==========================================
+# ROLES & PERMISSIONS
+# ==========================================
+# --- Roles ---
+# Admin only, and hidden rather than shown-and-refused for everyone
+# else. The grant itself re-checks inside rbac.grant(), so this panel
+# being visible is not what authorises anything.
+_roles_gate = rbac_require(_my_role, "admin.roles")
+if _roles_gate:
+    # Everyone still sees their OWN role — knowing what you may do is
+    # not a privilege, and a refusal with no explanation reads as a bug.
+    if _my_role:
+        st.caption(f"Your role on this instance: **{ROLE_LABELS.get(_my_role, _my_role)}** "
+                   f"— {rbac_describe(_my_role)}")
+else:
+    st.markdown("---")
+    with st.expander("Roles & permissions", expanded=False):
+        if _role_store.corrupt:
+            st.error(
+                "The role file can't be read, so roles cannot be changed and "
+                "Quantix will not overwrite it."
+            )
         else:
-            st.dataframe(
-                pd.DataFrame([{
-                    "#": _r.seq, "When": _r.at.replace("T", " "),
-                    "Account": _r.actor, "Event": _r.label,
-                    "Target": _r.target, "Detail": _r.detail,
-                } for _r in _audit_view[-AUDIT.max_shown:]]),
-                hide_index=True, width="stretch")
-            st.caption(
-                f"Showing the most recent {min(len(_audit_view), AUDIT.max_shown)} "
-                f"of {len(_audit_view)} matching records, oldest first. The export "
-                "below carries all of them.")
+            st.caption(RBAC_WHAT_THIS_IS)
+            st.caption(rbac_bootstrap_note())
 
-        # Taking a copy of the evidence is itself an auditable act.
-        if st.download_button(
-                "Export evidence (JSON)",
-                data=audit_export_payload(_audit_view, _audit_result),
-                file_name=f"audit-evidence-{datetime.date.today().isoformat()}.json",
-                mime="application/json", key="audit_export_json"):
-            _audit("audit_exported", target=_audit_cat,
-                   detail=f"Exported {len(_audit_view)} audit records as JSON")
+            for _rs in rbac.ROLE_SPECS:
+                st.markdown(f"**{_rs.label}** — {_rs.blurb}")
 
-        _audit_csv = io.StringIO()
-        _audit_writer = csv.DictWriter(_audit_csv, fieldnames=list(audit.EXPORT_COLUMNS))
-        _audit_writer.writeheader()
-        _audit_writer.writerows(audit_export_rows(_audit_view))
-        if st.download_button(
-                "Export evidence (CSV)", data=_audit_csv.getvalue(),
-                file_name=f"audit-evidence-{datetime.date.today().isoformat()}.csv",
-                mime="text/csv", key="audit_export_csv"):
-            _audit("audit_exported", target=_audit_cat,
-                   detail=f"Exported {len(_audit_view)} audit records as CSV")
+            st.markdown("**Who holds what**")
+            _role_rows = rbac.assignments_for_display(_role_store)
+            if not _role_rows:
+                st.caption("Nobody has been assigned a role yet.")
+            else:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "Account": _a.user_key,
+                        "Role": ROLE_LABELS.get(_a.role, _a.role),
+                        "Granted by": ("automatically, as the first account"
+                                       if _a.granted_by == rbac.BOOTSTRAP
+                                       else _a.granted_by),
+                        "When": _a.granted_at.replace("T", " "),
+                    } for _a in _role_rows]),
+                    hide_index=True, width="stretch")
 
-    st.caption(AUDIT_NOT_IMMUTABLE)
-    st.caption(AUDIT_NO_COMPLIANCE_CLAIM)
-    st.caption(AUDIT_ERASURE_NOTE)
+            st.markdown("**Change a role**")
+            _role_target = st.text_input(
+                "Account key", key="rbac_target",
+                help="The account key as it appears in the table above.")
+            _role_choice = st.selectbox(
+                "Role", list(rbac.ROLES), key="rbac_role",
+                format_func=lambda _r: ROLE_LABELS.get(_r, _r))
+            if st.button("Set role", key="rbac_grant", type="primary"):
+                _role_store, _role_err = rbac_grant(
+                    _role_store, _my_key, _role_target.strip(), _role_choice)
+                if _role_err:
+                    st.warning(_role_err)
+                else:
+                    rbac.save_store(_role_store)
+                    _audit("sharing_opted_in",
+                           target=f"role:{_role_choice}",
+                           detail=f"Set {_role_target.strip()} to {_role_choice}")
+                    log_event(logger, logging.INFO, "rbac.granted",
+                              kind=_role_choice)
+                    st.rerun()
+# --- end roles ---
+
+_audit_gate = rbac_require(_my_role, "admin.audit_read")
+if _audit_gate:
+    # HIDDEN, not shown-and-refused: a control that refuses when
+    # pressed advertises a power the reader does not have.
+    st.caption(_audit_gate)
+else:
+    with st.expander("Audit trail & compliance evidence", expanded=False):
+        st.caption(audit_coverage_note())
+
+        _audit_result = audit_verify_file()
+        if _audit_result.ok:
+            st.success(_audit_result.sentence())
+        else:
+            st.error(_audit_result.sentence())
+
+        _audit_records = audit_read_all()
+        if not _audit_records:
+            st.info(
+                "No audit records yet. They are written when something significant "
+                "happens — a sign-in, an export, a configuration change, a sharing "
+                "opt-in or a deletion."
+            )
+        else:
+            _audit_counts = audit_counts(_audit_records)
+            _audit_cols = st.columns(len(_audit_counts))
+            for _ac, (_name, _n) in zip(_audit_cols, _audit_counts.items()):
+                _ac.metric(_name.title(), _n,
+                           help=f"Recorded events in the {_name} category.")
+
+            _audit_a, _audit_b = st.columns([1, 1])
+            with _audit_a:
+                _audit_cat = st.selectbox(
+                    "Category", ["All"] + list(audit.CATEGORIES),
+                    key="audit_category")
+            with _audit_b:
+                _audit_actor = st.text_input(
+                    "Account key", key="audit_actor",
+                    placeholder="leave blank for every account")
+
+            _audit_view = audit_filtered(
+                _audit_records,
+                category="" if _audit_cat == "All" else _audit_cat,
+                actor=_audit_actor.strip())
+
+            if not _audit_view:
+                st.caption("No records match that filter.")
+            else:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "#": _r.seq, "When": _r.at.replace("T", " "),
+                        "Account": _r.actor, "Event": _r.label,
+                        "Target": _r.target, "Detail": _r.detail,
+                    } for _r in _audit_view[-AUDIT.max_shown:]]),
+                    hide_index=True, width="stretch")
+                st.caption(
+                    f"Showing the most recent {min(len(_audit_view), AUDIT.max_shown)} "
+                    f"of {len(_audit_view)} matching records, oldest first. The export "
+                    "below carries all of them.")
+
+            # Taking a copy of the evidence is itself an auditable act.
+            if st.download_button(
+                    "Export evidence (JSON)",
+                    data=audit_export_payload(_audit_view, _audit_result),
+                    file_name=f"audit-evidence-{datetime.date.today().isoformat()}.json",
+                    mime="application/json", key="audit_export_json"):
+                _audit("audit_exported", target=_audit_cat,
+                       detail=f"Exported {len(_audit_view)} audit records as JSON")
+
+            _audit_csv = io.StringIO()
+            _audit_writer = csv.DictWriter(_audit_csv, fieldnames=list(audit.EXPORT_COLUMNS))
+            _audit_writer.writeheader()
+            _audit_writer.writerows(audit_export_rows(_audit_view))
+            if st.download_button(
+                    "Export evidence (CSV)", data=_audit_csv.getvalue(),
+                    file_name=f"audit-evidence-{datetime.date.today().isoformat()}.csv",
+                    mime="text/csv", key="audit_export_csv"):
+                _audit("audit_exported", target=_audit_cat,
+                       detail=f"Exported {len(_audit_view)} audit records as CSV")
+
+        st.caption(AUDIT_NOT_IMMUTABLE)
+        st.caption(AUDIT_NO_COMPLIANCE_CLAIM)
+        st.caption(AUDIT_ERASURE_NOTE)
 # --- end audit ---
 
 # --- Sidebar: API Keys ---
 # Sits under Account because a key belongs to whoever created it. See
 # api_keys.py for why the store is shared rather than namespaced, and
 # api_server.py for what a key can actually reach (reads only).
-with st.sidebar.expander("API Keys", expanded=False):
-    if "api_key_store" not in st.session_state:
-        st.session_state["api_key_store"] = load_api_key_store()
-    _ak_store = st.session_state["api_key_store"]
-    _ak_owner = _auth_user.key if _auth_user else ""
+_api_gate = rbac_require(_my_role, "admin.api_keys")
+if _api_gate:
+    # HIDDEN, not shown-and-refused: a control that refuses when
+    # pressed advertises a power the reader does not have.
+    st.sidebar.caption(_api_gate)
+else:
+    with st.sidebar.expander("API Keys", expanded=False):
+        if "api_key_store" not in st.session_state:
+            st.session_state["api_key_store"] = load_api_key_store()
+        _ak_store = st.session_state["api_key_store"]
+        _ak_owner = _auth_user.key if _auth_user else ""
 
-    st.caption(
-        "Keys let scripts and other programs read your Quantix analysis without your "
-        "login. The API is **read-only** — it has no endpoint that places trades or "
-        "changes anything, because Quantix has no brokerage connection."
-    )
-
-    # A freshly-created key is shown exactly once. Held in session_state
-    # across the rerun that refreshes the list, then dropped on dismiss —
-    # it is never written anywhere, which is the whole point.
-    _ak_fresh = st.session_state.get("_api_key_plaintext")
-    if _ak_fresh:
-        st.success("Key created — copy it now.")
-        st.code(_ak_fresh, language=None)
-        st.warning(
-            "This is the only time this key is shown. Only its hash is stored, so it "
-            "cannot be looked up again. If you lose it, revoke it and make another."
+        st.caption(
+            "Keys let scripts and other programs read your Quantix analysis without your "
+            "login. The API is **read-only** — it has no endpoint that places trades or "
+            "changes anything, because Quantix has no brokerage connection."
         )
-        if st.button("I've copied it", key="api_key_dismiss"):
-            st.session_state.pop("_api_key_plaintext", None)
-            st.rerun()
 
-    _ak_mine = api_keys_for_owner(_ak_store, _ak_owner)
-    if _ak_mine:
-        st.markdown("**Your keys**")
-        for _ak in _ak_mine:
-            # [5, 1] squeezed the action button to ~25px in the sidebar and
-            # wrapped its label one letter per line. Matches the ✕ affordance
-            # the watchlist and notes panels already use for the same reason.
-            _ak_cols = st.columns([6, 1])
-            with _ak_cols[0]:
-                _ak_badge = {"active": "Active", "expired": "Expired", "revoked": "Revoked"}[_ak.status]
-                st.markdown(f"{_ak_badge} **{_ak.name}** · `{_ak.id}` · {_ak.status}")
-                _ak_bits = [", ".join(_ak.scopes) or "no scopes"]
-                if _ak.expires_at:
-                    _ak_bits.append(f"expires {_ak.expires_at[:10]}")
-                _ak_bits.append(f"last used {_ak.last_used_at[:16]}" if _ak.last_used_at else "never used")
-                st.caption(" · ".join(_ak_bits))
-            with _ak_cols[1]:
-                if not _ak.revoked and st.button(
-                    "✕", key=f"api_key_revoke_{_ak.id}",
-                    help=f"Revoke '{_ak.name}' — any script using it stops working immediately.",
-                ):
-                    _ak_store = revoke_api_key(_ak_store, _ak.id)
-                    st.session_state["api_key_store"] = _ak_store
-                    save_api_key_store(_ak_store)
-                    st.rerun()
-    else:
-        st.caption("No keys yet.")
+        # A freshly-created key is shown exactly once. Held in session_state
+        # across the rerun that refreshes the list, then dropped on dismiss —
+        # it is never written anywhere, which is the whole point.
+        _ak_fresh = st.session_state.get("_api_key_plaintext")
+        if _ak_fresh:
+            st.success("Key created — copy it now.")
+            st.code(_ak_fresh, language=None)
+            st.warning(
+                "This is the only time this key is shown. Only its hash is stored, so it "
+                "cannot be looked up again. If you lose it, revoke it and make another."
+            )
+            if st.button("I've copied it", key="api_key_dismiss"):
+                st.session_state.pop("_api_key_plaintext", None)
+                st.rerun()
 
-    st.markdown("---")
-    # Deferred clear — assigning a widget's own key after it renders does
-    # nothing (see CLAUDE.md and the Team Notes compose box).
-    if st.session_state.pop("_api_key_clear_form", False):
-        st.session_state["api_key_name"] = ""
-    _ak_name = st.text_input(
-        "New key name", key="api_key_name", placeholder="e.g. nightly-screener",
-        help="Only for your own reference — it identifies the key in this list.",
-    )
-    _ak_scopes = st.multiselect(
-        "Scopes", options=list(API_SCOPES.keys()), default=list(API_KEY_DEFAULT_SCOPES),
-        key="api_key_scopes",
-        help="What this key may read. Grant only what the script actually needs.",
-        format_func=lambda s: s,
-    )
-    for _ak_s in _ak_scopes:
-        st.caption(f"`{_ak_s}` — {API_SCOPES[_ak_s]}")
-    _ak_expiry = st.number_input(
-        "Expires in (days)", min_value=0, max_value=API_KEYS.max_expiry_days,
-        value=API_KEYS.default_expiry_days, step=30, key="api_key_expiry",
-        help="0 means the key never expires. A dated key limits the damage of one that leaks.",
-    )
-    if st.button("Create key", type="primary", key="api_key_create"):
-        _ak_store, _ak_new, _ak_plain, _ak_err = create_api_key(
-            _ak_store, _ak_name, tuple(_ak_scopes), owner_key=_ak_owner,
-            expires_in_days=int(_ak_expiry),
-        )
-        if _ak_err:
-            st.warning(_ak_err)
+        _ak_mine = api_keys_for_owner(_ak_store, _ak_owner)
+        if _ak_mine:
+            st.markdown("**Your keys**")
+            for _ak in _ak_mine:
+                # [5, 1] squeezed the action button to ~25px in the sidebar and
+                # wrapped its label one letter per line. Matches the ✕ affordance
+                # the watchlist and notes panels already use for the same reason.
+                _ak_cols = st.columns([6, 1])
+                with _ak_cols[0]:
+                    _ak_badge = {"active": "Active", "expired": "Expired", "revoked": "Revoked"}[_ak.status]
+                    st.markdown(f"{_ak_badge} **{_ak.name}** · `{_ak.id}` · {_ak.status}")
+                    _ak_bits = [", ".join(_ak.scopes) or "no scopes"]
+                    if _ak.expires_at:
+                        _ak_bits.append(f"expires {_ak.expires_at[:10]}")
+                    _ak_bits.append(f"last used {_ak.last_used_at[:16]}" if _ak.last_used_at else "never used")
+                    st.caption(" · ".join(_ak_bits))
+                with _ak_cols[1]:
+                    if not _ak.revoked and st.button(
+                        "✕", key=f"api_key_revoke_{_ak.id}",
+                        help=f"Revoke '{_ak.name}' — any script using it stops working immediately.",
+                    ):
+                        _ak_store = revoke_api_key(_ak_store, _ak.id)
+                        st.session_state["api_key_store"] = _ak_store
+                        save_api_key_store(_ak_store)
+                        st.rerun()
         else:
-            st.session_state["api_key_store"] = _ak_store
-            save_api_key_store(_ak_store)
-            st.session_state["_api_key_plaintext"] = _ak_plain
-            st.session_state["_api_key_clear_form"] = True
-            log_event(logger, logging.INFO, "user.api_key_created", scopes=len(_ak_new.scopes))
-            st.rerun()
+            st.caption("No keys yet.")
 
-    st.markdown("---")
-    st.caption(
-        f"The API is a separate process and is never started automatically. Run it with "
-        f"`python3 api_server.py` — it listens on {API_KEYS.default_host}:{API_KEYS.default_port} "
-        f"and `GET /v1` lists every endpoint."
-    )
+        st.markdown("---")
+        # Deferred clear — assigning a widget's own key after it renders does
+        # nothing (see CLAUDE.md and the Team Notes compose box).
+        if st.session_state.pop("_api_key_clear_form", False):
+            st.session_state["api_key_name"] = ""
+        _ak_name = st.text_input(
+            "New key name", key="api_key_name", placeholder="e.g. nightly-screener",
+            help="Only for your own reference — it identifies the key in this list.",
+        )
+        _ak_scopes = st.multiselect(
+            "Scopes", options=list(API_SCOPES.keys()), default=list(API_KEY_DEFAULT_SCOPES),
+            key="api_key_scopes",
+            help="What this key may read. Grant only what the script actually needs.",
+            format_func=lambda s: s,
+        )
+        for _ak_s in _ak_scopes:
+            st.caption(f"`{_ak_s}` — {API_SCOPES[_ak_s]}")
+        _ak_expiry = st.number_input(
+            "Expires in (days)", min_value=0, max_value=API_KEYS.max_expiry_days,
+            value=API_KEYS.default_expiry_days, step=30, key="api_key_expiry",
+            help="0 means the key never expires. A dated key limits the damage of one that leaks.",
+        )
+        if st.button("Create key", type="primary", key="api_key_create"):
+            _ak_store, _ak_new, _ak_plain, _ak_err = create_api_key(
+                _ak_store, _ak_name, tuple(_ak_scopes), owner_key=_ak_owner,
+                expires_in_days=int(_ak_expiry),
+            )
+            if _ak_err:
+                st.warning(_ak_err)
+            else:
+                st.session_state["api_key_store"] = _ak_store
+                save_api_key_store(_ak_store)
+                st.session_state["_api_key_plaintext"] = _ak_plain
+                st.session_state["_api_key_clear_form"] = True
+                log_event(logger, logging.INFO, "user.api_key_created", scopes=len(_ak_new.scopes))
+                st.rerun()
+
+        st.markdown("---")
+        st.caption(
+            f"The API is a separate process and is never started automatically. Run it with "
+            f"`python3 api_server.py` — it listens on {API_KEYS.default_host}:{API_KEYS.default_port} "
+            f"and `GET /v1` lists every endpoint."
+        )
 
 
 # --- Sidebar: Webhooks ---
@@ -4010,166 +4127,172 @@ with st.sidebar.expander("API Keys", expanded=False):
 # DNS names resolving to 127.0.0.1), and urllib follows redirects by
 # default, so a validated public URL that answers 302 -> 127.0.0.1
 # reaches loopback and returns the body with status 200.
-with st.sidebar.expander("Webhooks", expanded=False):
-    if "webhook_store" not in st.session_state:
-        st.session_state["webhook_store"] = webhooks.load_store()
-    _wh_store = st.session_state["webhook_store"]
+_wh_gate = rbac_require(_my_role, "admin.webhooks")
+if _wh_gate:
+    # HIDDEN, not shown-and-refused: a control that refuses when
+    # pressed advertises a power the reader does not have.
+    st.sidebar.caption(_wh_gate)
+else:
+    with st.sidebar.expander("Webhooks", expanded=False):
+        if "webhook_store" not in st.session_state:
+            st.session_state["webhook_store"] = webhooks.load_store()
+        _wh_store = st.session_state["webhook_store"]
 
-    st.caption(
-        "Webhooks push Quantix events into a CRM, an automation runner or your own "
-        "script. Where an API key lets something **pull** from Quantix, a webhook "
-        "lets Quantix **push** to it."
-    )
-
-    if _wh_store.corrupt:
-        st.error(
-            "The webhook store exists but could not be read, so nothing is listed "
-            "and Quantix will not overwrite it — that file holds your signing "
-            "secrets. Fix or move webhooks_store.json, then reload."
+        st.caption(
+            "Webhooks push Quantix events into a CRM, an automation runner or your own "
+            "script. Where an API key lets something **pull** from Quantix, a webhook "
+            "lets Quantix **push** to it."
         )
-    else:
-        _wh_fresh = st.session_state.get("_webhook_secret")
-        if _wh_fresh:
-            st.success("Endpoint added — copy the signing secret now.")
-            st.code(_wh_fresh, language=None)
-            st.warning(
-                "Your receiver needs this to verify that a delivery really came from "
-                "Quantix. It is not shown again here, though unlike an API key it IS "
-                "stored on disk — signing requires the secret itself, so "
-                "webhooks_store.json is a credential file."
+
+        if _wh_store.corrupt:
+            st.error(
+                "The webhook store exists but could not be read, so nothing is listed "
+                "and Quantix will not overwrite it — that file holds your signing "
+                "secrets. Fix or move webhooks_store.json, then reload."
             )
-            if st.button("I've copied it", key="webhook_secret_dismiss"):
-                st.session_state.pop("_webhook_secret", None)
-                st.rerun()
-
-        if _wh_store.endpoints:
-            st.markdown("**Your endpoints**")
-            for _wh_ep in _wh_store.endpoints:
-                _wh_cols = st.columns([6, 1])
-                with _wh_cols[0]:
-                    _wh_state = "Active" if _wh_ep.active else "Paused"
-                    st.markdown(f"{_wh_state} · `{_wh_ep.host}`")
-                    st.caption(" · ".join([
-                        ", ".join(_wh_ep.events),
-                        _wh_ep.description or "no description",
-                    ]))
-                    if _wh_ep.disabled_reason:
-                        st.caption(f"⚠ {_wh_ep.disabled_reason}")
-                    _wh_log = webhooks.deliveries_for(_wh_store, _wh_ep.id)
-                    if _wh_log:
-                        _wh_last = _wh_log[0]
-                        st.caption(
-                            f"Last attempt {_wh_last.attempted_at[:16]} — "
-                            f"{_wh_last.summary}"
-                            + (f" (attempt {_wh_last.attempt})"
-                               if _wh_last.attempt > 1 else "")
-                        )
-                    _wh_pending = webhooks.queue_summary(_wh_store, _wh_ep.id)
-                    if _wh_pending:
-                        st.caption(f"↻ {_wh_pending}")
-                with _wh_cols[1]:
-                    if st.button("✕", key=f"webhook_remove_{_wh_ep.id}",
-                                 help="Delete this endpoint and its delivery history."):
-                        _wh_store = webhooks.remove_endpoint(_wh_store, _wh_ep.id)
-                        st.session_state["webhook_store"] = _wh_store
-                        webhooks.save_store(_wh_store)
-                        st.rerun()
-
-                _wh_act = st.columns(2)
-                with _wh_act[0]:
-                    _wh_label = "Pause" if _wh_ep.active else "Resume"
-                    if st.button(_wh_label, key=f"webhook_toggle_{_wh_ep.id}"):
-                        _wh_store = webhooks.set_active(
-                            _wh_store, _wh_ep.id, not _wh_ep.active)
-                        st.session_state["webhook_store"] = _wh_store
-                        webhooks.save_store(_wh_store)
-                        st.rerun()
-                if webhooks.queued_for(_wh_store, _wh_ep.id):
-                    if st.button("Retry queued now",
-                                 key=f"webhook_drain_{_wh_ep.id}",
-                                 help="Attempt every queued delivery for this "
-                                      "endpoint immediately instead of waiting "
-                                      "for it to fall due."):
-                        _wh_store = webhooks.drain(
-                            _wh_store, force=True, endpoint_id=_wh_ep.id,
-                            save=webhooks.save_store)[0]
-                        st.session_state["webhook_store"] = _wh_store
-                        webhooks.save_store(_wh_store)
-                        st.rerun()
-
-                with _wh_act[1]:
-                    if st.button("Send test", key=f"webhook_test_{_wh_ep.id}",
-                                 help="Deliver a sample event so you can confirm your "
-                                      "receiver accepts it and the signature checks out."):
-                        _wh_store, _wh_res = webhooks.dispatch(
-                            _wh_store, _wh_ep.events[0], {
-                                "test": True,
-                                "note": "Sample delivery from the Quantix webhooks panel.",
-                            })
-                        st.session_state["webhook_store"] = _wh_store
-                        webhooks.save_store(_wh_store)
-                        for _wh_r in _wh_res:
-                            if _wh_r.ok:
-                                st.success(f"Delivered — {_wh_r.summary}")
-                            else:
-                                st.warning(f"Failed — {_wh_r.summary}")
         else:
-            st.caption("No endpoints yet.")
+            _wh_fresh = st.session_state.get("_webhook_secret")
+            if _wh_fresh:
+                st.success("Endpoint added — copy the signing secret now.")
+                st.code(_wh_fresh, language=None)
+                st.warning(
+                    "Your receiver needs this to verify that a delivery really came from "
+                    "Quantix. It is not shown again here, though unlike an API key it IS "
+                    "stored on disk — signing requires the secret itself, so "
+                    "webhooks_store.json is a credential file."
+                )
+                if st.button("I've copied it", key="webhook_secret_dismiss"):
+                    st.session_state.pop("_webhook_secret", None)
+                    st.rerun()
 
-        st.markdown("---")
-        if st.session_state.pop("_webhook_clear_form", False):
-            st.session_state["webhook_url"] = ""
-            st.session_state["webhook_description"] = ""
+            if _wh_store.endpoints:
+                st.markdown("**Your endpoints**")
+                for _wh_ep in _wh_store.endpoints:
+                    _wh_cols = st.columns([6, 1])
+                    with _wh_cols[0]:
+                        _wh_state = "Active" if _wh_ep.active else "Paused"
+                        st.markdown(f"{_wh_state} · `{_wh_ep.host}`")
+                        st.caption(" · ".join([
+                            ", ".join(_wh_ep.events),
+                            _wh_ep.description or "no description",
+                        ]))
+                        if _wh_ep.disabled_reason:
+                            st.caption(f"⚠ {_wh_ep.disabled_reason}")
+                        _wh_log = webhooks.deliveries_for(_wh_store, _wh_ep.id)
+                        if _wh_log:
+                            _wh_last = _wh_log[0]
+                            st.caption(
+                                f"Last attempt {_wh_last.attempted_at[:16]} — "
+                                f"{_wh_last.summary}"
+                                + (f" (attempt {_wh_last.attempt})"
+                                   if _wh_last.attempt > 1 else "")
+                            )
+                        _wh_pending = webhooks.queue_summary(_wh_store, _wh_ep.id)
+                        if _wh_pending:
+                            st.caption(f"↻ {_wh_pending}")
+                    with _wh_cols[1]:
+                        if st.button("✕", key=f"webhook_remove_{_wh_ep.id}",
+                                     help="Delete this endpoint and its delivery history."):
+                            _wh_store = webhooks.remove_endpoint(_wh_store, _wh_ep.id)
+                            st.session_state["webhook_store"] = _wh_store
+                            webhooks.save_store(_wh_store)
+                            st.rerun()
 
-        _wh_url = st.text_input(
-            "Endpoint URL", key="webhook_url",
-            placeholder="https://example.com/hooks/quantix",
-            help="Quantix POSTs signed JSON here. Redirects are not followed — "
-                 "register the final URL.",
-        )
-        _wh_events = st.multiselect(
-            "Events", options=list(webhooks.EVENTS.keys()),
-            default=list(webhooks.DEFAULT_EVENTS), key="webhook_events",
-        )
-        for _wh_e in _wh_events:
-            st.caption(f"`{_wh_e}` — {webhooks.EVENTS[_wh_e]}")
-        _wh_desc = st.text_input(
-            "Description", key="webhook_description",
-            placeholder="e.g. n8n alert workflow",
-        )
-        _wh_private = st.checkbox(
-            "This is a service on my own machine or local network",
-            key="webhook_allow_private",
-            help="Quantix refuses private, loopback and link-local destinations by "
-                 "default — a public hostname that resolves inward is how a webhook "
-                 "gets used to reach things that were never meant to be reachable. "
-                 "Tick this only for a receiver you run yourself. Link-local "
-                 "addresses stay blocked either way: 169.254.169.254 is the cloud "
-                 "metadata service.",
-        )
-        if st.button("Add endpoint", type="primary", key="webhook_add"):
-            _wh_store, _wh_new, _wh_err = webhooks.add_endpoint(
-                _wh_store, _wh_url, tuple(_wh_events),
-                description=_wh_desc, allow_private=bool(_wh_private),
-            )
-            if _wh_err:
-                st.warning(_wh_err)
+                    _wh_act = st.columns(2)
+                    with _wh_act[0]:
+                        _wh_label = "Pause" if _wh_ep.active else "Resume"
+                        if st.button(_wh_label, key=f"webhook_toggle_{_wh_ep.id}"):
+                            _wh_store = webhooks.set_active(
+                                _wh_store, _wh_ep.id, not _wh_ep.active)
+                            st.session_state["webhook_store"] = _wh_store
+                            webhooks.save_store(_wh_store)
+                            st.rerun()
+                    if webhooks.queued_for(_wh_store, _wh_ep.id):
+                        if st.button("Retry queued now",
+                                     key=f"webhook_drain_{_wh_ep.id}",
+                                     help="Attempt every queued delivery for this "
+                                          "endpoint immediately instead of waiting "
+                                          "for it to fall due."):
+                            _wh_store = webhooks.drain(
+                                _wh_store, force=True, endpoint_id=_wh_ep.id,
+                                save=webhooks.save_store)[0]
+                            st.session_state["webhook_store"] = _wh_store
+                            webhooks.save_store(_wh_store)
+                            st.rerun()
+
+                    with _wh_act[1]:
+                        if st.button("Send test", key=f"webhook_test_{_wh_ep.id}",
+                                     help="Deliver a sample event so you can confirm your "
+                                          "receiver accepts it and the signature checks out."):
+                            _wh_store, _wh_res = webhooks.dispatch(
+                                _wh_store, _wh_ep.events[0], {
+                                    "test": True,
+                                    "note": "Sample delivery from the Quantix webhooks panel.",
+                                })
+                            st.session_state["webhook_store"] = _wh_store
+                            webhooks.save_store(_wh_store)
+                            for _wh_r in _wh_res:
+                                if _wh_r.ok:
+                                    st.success(f"Delivered — {_wh_r.summary}")
+                                else:
+                                    st.warning(f"Failed — {_wh_r.summary}")
             else:
-                st.session_state["webhook_store"] = _wh_store
-                webhooks.save_store(_wh_store)
-                st.session_state["_webhook_secret"] = _wh_new.secret
-                st.session_state["_webhook_clear_form"] = True
-                st.rerun()
+                st.caption("No endpoints yet.")
 
-        with st.expander("How to verify a delivery", expanded=False):
-            st.caption(
-                "Every delivery carries the event name, a unique delivery id, a "
-                "timestamp and an HMAC-SHA256 signature over "
-                "\"<timestamp>.<raw body>\". The timestamp is inside the signed "
-                "string on purpose: a signature over the body alone stays valid "
-                "forever, so anyone who captures one delivery could replay it."
+            st.markdown("---")
+            if st.session_state.pop("_webhook_clear_form", False):
+                st.session_state["webhook_url"] = ""
+                st.session_state["webhook_description"] = ""
+
+            _wh_url = st.text_input(
+                "Endpoint URL", key="webhook_url",
+                placeholder="https://example.com/hooks/quantix",
+                help="Quantix POSTs signed JSON here. Redirects are not followed — "
+                     "register the final URL.",
             )
-            st.code(webhooks.receiver_example(), language="python")
+            _wh_events = st.multiselect(
+                "Events", options=list(webhooks.EVENTS.keys()),
+                default=list(webhooks.DEFAULT_EVENTS), key="webhook_events",
+            )
+            for _wh_e in _wh_events:
+                st.caption(f"`{_wh_e}` — {webhooks.EVENTS[_wh_e]}")
+            _wh_desc = st.text_input(
+                "Description", key="webhook_description",
+                placeholder="e.g. n8n alert workflow",
+            )
+            _wh_private = st.checkbox(
+                "This is a service on my own machine or local network",
+                key="webhook_allow_private",
+                help="Quantix refuses private, loopback and link-local destinations by "
+                     "default — a public hostname that resolves inward is how a webhook "
+                     "gets used to reach things that were never meant to be reachable. "
+                     "Tick this only for a receiver you run yourself. Link-local "
+                     "addresses stay blocked either way: 169.254.169.254 is the cloud "
+                     "metadata service.",
+            )
+            if st.button("Add endpoint", type="primary", key="webhook_add"):
+                _wh_store, _wh_new, _wh_err = webhooks.add_endpoint(
+                    _wh_store, _wh_url, tuple(_wh_events),
+                    description=_wh_desc, allow_private=bool(_wh_private),
+                )
+                if _wh_err:
+                    st.warning(_wh_err)
+                else:
+                    st.session_state["webhook_store"] = _wh_store
+                    webhooks.save_store(_wh_store)
+                    st.session_state["_webhook_secret"] = _wh_new.secret
+                    st.session_state["_webhook_clear_form"] = True
+                    st.rerun()
+
+            with st.expander("How to verify a delivery", expanded=False):
+                st.caption(
+                    "Every delivery carries the event name, a unique delivery id, a "
+                    "timestamp and an HMAC-SHA256 signature over "
+                    "\"<timestamp>.<raw body>\". The timestamp is inside the signed "
+                    "string on purpose: a signature over the body alone stays valid "
+                    "forever, so anyone who captures one delivery could replay it."
+                )
+                st.code(webhooks.receiver_example(), language="python")
 
 
 # --- Sidebar: Profile & following ---
@@ -5898,7 +6021,8 @@ else:
                     # The ✕ is drawn ONLY for the author. Drawing it for
                     # everyone and refusing on click would advertise a
                     # power the reader does not have.
-                    if collab_can_moderate(_n, _cl_me):
+                    if collab_can_moderate(_n, _cl_me,
+                                           is_admin=_may("admin.moderate_any")):
                         if st.button("✕", key=f"collab_del_{_n.id}",
                                      help="Remove this note. It is hidden, not destroyed — "
                                           "you can restore it from the list below."):
@@ -5977,6 +6101,10 @@ else:
                 # anyone, and a note nobody provably wrote can be owned —
                 # and therefore moderated — by nobody.
                 st.info(COLLAB_SIGN_IN_TO_POST)
+            elif rbac_require(_my_role, "shared.post_note"):
+                # Reading stays open at every role; writing to a shared
+                # thread is where the Analyst line sits.
+                st.info(rbac_require(_my_role, "shared.post_note"))
             else:
                 # No text box: letting a signed-in user type a different name
                 # would make the verified badge a lie.
@@ -10725,7 +10853,10 @@ else:
                             log_event(logger, logging.INFO, "user.peer_withdrew")
                             st.rerun()
                     elif _peer_mine is not None:
-                        if st.button("Share my return for this month",
+                        _peer_gate = rbac_require(_my_role, "shared.peer_publish")
+                        if _peer_gate:
+                            st.caption(_peer_gate)
+                        elif st.button("Share my return for this month",
                                      key="peer_publish", type="primary",
                                      help="Writes one number — this month's "
                                           "time-weighted return — where other accounts "
@@ -11036,8 +11167,11 @@ else:
                             placeholder="What do you think the market is missing?")
                         _mc_a, _mc_b = st.columns([1, 1])
                         with _mc_a:
-                            if st.button(f"Enter for {_mc_open}", key="contest_enter",
-                                         type="primary", width="stretch"):
+                            _mc_gate = rbac_require(_my_role, "shared.contest_enter")
+                            if _mc_gate:
+                                st.caption(_mc_gate)
+                            elif st.button(f"Enter for {_mc_open}", key="contest_enter",
+                                           type="primary", width="stretch"):
                                 _mc_store, _mc_err = mc_enter(
                                     _mc_store, _peer_key, _mc_open,
                                     _mc_ticker, _mc_thesis)
@@ -11144,7 +11278,10 @@ else:
                         elif not _lb_sharing:
                             st.warning(LEADERBOARD_NEEDS_RETURN)
                         else:
-                            if st.button("Join the leaderboard", key="lb_join",
+                            _lb_gate = rbac_require(_my_role, "shared.leaderboard_join")
+                            if _lb_gate:
+                                st.caption(_lb_gate)
+                            elif st.button("Join the leaderboard", key="lb_join",
                                          type="primary",
                                          help="Lists you by your profile display name, "
                                               "with this month's return, for every "

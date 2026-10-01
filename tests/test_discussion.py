@@ -228,11 +228,23 @@ def test_the_ui_hides_rather_than_hard_deletes():
 
 def test_the_remove_button_is_drawn_only_for_the_owner():
     """Drawing it for everyone and refusing on click would advertise a
-    power the reader does not have."""
+    power the reader does not have.
+
+    The call gained an `is_admin=` argument when RBAC landed, so this
+    matches the CALL rather than one exact line — the gate is what
+    matters, not its formatting.
+    """
     panel = _panel()
-    gate = panel.index("if collab_can_moderate(_n, _cl_me):")
+    gate = panel.index("if collab_can_moderate(_n, _cl_me")
     button = panel.index('key=f"collab_del_{_n.id}"')
     assert gate < button
+
+
+def test_the_remove_button_is_also_drawn_for_an_admin():
+    """RBAC widened can_moderate exactly as its docstring predicted, and
+    the panel has to pass the answer through or the widening is dead."""
+    panel = _panel()
+    assert 'is_admin=_may("admin.moderate_any")' in panel
 
 
 def test_replies_render_under_their_parent():
